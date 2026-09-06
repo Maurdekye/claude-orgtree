@@ -2,8 +2,8 @@
 //
 // The per-node chips on the canvas are how a card is noticed the moment it
 // arrives. This is how it is found an hour later: one toolbar-launched panel
-// over the flat `documents` list (plus `present_evicted` log lines whose
-// body is gone), not a second store and not a walk of the tree.
+// over the available entries in the flat `documents` list (eviction log rows
+// have no readable content and stay out), not a second store or a tree walk.
 //
 // SHAPED ON THE MAIL UI, which the user named as the reference (2026-09-03:
 // "the gallery ui should probably resemble the mail ui: a list of entries on
@@ -83,7 +83,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   const data = usePolled(() => getDocuments(slug), [slug])
-  const all = data?.documents
+  const all = useMemo(() => data?.documents.filter(r => !r.evicted), [data])
   const [showRetired, setShowRetired] = useState(false)
   // ONE list, grouped — not two views (user, 2026-09-03: "one tab with a
   // checkbox to show retired agents, which appear in the same list, sorted

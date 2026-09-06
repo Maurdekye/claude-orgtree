@@ -70,10 +70,10 @@ test('gallery mockup cards open a new tab and retain a dismissible metadata pane
   assert.ok(card)
   assert.equal(card.target, '_blank')
   assert.equal(card.getAttribute('href'), '/api/orgs/org/documents/mock1/mockup')
-  const evicted = view.el.querySelector('.doc-gallery-row.evicted')!
-  assert.ok(evicted, 'positive control: evicted HTML row is actually rendered')
-  assert.equal(evicted.tagName, 'DIV')
-  assert.equal(evicted.getAttribute('href'), null, 'evicted mockup cannot open a dead URL')
+  assert.equal(view.el.querySelector('.doc-gallery-row.evicted'), null,
+    'evicted HTML entries stay out of the menu')
+  assert.equal(view.el.querySelectorAll('.doc-gallery-row').length, 1,
+    'available HTML entry is retained')
   // Prevent jsdom navigation; production activation is verified in Chromium.
   card.addEventListener('click', (e) => e.preventDefault())
   await inAct(() => card.click()); await flush()

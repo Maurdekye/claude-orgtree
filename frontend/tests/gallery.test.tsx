@@ -278,22 +278,20 @@ uiTest('§6c the full view does NOT repeat "this agent has been retired" — the
       'a DELETED agent is still named — the layout does not imply which state it is')
   })
 
-uiTest('§7 an evicted card is listed and explained, fetches nothing, and offers '
-  + 'no dismiss', async (mount) => {
+uiTest('§7 evicted cards stay out of the menu while available cards remain', async (mount) => {
   const calls = mockDocs([
     row({ id: 'dgone', title: 'gone but logged', evicted: true }),
+    row({ id: 'doldgone', title: 'retired and gone', evicted: true, node_state: 'archived' }),
+    row({ id: 'dread', title: 'available document' }),
   ])
   const { el } = await mount(gallery())
   await flush()
-  assert.equal(rows(el).length, 1, 'an evicted card is still findable — that is the point')
-  await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+  assert.equal(rows(el).length, 1)
+  assert.match(rows(el)[0]!.textContent ?? '', /available document/)
+  await inAct(() => showRetired(el).click())
   await flush()
-  assert.match(pane(el)?.textContent ?? '', /content of this card is gone/,
-    'the pane explains the empty body instead of showing a raw 404')
-  assert.equal(calls.filter((c) => /\/documents\/dgone$/.test(c.url)).length, 0,
-    'no body request for a card whose body is known to be gone')
-  assert.equal(el.querySelectorAll('.mailer-head button.chip-x').length, 0,
-    'nothing to dismiss — the card is already gone')
+  assert.equal(rows(el).length, 1, 'retired toggle cannot reveal evicted content')
+  assert.equal(calls.filter((c) => /\/documents\/d(?:old)?gone$/.test(c.url)).length, 0)
 })
 
 uiTest('§8 CONTROL: the same fixture with the presenter still hired DOES list — '
@@ -400,13 +398,8 @@ uiTest('§12 reply box is ABSENT when the owning agent is retired or document is
     assert.equal(el.querySelector('.mailer-read .mail-reply'), null,
       'no reply box for retired agent')
 
-    // 2. Evicted document (even if live agent)
-    const evictRow = rows(el).find((r) => r.textContent?.includes('evicted doc')) as HTMLElement
-    assert.ok(evictRow, 'found evicted row')
-    await inAct(() => evictRow.click())
-    await flush()
-    assert.equal(el.querySelector('.mailer-read .mail-reply'), null,
-      'no reply box for evicted document')
+    assert.equal(rows(el).some((r) => r.textContent?.includes('evicted doc')), false,
+      'evicted document is not a menu entry')
   })
 
 // ── the toolbar button's corner count ────────────────────────────────────

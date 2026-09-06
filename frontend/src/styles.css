@@ -2777,8 +2777,7 @@ main.solo { width: 100%; }
    at the user's instruction ("the gallery ui should probably resemble the mail
    ui"), so it wears .mailer / .mailer-list / .mailrow / .mailer-read as-is and
    needs almost nothing of its own: the title is the row's strong line where a
-   mail's sender would be, and an evicted card is dimmed because its body is
-   gone — it is still selectable, and the pane says why it is empty. */
+   mail's sender would be. Entries without readable content are filtered out. */
 /* mail puts an AGENT ID on .l1 and prose beneath, so it sets .l1 in mono. A
    document row inverts that — the title is the prose and the agent id is the
    identifier — so the two swap fonts and nothing else about the row moves. */
@@ -2846,6 +2845,9 @@ main.solo { width: 100%; }
    accident of specificity. */
 .gallery-modal .mailrow.evicted .l1 .mfrom { color: var(--dim); font-weight: 400; }
 .gallery-modal .mailrow.evicted .l2 { color: var(--dim); }
+/* HTML rows are native links; block layout keeps their hover background
+   and hit area on one complete row, just like the markdown div rows. */
+.doc-gallery-row { display: block; text-decoration: none; }
 .doc-gallery-row .l2 {
   display: flex; align-items: center; gap: 6px; font-family: var(--mono);
 }
