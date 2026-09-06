@@ -1216,6 +1216,330 @@ check("participation notice and attention-dismissed status == old text; "
       "participant_added / attention_dismissed events", _participation_and_dismiss)
 
 
+# ====================================================== §A family answer_decision
+print("\n§A · answers — ask answer/dismiss, batch, credit, audience, routed question")
+
+# ⚠ VERBATIM copies of the pre-typed producers (ledger.py @ e0d9a78).
+def old_single(question, sel, txt):
+    body = "[ANSWER to your question]\nQ: " + question
+    if sel:
+        body += "\nSelected: " + " · ".join(sel)
+    if txt:
+        body += ("\nAnswer: " if not sel else "\nAlso: ") + txt
+    return body
+
+
+def old_multi(qs, norm, txt):
+    lines = ["[ANSWER to your questions]"]
+    for i, (qd, v) in enumerate(zip(qs, norm)):
+        label = qd.get("header") or f"Q{i + 1}"
+        ans = " · ".join(v) if isinstance(v, list) else v
+        lines.append(f"{label} — {qd['question']}\n→ {ans}")
+    if txt:
+        lines.append("Also: " + txt)
+    return "\n".join(lines)
+
+
+def old_dismiss(question):
+    return ("[QUESTION DISMISSED] The user closed your question "
+            "without answering:\nQ: " + question
+            + "\nProceed on your best judgment, or re-ask later "
+              "with a sharper framing.")
+
+
+def old_batch_ask(qs, norm):
+    answered = sum(1 for v in norm if v is not None)
+    lines = []
+    for i, (qd, v) in enumerate(zip(qs, norm)):
+        label = qd.get("header") or f"Q{i + 1}"
+        if v is None:
+            lines.append(f"{label} — {qd['question']}\n→ (skipped — "
+                         f"the user left this one unanswered)")
+        else:
+            ans = (" · ".join(str(x) for x in v) if isinstance(v, list) else str(v))
+            lines.append(f"{label} — {qd['question']}\n→ {ans}")
+    return (("[ANSWERS to your questions]\n" if answered else
+             "[your questions were SKIPPED]\n") + "\n".join(lines))
+
+
+def old_credit_skipped(old, new):
+    return (f"[CREDIT REQUEST skipped] Your ask "
+            f"({old:g} → {new:g}) was left "
+            f"undecided — you may re-ask later.")
+
+
+def old_credit(old, new, give, now_g):
+    asked = f"you asked {old:g} → {new:g}"
+    if give == new:
+        return (f"The user APPROVED your credit request — your "
+                f"grant is now {now_g:g}.")
+    elif give > old:
+        return (f"The user COUNTER-OFFERED: {asked}; granted "
+                f"{old:g} → {give:g} ({give - old:+g}). You may take "
+                f"this as-is, request more later, or find another "
+                f"way within it.")
+    elif give == old:
+        return (f"The user DECLINED the increase — {asked}; your "
+                f"grant stays {now_g:g}. You may re-ask with a "
+                f"stronger case, or work within it.")
+    return (f"The user REDUCED your grant: {asked}; your grant "
+            f"is now {give:g} ({give - old:+g} — unused credits "
+            f"reclaimed). You may re-ask, or work within it.")
+
+
+def old_credit_denied(old, new):
+    return (f"The user DENIED your credit request "
+            f"({old:g} → {new:g}). Your grant stays "
+            f"{old:g} — work within it, re-ask with a stronger "
+            f"case, or escalate differently.")
+
+
+def old_routed(batch):
+    parts = []
+    for qd in batch:
+        p = str(qd.get("question"))
+        if qd.get("header"):
+            p = f"[{qd['header']}] {p}"
+        if qd.get("work_item"):
+            p = f"(docket item {qd['work_item']}) {p}"
+        o = qd.get("options") or []
+        if o:
+            p += "\nOptions: " + " · ".join(x["label"] for x in o) \
+                + (" (several may apply)" if qd.get("multi") else "")
+        parts.append(p)
+    return ("[QUESTION — needs an answer]\n"
+            if len(batch) == 1 else
+            f"[QUESTIONS — {len(batch)} need answers]\n") + "\n\n".join(parts)
+
+
+def _asks():
+    slug = rig2()
+    # single, selected + text, via the route
+    o = store.load_org(slug)
+    o.ask_user("boss", "which db?", options=["sqlite", "pg"], header="DB")
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    store.save_org(o)
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/asks/{aid}/answer",
+                         json={"selected": ["sqlite"], "text": "and keep WAL on"})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == old_single("which db?", ["sqlite"], "and keep WAL on"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "answer.ask" and ev["single"] is True and ev["dismissed"] is False
+    assert ev["questions"] == [{"label": "DB", "question": "which db?", "selected": ["sqlite"]}]
+    assert ev["text"] == "and keep WAL on" and ev["object"] == {"kind": "ask", "org": slug,
+                                                                 "id": aid, "node": "boss"}
+    assert row["body"] == events.render_agent(ev) and row["from"] == USER
+    # multi (three tabs, one multi-select), no text — ledger call, body returned too
+    o = store.load_org(slug)
+    qs = [{"question": "storage?", "header": "Storage", "options": ["sqlite", "pg"]},
+          {"question": "flags?", "options": ["a", "b"], "multi": True},
+          {"question": "who reviews?"}]
+    o.ask_user("boss", questions=qs)
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    r2 = o.ask_answer(aid, selected=["sqlite", ["a", "b"], "opus"])
+    stored = o.d["asks"][-1]["questions"]
+    want = old_multi(stored, ["sqlite", ["a", "b"], "opus"], "")
+    assert r2["body"] == want, (r2["body"], want)
+    ev = r2["ev"]
+    assert ev["single"] is False and ev["questions"][1] == {"label": None, "question": "flags?",
+                                                           "selected": ["a", "b"]}
+    assert ev["questions"][0]["label"] == "Storage" and ev["text"] is None
+    assert events.render_agent(ev) == want
+    # dismissed
+    o.ask_user("boss", "later?", options=["y", "n"])
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    r3 = o.ask_dismiss(aid)
+    assert r3["body"] == old_dismiss("later?"), r3["body"]
+    assert r3["ev"]["dismissed"] is True and r3["ev"]["questions"][0]["selected"] == []
+    assert events.render_agent(r3["ev"]) == r3["body"]
+
+
+check("asks · single (selected+text via the route), multi (headers, multi-select) and "
+      "dismissed bodies == old text; answer.ask events with AskRef", _asks)
+
+
+def _batch():
+    slug = rig2()
+    o = store.load_org(slug)
+    o.set_scope(USER, "boss", tools={"bash": False, "web": False, "edit": True,
+                                     "subagents": False, "mcp": []})
+    o.ask_user("boss", questions=[{"question": "a?", "header": "A"}, {"question": "b?"}])
+    o.request_credits("boss", 30, "more compute")
+    o.request_scope("boss", [{"kind": "dir", "path": "E:/data", "mode": "ro"},
+                             {"kind": "tool", "tool": "web"}], "the dataset")
+    card = o.node_ask("boss")
+    store.save_org(o)
+    o = store.load_org(slug)
+    r = o.resolve_batch("boss", card["revs"], answers=["yes", None],
+                        credits={"skip": True}, scope=["approve", "deny"])
+    store.save_org(o)
+    qs = o.d["asks"][0]["questions"]
+    want_ask = old_batch_ask(qs, ["yes", None])
+    want_cr = old_credit_skipped(20, 30)
+    assert r["body"].startswith(want_ask + "\n\n" + want_cr + "\n\n[SCOPE REQUEST decided]\n"), \
+        r["body"]
+    assert "- folder E:/data (ro) → GRANTED — live from your next turn" in r["body"]
+    assert "- tool: web → denied" in r["body"]
+    ev = r["ev"]
+    assert ev["variant"] == "answer.batch"
+    assert [sct["kind"] for sct in ev["sections"]] == ["ask", "credit", "scope"]
+    assert ev["sections"][0]["questions"] == [{"label": "A", "question": "a?", "answer": "yes"},
+                                              {"label": None, "question": "b?", "answer": None}]
+    assert ev["sections"][1] == {"kind": "credit", "outcome": "skipped", "old": 20.0,
+                                 "asked": 30.0, "granted": None, "now": None}
+    assert ev["sections"][2]["decisions"] == [
+        {"label": "folder E:/data (ro)", "decision": "approve"},
+        {"label": "tool: web", "decision": "deny"}]
+    assert events.render_agent(ev) == r["body"]
+    assert ev["object"]["kind"] == "batch" and ev["object"]["node"] == "boss"
+    pub = events.public_event(ev)
+    assert "label" not in pub["sections"][2]["decisions"][0], "scope labels carry paths"
+    assert "ask_id" not in pub["sections"][0]
+    # credit decided inside the batch: the credit section renders the credit text
+    o = store.load_org(slug)
+    o.ask_user("boss", "c?", options=["x"])
+    o.request_credits("boss", 40, "even more")
+    card = o.node_ask("boss")
+    r = o.resolve_batch("boss", card["revs"], answers=["x"], credits={"granted": 25})
+    assert r["body"].endswith("\n\n" + old_credit(20, 40, 25, 25)), r["body"]
+    assert r["ev"]["sections"][1]["outcome"] == "counter"
+
+
+check("batch · answers + skipped credit + scope verdicts == old text; answer.batch "
+      "sections; credit decided in-batch renders the credit text", _batch)
+
+
+def _credit_route():
+    for give, expect_outcome in ((30, "approved"), (25, "counter"), (20, "declined"),
+                                 (10, "reduced")):
+        slug = rig2()
+        o = store.load_org(slug)
+        o.request_credits("boss", 30, "more")
+        rid = o.d["credit_requests"][0]["id"]
+        store.save_org(o)
+        with Quiet():
+            r = _client.post(f"/api/orgs/{slug}/credit-requests",
+                             json={"id": rid, "action": "approve", "granted": give})
+        assert r.status_code == 200, (give, r.text)
+        assert "ev" not in r.json()
+        now_g = store.load_org(slug).node("boss")["grant"]
+        row = box_last(slug, "boss")
+        assert row["body"] == old_credit(20, 30, give, now_g), (give, row["body"])
+        ev = decoded(row)
+        assert ev["variant"] == "decision.credit" and ev["outcome"] == expect_outcome
+        assert ev["old"] == 20.0 and ev["asked"] == 30.0 and ev["granted"] == float(give)
+        assert ev["object"] == {"kind": "credit_request", "org": slug, "id": rid, "node": "boss"}
+        assert row["body"] == events.render_agent(ev)
+    slug = rig2()
+    o = store.load_org(slug)
+    o.request_credits("boss", 30, "more")
+    rid = o.d["credit_requests"][0]["id"]
+    store.save_org(o)
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/credit-requests",
+                         json={"id": rid, "action": "deny"})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == old_credit_denied(20, 30), row["body"]
+    ev = decoded(row)
+    assert ev["outcome"] == "denied" and ev["granted"] is None and ev["now"] is None
+
+
+check("credit · approved/counter/declined/reduced/denied via the route == old text; "
+      "decision.credit with CreditReqRef", _credit_route)
+
+
+def _audience():
+    def rig_g():
+        slug_ = rig2()
+        o_ = store.load_org(slug_)
+        o_.hire("kid", "kid", "haiku", 2, "grandkid", add_dirs=[],
+                tools={"bash": True, "web": False, "edit": False, "subagents": False,
+                       "mcp": []}, org_visibility="team", charter="audience fixture")
+        store.save_org(o_)
+        return slug_
+    # grandkid asks for boss (its grandparent); boss — the target — grants: mail from boss
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", "boss", "need to talk")
+    o.audience_forward("kid", "grandkid", "boss")
+    o.audience_grant("boss", "grandkid", "boss")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["body"] == "Audience granted: you may message boss directly until it is rescinded."
+    assert row["kind"] == "decision" and row["from"] == "boss"
+    ev = decoded(row)
+    assert ev["variant"] == "decision.audience" and ev["granted"] is True
+    assert ev["object"] == {"kind": "audience_request", "org": slug, "node": "grandkid",
+                            "target": "boss"}
+    assert row["body"] == events.render_agent(ev)
+    # denied by the agent it currently awaits (kid, the first hop)
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", "boss", "again")
+    o.audience_deny("kid", "grandkid", "boss")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["body"] == "Your audience request to reach boss was declined at kid.", row["body"]
+    ev = decoded(row)
+    assert ev["granted"] is False and ev["decided_by"] == "kid" and ev["target"] == "boss"
+    assert row["body"] == events.render_agent(ev)
+    # denied by the user: a passive NOTICE row
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", USER, "please")
+    o.audience_deny(USER, "grandkid", USER)
+    store.save_org(o)
+    n = dict(store.load_org(slug).d["notices"]["grandkid"][-1])
+    assert n["text"] == "The user declined your audience request.", n
+    ev = decoded(n)
+    assert ev["granted"] is False and ev["decided_by"] == USER and ev["actor"]["kind"] == "user"
+    assert n["text"] == events.render_agent(ev)
+
+
+check("audience · grant by the target, deny by an agent (mail) and by the user (notice) "
+      "== old text; decision.audience on the (node, target) ref", _audience)
+
+
+def _routed():
+    slug = rig2()
+    o = store.load_org(slug)
+    wid = o.work_create("kid", "Linked", "linked question; route it")["created"]
+    batch = [{"question": "storage?", "header": "Storage", "options": ["sqlite", "pg"],
+              "work_item": wid},
+             {"question": "flags?", "options": ["a", "b"], "multi": True},
+             {"question": "plain?"}]
+    r = o.ask_user("kid", questions=batch)
+    assert r.get("routed") == "boss", r
+    store.save_org(o)
+    normd = [{"question": "storage?", "header": "Storage",
+              "options": [{"label": "sqlite"}, {"label": "pg"}], "work_item": wid},
+             {"question": "flags?", "options": [{"label": "a"}, {"label": "b"}], "multi": True},
+             {"question": "plain?"}]
+    row = box_last(slug, "boss")
+    assert row["body"] == old_routed(normd), row["body"]
+    assert row["kind"] == "question" and row["from"] == "kid"
+    ev = decoded(row)
+    assert ev["variant"] == "ask.routed" and ev["object"]["kind"] == "node"
+    assert ev["object"]["id"] == "kid" and ev["from_node"] == "kid"
+    assert ev["questions"][0] == {"header": "Storage", "text": "storage?", "work_item": wid,
+                                  "options": ["sqlite", "pg"], "multi": False}
+    assert ev["questions"][1]["multi"] is True and ev["questions"][2]["options"] == []
+    assert row["body"] == events.render_agent(ev)
+    o = store.load_org(slug)
+    r = o.ask_user("kid", "one?", options=["y"])
+    store.save_org(o)
+    row = box_last(slug, "boss")
+    assert row["body"] == old_routed([{"question": "one?", "options": [{"label": "y"}]}])
+    assert row["body"].startswith("[QUESTION — needs an answer]\n")
+
+
+check("routed question · three tabs (header, docket link, multi) and a single == old text; "
+      "ask.routed on the asker's NodeRef", _routed)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:

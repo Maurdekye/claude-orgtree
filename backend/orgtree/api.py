@@ -3715,8 +3715,11 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
             notice = req.get("notice")
             drive = False
             if notice and req["node"] in org.nodes:
+                # typed: decision.credit rides the result as `ev`; the body is
+                # its rendering (== `notice`)
                 drive = not org.post_mail(
-                    USER, req["node"], notice).get("deferred")
+                    USER, req["node"], "", ev=req["ev"]).get("deferred")
+            req = {k: v for k, v in req.items() if k != "ev"}
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -4528,7 +4531,7 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
             r = (org.ask_dismiss(aid) if body.dismiss
                  else org.ask_answer(aid, selected=body.selected,
                                      text=body.text, rev=body.rev))
-            drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
+            drive = not org.post_mail(USER, r["node"], "", ev=r["ev"]).get("deferred")
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -4569,7 +4572,7 @@ async def batch_resolve(slug: str, nid: str, body: BatchResolve) -> dict[str, An
             r = org.resolve_batch(nid, body.revs, answers=body.answers,
                                   credits=body.credits, scope=body.scope)
             _kiosk_cap_check(org)
-            drive = not org.post_mail(USER, r["node"], r["body"]).get("deferred")
+            drive = not org.post_mail(USER, r["node"], "", ev=r["ev"]).get("deferred")
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)

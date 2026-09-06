@@ -77,8 +77,10 @@ REFS: Final[dict[str, dict[str, dict[str, Any]]]] = {
                  "id": F("str", B, True, _LINK), "node": F("str", B, True, _LINK)},
     "CreditReqRef": {"kind": F("L[credit_request]", B, True), "org": F("str", I, False),
                      "id": F("str", B, True, _LINK), "node": F("str", B, True, _LINK)},
+    # an audience request has no id of its own: (from node, target) IS its identity
+    # (Org._find_request); the ref carries exactly that pair
     "AudienceReqRef": {"kind": F("L[audience_request]", B, True), "org": F("str", I, False),
-                       "id": F("str", B, True, _LINK), "node": F("str", B, True, _LINK)},
+                       "node": F("str", B, True, _LINK), "target": F("str", B, True, _LINK)},
     "ScopeReqRef": {"kind": F("L[scope_request]", B, True), "org": F("str", I, False),
                     "id": F("str", B, True, _LINK), "node": F("str", B, True, _LINK)},
     "WatchdogRef": {"kind": F("L[watchdog]", B, True), "org": F("str", I, False),
@@ -223,7 +225,9 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
     "decision.attention_dismissed": leaf(
         "answer_decision", "WorkItemRef", reason=F("str", B, True),
         pending_questions=F("int", B, True), dismissed_by=F("str", B, False)),
-    "ask.routed": leaf("answer_decision", "AskRef", from_node=F("str", B, False),
+    # a ROUTED question is mail to the superior, never an ask record — there is no
+    # AskRef to point at; the object is the asker
+    "ask.routed": leaf("answer_decision", "NodeRef", from_node=F("str", B, False),
                        questions=F("[N:RoutedQ]{1}", B, True)),
     # ---- family access_resources
     "access.scope_requested": leaf("access_resources", "ScopeReqRef",

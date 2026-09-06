@@ -11,8 +11,8 @@
     "object": {
       "kind": "audience_request",
       "org": "decision.audience·object.org",
-      "id": "decision.audience·object.id",
-      "node": "decision.audience·object.node"
+      "node": "decision.audience·object.node",
+      "target": "decision.audience·object.target"
     },
     "engine_authored": false,
     "granted": false,
@@ -29,8 +29,8 @@
     },
     "object": {
       "kind": "audience_request",
-      "id": "decision.audience·object.id",
-      "node": "decision.audience·object.node"
+      "node": "decision.audience·object.node",
+      "target": "decision.audience·object.target"
     },
     "granted": false,
     "target": "decision.audience·target",
