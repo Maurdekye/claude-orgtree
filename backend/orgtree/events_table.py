@@ -81,8 +81,6 @@ REFS: Final[dict[str, dict[str, dict[str, Any]]]] = {
     # (Org._find_request); the ref carries exactly that pair
     "AudienceReqRef": {"kind": F("L[audience_request]", B, True), "org": F("str", I, False),
                        "node": F("str", B, True, _LINK), "target": F("str", B, True, _LINK)},
-    "ScopeReqRef": {"kind": F("L[scope_request]", B, True), "org": F("str", I, False),
-                    "id": F("str", B, True, _LINK), "node": F("str", B, True, _LINK)},
     "WatchdogRef": {"kind": F("L[watchdog]", B, True), "org": F("str", I, False),
                     "id": F("str", B, True, _LINK), "name": F("str", B, True, _LINK),
                     "owner": F("str", B, True, _LINK)},
@@ -230,7 +228,9 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
     "ask.routed": leaf("answer_decision", "NodeRef", from_node=F("str", B, False),
                        questions=F("[N:RoutedQ]{1}", B, True)),
     # ---- family access_resources
-    "access.scope_requested": leaf("access_resources", "ScopeReqRef",
+    # a ROUTED scope request (no user audience) is mail to the superior — no
+    # scope_requests record exists for it, so the object is the requester
+    "access.scope_requested": leaf("access_resources", "NodeRef",
                                    items=F("[str]{1}", B, True), reason=F("str", B, True),
                                    wanted=F("N:ScopeWant", B, True)),
     "access.audience_requested": leaf("access_resources", "AudienceReqRef",

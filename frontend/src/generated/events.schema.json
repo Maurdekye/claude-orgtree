@@ -233,32 +233,6 @@
       ],
       "additionalProperties": false
     },
-    "ScopeReqRef": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "enum": [
-            "scope_request"
-          ]
-        },
-        "org": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "kind",
-        "org",
-        "id",
-        "node"
-      ],
-      "additionalProperties": false
-    },
     "WatchdogRef": {
       "type": "object",
       "properties": {
@@ -2044,7 +2018,7 @@
           "type": "boolean"
         },
         "object": {
-          "$ref": "#/$defs/ScopeReqRef"
+          "$ref": "#/$defs/NodeRef"
         },
         "items": {
           "type": "array",
@@ -5656,28 +5630,6 @@
       ],
       "additionalProperties": false
     },
-    "PublicScopeReqRef": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "enum": [
-            "scope_request"
-          ]
-        },
-        "id": {
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "kind",
-        "id",
-        "node"
-      ],
-      "additionalProperties": false
-    },
     "PublicWatchdogRef": {
       "type": "object",
       "properties": {
@@ -7174,7 +7126,7 @@
           "$ref": "#/$defs/PublicActor"
         },
         "object": {
-          "$ref": "#/$defs/PublicScopeReqRef"
+          "$ref": "#/$defs/PublicNodeRef"
         },
         "items": {
           "type": "array",
