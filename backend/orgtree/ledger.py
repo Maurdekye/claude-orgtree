@@ -34,9 +34,9 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from . import clipin, deployment, opreceipts
+from . import clipin, deployment, events, opreceipts
 from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
-                     NoticeEntry, OrgDoc, OrgInboxEntry, ToolGrant,
+                     NoticeEntry, NoticeLogEntry, OrgDoc, OrgInboxEntry, ToolGrant,
                      UserMailEntry, WorkActor, WorkItem, WorkStage)
 
 # §3.1 — derived from published API pricing: a seat is the API $ per M INPUT
@@ -363,6 +363,46 @@ def norm_dirs(dirs: Iterable[Any] | None) -> list[DirGrant]:
         os.path.normcase(os.path.normpath(d["path"])), d["mode"], d["path"]))
 
 
+def _mint(variant: str, actor: Mapping[str, Any], obj: Mapping[str, Any] | None,
+          **fields: Any) -> dict[str, Any]:
+    """events.mint, reported the way every other ledger refusal is (a LedgerError) —
+    events.py cannot import this module, so the conversion lives here. Every call
+    site passes a STRING LITERAL variant (test_events_ledger §7 scans for it); the
+    one computed site is `_ORDINARY_OF[kind]`, whose values the same scan verifies."""
+    try:
+        return events.mint(variant, actor, obj, **fields)
+    except events.EventInvalid as e:
+        raise LedgerError(f"typed message refused: {e}") from e
+
+
+def _validate_ev(ev: Mapping[str, Any]) -> None:
+    try:
+        events.validate_event(ev)
+    except events.EventInvalid as e:
+        raise LedgerError(f"typed message refused: {e}") from e
+
+
+#: the ONLY variants the agent/user wire can produce (design I4): the authored kinds,
+#: each mapped to its leaf by a literal. Closed; the coverage scan checks every value.
+_ORDINARY_OF: Final[dict[str, str]] = {
+    "message": "ordinary.message", "question": "ordinary.question",
+    "request": "ordinary.request", "decision": "ordinary.decision",
+    "status": "ordinary.status", "notice": "ordinary.notice",
+}
+
+
+def actor_of(who: str) -> dict[str, str]:
+    """The canonical `actor` for a validated sender id (design I3): the user, the
+    engine's own hand, an outside peer, or an agent node."""
+    if who == USER:
+        return {"kind": "user", "id": USER}
+    if who == SYSTEM or who == "orgtree":
+        return {"kind": "system", "id": SYSTEM}
+    if who.startswith(("@net:", "@org:", "@mcp:")):
+        return {"kind": "external", "id": who}
+    return {"kind": "agent", "id": who}
+
+
 class LedgerError(ValueError):
     """Raised when an operation violates a precondition. Message is user-facing."""
 
@@ -405,7 +445,6 @@ def freeze_describes_provider(fz: FrozenInfo) -> bool:
 # a family added later folds on the day it is written. Single quotes are left
 # alone deliberately: "the USER's authority" is prose, not a quoted span, and
 # pairing it off would swallow half a sentence.
-_NOTICE_QUOTED = re.compile(r'["“”][^"“”]*["“”]')
 
 # ask_user leaked-tool-call defense (D-2xx, 2026-08-30): a caller's own raw
 # completion can leak an unclosed tool-call tag into the `question` string it
@@ -425,22 +464,6 @@ _LEAKED_ASK_RE = re.compile(
 _SUSPICIOUS_ASK_MARKUP_RE = re.compile(
     r'</(?:question|header|options|multi|questions|parameter|invoke)>|'
     r'<(?:\w+:)?parameter\s+name="|<(?:\w+:)?invoke\s+name="', re.IGNORECASE)
-
-
-def _notice_shape(text: str) -> str:
-    """A kind-key for one notice: same shape ⇒ same kind of org change."""
-    s = _NOTICE_QUOTED.sub("⟨⟩", text)
-    s = re.sub(r"\d+", "#", s)
-    return " ".join(s.split()).lower()[:200]
-
-
-def _notice_subject(text: str) -> str:
-    """The first quoted span of a notice — in practice the node it is ABOUT
-    ("Your report X was retired", "the user gave a direct instruction to X").
-    Blanking it is what lets two notices share a kind, so a fold that did not
-    recite it would answer "how many" while losing "which"."""
-    m = _NOTICE_QUOTED.search(text)
-    return m.group(0)[1:-1].strip() if m else ""
 
 
 MAX_EXTERN_HANDLES: Final = 8
@@ -1828,7 +1851,8 @@ class Org:
                         fixed += 1
         migs[self.MAIL_LOG_ID_MIGRATION] = {"at": now(), "repaired": fixed}
 
-    def to_user_inbox(self, entry: UserMailEntry) -> UserMailEntry:
+    def to_user_inbox(self, entry: UserMailEntry,
+                      ev: Mapping[str, Any] | None = None) -> UserMailEntry:
         """Put one entry in the user's mailbox, on the right side of the read
         line. THE ONLY WAY anything should reach that mailbox.
 
@@ -1875,6 +1899,14 @@ class Org:
         archive for nothing.
         """
         cast("dict[str, Any]", entry).setdefault("id", uuid.uuid4().hex[:8])
+        if ev is not None:
+            # canonical typed event (design §4 user-inbox table): the body is the
+            # frozen agent rendering unless the caller authored it (ordinary.*)
+            _validate_ev(ev)
+            e = cast("dict[str, Any]", entry)
+            if not str(e.get("body") or ""):
+                e["body"] = events.render_agent(ev)
+            e["ev"] = events.encode_row_ev(ev, e)
         if entry.get("kind") == "notice":
             log = self.d.setdefault("user_mail_log", [])
             log.append(entry)
@@ -1906,8 +1938,18 @@ class Org:
                   urgent: bool = False,
                   urgent_reason: str = "",
                   missing: list[str] | None = None,
-                  grant_reply_audience: bool = True) -> dict[str, Any]:
+                  grant_reply_audience: bool = True,
+                  typed: bool = False,
+                  ev: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
+
+        TYPED MESSAGES (design typed-message-architecture-backend.md v5):
+        `typed=True` mints `ordinary.<kind>` for the validated sender — the ONLY
+        variants the agent/user wire can produce (I4); `body` is the authored text.
+        `ev` carries a SYSTEM leaf minted by the caller (never from request data;
+        `post_event` is the front door): the row body becomes `render_agent(ev)`,
+        frozen at mint, and `body` must be empty. Neither given → an untyped legacy
+        row (the pre-migration shape; producers migrate family by family).
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
         proper route named.
@@ -1932,6 +1974,21 @@ class Org:
         if actor_kind(sender) == "agent":
             self.node(sender)
         warnings: list[str] = []
+        if typed and ev is not None:
+            raise LedgerError("post_mail takes typed=True OR ev, not both")
+        if ev is not None:
+            v = str(ev.get("variant") or "")
+            if v.startswith(("ordinary.", "reply.")):
+                raise LedgerError("post_event is for system leaves; authored mail goes "
+                                  "through post_mail(typed=True)")
+            _validate_ev(ev)
+            if str(body or "").strip():
+                raise LedgerError("a typed system message renders its own body")
+            body = events.render_agent(ev)
+        elif typed:
+            if kind not in _ORDINARY_OF:
+                raise LedgerError(f"unknown mail kind {kind!r}")
+            ev = _mint(_ORDINARY_OF[kind], actor_of(sender), None, body=str(body or ""))
         # D-169 URGENT: validated against the RESOLVED recipient and BEFORE
         # anything records, so a refused send writes nothing (the same
         # discipline the attachment and @net: gates above follow).
@@ -2049,6 +2106,8 @@ class Org:
                     "to the user — escalate to your superior instead (§7.5)")
             ue: UserMailEntry = {"id": uuid.uuid4().hex[:8], "from": sender,
                                  "kind": kind, "body": body, "at": now()}
+            if ev is not None:
+                cast("dict[str, Any]", ue)["ev"] = events.encode_row_ev(ev, ue)
             if urgent:
                 # D-169: written as a PAIR, at the single site that can write
                 # them, after the gate above proved the reason non-blank. The
@@ -2189,6 +2248,8 @@ class Org:
             "from": sender, "kind": kind, "body": body, "at": now(),
             "relationship": self.relationship(sender, to),
         }
+        if ev is not None:
+            entry["ev"] = events.encode_row_ev(ev, entry)
         keep, lost = _attachments_and_losses(attachments, missing)
         if keep:
             # user spec 2026-07-31: mail carries FILES — [{name, path, bytes}]
@@ -2258,6 +2319,44 @@ class Org:
                   warnings)
         return {"delivered": to, "id": entry["id"], "deferred": deferred,
                 "warnings": warnings}
+
+    def post_event(self, sender: str, to: str, ev: Mapping[str, Any], *,
+                   kind: str = "message",
+                   attachments: list[dict[str, Any]] | None = None,
+                   reply_to: dict[str, Any] | None = None,
+                   missing: list[str] | None = None,
+                   grant_reply_audience: bool = True) -> dict[str, Any]:
+        """The front door for a SYSTEM-authored typed message that travels as mail
+        under the ordinary addressing rules (docket, review, answers, decisions,
+        requests, kickoffs): the row body is `render_agent(ev)`, frozen at mint."""
+        return self.post_mail(sender, to, "", kind, attachments=attachments,
+                              reply_to=reply_to, missing=missing,
+                              grant_reply_audience=grant_reply_audience, ev=ev)
+
+    def append_system_mail(self, to: str, ev: Mapping[str, Any], *,
+                           kind: str = "message", sender: str = SYSTEM,
+                           relationship: str = "the orgtree engine",
+                           model_only: bool = False) -> MailEntry:
+        """The engine's own hand: a typed row appended DIRECTLY to a node's box and
+        its archive, bypassing the addressing rules (there is no sender to address
+        from). Replaces the hand-built `MailEntry` literals the supervisor used to
+        carry — one shape, one place. `kind` keeps its delivery meaning ("notice"
+        never wakes: Org.waking_mail); it says nothing about the event, which is
+        the `ev`. Returns the entry (its id is what the caller drives with)."""
+        _validate_ev(ev)
+        entry: MailEntry = {
+            "id": uuid.uuid4().hex[:12], "from": sender, "kind": kind,
+            "body": events.render_agent(ev)[:8000], "at": now(),
+            "relationship": relationship}
+        if model_only:
+            entry["model_only"] = True
+        entry["ev"] = events.encode_row_ev(ev, entry)
+        box = self.d.setdefault("mail", {})
+        box.setdefault(to, []).append(cast(MailEntry, dict(entry)))
+        log = self.d.setdefault("mail_log", {}).setdefault(to, [])
+        log.append(cast(MailEntry, dict(entry)))
+        del log[:-100]
+        return entry
 
     def extern_recipients_preview(self) -> list[str]:
         """Who WOULD receive inbound mail right now — current holders, or the
@@ -2816,84 +2915,72 @@ class Org:
             log.append({"node": nid, "at": now(), "text": text})
         del log[:-800]
 
-    # a digest keeps one exemplar per KIND; past this many kinds the oldest
-    # go (declared, never silent — the History tab still holds every one)
-    NOTICE_DIGEST_KINDS = 15
+    def _notify_ev(self, nids: Iterable[str | None], ev: Mapping[str, Any]) -> None:
+        """`_notify` for a TYPED notice: the text is the frozen agent rendering and
+        the row carries the event (both the box and `notice_log`). Producers move
+        from `_notify(text)` to this one family at a time; `_notify(text)` remains
+        the legacy door until the last producer has moved."""
+        _validate_ev(ev)
+        text = events.render_agent(ev)
+        box = self.d.setdefault("notices", {})
+        log = self.d.setdefault("notice_log", [])
+        for nid in {n for n in nids if n and n in self.nodes}:
+            row: dict[str, Any] = {"at": now(), "text": text}
+            row["ev"] = events.encode_row_ev(ev, row)
+            box.setdefault(nid, []).append(cast(NoticeEntry, row))
+            log.append(cast(NoticeLogEntry, {"node": nid, **row}))
+        del log[:-800]
 
     def _fold_notices(self, nid: str) -> int:
-        """User bug 2026-08-20: replacing a seat's SESSION does not empty its
-        notice box, which is keyed by seat. So a cheap-compacted or re-seeded
-        agent's very first turn opened with the whole undelivered backlog of
-        its predecessor — measured on resonite/coordinator: 22 notices, 7,082
-        chars, spanning three days, 11 of them the same "the user gave a
-        direct instruction to X" line, 9 of those about a report that had
-        been retired before the block was ever delivered.
+        """A fresh session (cheap compact, re-seed, provider switch) inherits its
+        seat's whole undelivered notice backlog — measured 2026-08-20: 22 notices,
+        7,082 chars, 11 of them the same line. The digest below is what that
+        session reads first.
 
-        A notice is a DIFF. A session with no memory has no baseline to apply
-        one to — and the facts worth having are already true in front of it:
-        `_render_chart` puts the CURRENT org chart in the system prompt every
-        turn, so "your report X was retired" is a restatement, while "re-check
-        any plan of yours that depends on it" is unactionable when there is no
-        plan. Paying ~2k tokens of stale diff at the top of the context you
-        compacted to make cheap is exactly backwards.
-
-        So the backlog is DIGESTED, not dropped (user ruling 2026-08-20):
-        notices of the same kind collapse to their newest, with the count of
-        what folded into it. Nothing is destroyed — `notice_log` keeps every
-        entry and /nodes/{nid}/history renders them per node.
-
-        Returns the number of notices folded away (0 = box left verbatim).
-        Deliberately NOT called by `compact_split`: a normal compaction's
-        successor carries the CLI's own summary, so its "since your last
-        turn" is true and the diff still lands on a baseline."""
+        RULES (design typed-message-architecture-backend.md v5 §7.3, user ruling: no
+        text-shape recognition, for legacy rows too):
+          * UNTAGGED rows (no `ev`) are NOT folded, grouped, deduplicated, bounded or
+            subject-guessed. Every occurrence is delivered in full, in its order.
+          * TYPED rows are grouped by (variant, object.kind) into ONE synthesised
+            `context.notice_digest` row that RETAINS EVERY MEMBER as its full event
+            (nothing is reconstructed; the digest's rendering prints each member's
+            own text under its group head). It is placed first, then the untagged
+            rows in their original order.
+        Returns the number of rows folded away (typed rows − 1 when a digest was
+        made; 0 when the box has fewer than two typed rows or is left verbatim).
+        Deliberately NOT called by `compact_split` (its successor has a summary)."""
         box: list[NoticeEntry] = (self.d.get("notices") or {}).get(nid) or []
-        if len(box) < 3:
-            return 0            # nothing a digest could make smaller
-        groups: dict[str, list[NoticeEntry]] = {}
-        for e in box:
-            groups.setdefault(_notice_shape(e.get("text") or ""), []).append(e)
-        # newest-last within a kind (append order is chronological), and the
-        # kinds themselves ordered by their newest member
-        kinds = sorted(groups.values(), key=lambda g: g[-1]["at"])
-        cut = max(0, len(kinds) - self.NOTICE_DIGEST_KINDS)
-        kinds = kinds[cut:]
-        folded: list[NoticeEntry] = []
-        for g in kinds:
-            newest = g[-1]
-            text = newest["text"]
-            if len(g) > 1:
-                # …and WHICH ones, not just how many: the quoted subject is
-                # exactly what the shape key blanked, so reciting it here is
-                # what keeps "4 reports were retired" from hiding three names
-                subj: list[str] = []
-                seen = {_notice_subject(newest["text"])}
-                for e in reversed(g[:-1]):
-                    sj = _notice_subject(e.get("text") or "")
-                    if sj and sj not in seen:
-                        seen.add(sj)
-                        subj.append(sj)
-                more = len(subj) - 8
-                which = (" — also concerning "
-                         + ", ".join(f'"{x}"' for x in subj[:8])
-                         + (f" and {more} other(s)" if more > 0 else "")
-                         ) if subj else ""
-                text += (f" [+{len(g) - 1} earlier notice(s) of this same "
-                         f"kind, folded — this is the newest of them{which}]")
-            folded.append({"at": newest["at"], "text": text})
-        if len(folded) == len(box):
-            return 0            # every notice its own kind — fold nothing
-        head = (f"The {len(box)} notices your predecessor never read were "
-                f"DIGESTED into the {len(folded)} below: same-kind repeats "
-                f"collapsed to their newest"
-                + (f", and the {cut} oldest kind(s) dropped from this block"
-                   if cut else "")
-                + ". A notice is a diff, and this session has no memory to "
-                  "apply one to — the org chart in your prompt is already "
-                  "current, and every notice ever queued for you is listed "
-                  "in full in your History tab.")
+        typed = [e for e in box if e.get("ev") is not None]
+        if len(typed) < 2:
+            return 0
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        order: list[tuple[str, str]] = []
+        for e in typed:
+            r = events.decode(e.get("ev"), e)
+            if r["status"] != "ok":
+                continue                    # unsupported/malformed rows stay verbatim
+            ev = r["ev"]
+            obj = ev.get("object") or {}
+            key = (str(ev["variant"]), str(obj.get("kind") or "none"))
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append({"at": e["at"], "event": ev})
+        if sum(len(g) for g in groups.values()) < 2:
+            return 0
+        untyped = [e for e in box if e.get("ev") is None]
+        digest = events.mint(
+            "context.notice_digest", actor_of(SYSTEM), None,
+            groups=[{"variant": k[0], "object_kind": k[1], "members": groups[k]}
+                    for k in order],
+            untyped=len(untyped))
+        head: dict[str, Any] = {"at": now(), "text": events.render_agent(digest)}
+        head["ev"] = events.encode_row_ev(digest, head)
+        kept_typed = [e for e in typed
+                      if events.decode(e.get("ev"), e)["status"] != "ok"]
         self.d.setdefault("notices", {})[nid] = [
-            cast("NoticeEntry", {"at": now(), "text": head}), *folded]
-        return len(box) - len(folded)
+            cast("NoticeEntry", head), *kept_typed, *untyped]
+        return sum(len(g) for g in groups.values()) - 1
 
     def _peers_of(self, parent: str | None, excl: str) -> list[str]:
         return [k for k in self.children(parent) if k != excl]
