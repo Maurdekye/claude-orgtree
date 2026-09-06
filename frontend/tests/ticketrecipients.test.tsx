@@ -28,11 +28,11 @@ async function setup(t: TestContext, items: WorkItem[]) {
   useFakeClock()
   const sent: { body: string; to: string }[] = []
   const toasts: string[] = []
-  const server = { fail: false }
+  const server = { fail: false, holdReply: null as Promise<void> | null }
   globalThis.fetch = (async (url, init) => {
     const isReply = String(url).endsWith('/reply')
     const payload = isReply ? JSON.parse(String(init?.body)) : null
-    if (isReply) sent.push(payload)
+    if (isReply) { sent.push(payload); await server.holdReply }
     return { ok: !(isReply && server.fail), status: isReply && server.fail ? 422 : 200,
       headers: new Headers(), json: async () => isReply
         ? server.fail ? { detail: 'Recipient removed — the reply was not sent' }
@@ -153,4 +153,27 @@ test('ownerless ticket requires explicit participant selection', async (t) => {
   assert.equal(button(el).disabled, true)
   await choose(el, 'collaborator')
   assert.equal(button(el).disabled, false)
+})
+
+
+test('in-flight reply locks recipient and resets to latest observed owner after success', async (t) => {
+  const item = fixture()
+  const { el, server, sent, toasts } = await setup(t, [item])
+  await choose(el, 'collaborator'); await type(el)
+  let release!: () => void
+  server.holdReply = new Promise<void>((resolve) => { release = resolve })
+  await send(el)
+  assert.equal(picker(el).disabled, true)
+  assert.equal(area(el).disabled, true)
+  assert.equal(button(el).disabled, true)
+  item.owner = { node: 'new-owner', generation: 0 }
+  item.reply_recipients![0] = { node: 'new-owner', role: 'owner', state: 'live' }
+  await advance(5100); await flush()
+  assert.equal(picker(el).value, 'collaborator')
+  await inAct(() => { release() }); await flush()
+  assert.equal(sent[0]!.to, 'collaborator')
+  assert.equal(toasts.at(-1), 'sent to collaborator')
+  assert.equal(picker(el).value, 'new-owner')
+  assert.equal(picker(el).disabled, false)
+  assert.equal(area(el).value, '')
 })
