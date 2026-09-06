@@ -279,8 +279,13 @@ def participants_collaborate_narrowly():
     assert it["participants"] == [], "the new owner is not also a participant"
     ok(slug, "peer", "assign", slug=wid, owner="peer")      # owner-level, now legal
     # …and the claim mailed nobody: an agent claiming its own item is not
-    # notified of itself (no self-notification loop)
-    assert not store.load_org(slug).d.get("mail", {}).get("peer")
+    # notified of itself (no self-notification loop). What peer's box DOES
+    # hold is the two PARTICIPATION notices from boss's two adds above (user
+    # 2026-09-06, test_work_reply_participants.py §3) — passive, and not an
+    # assignment — and nothing else.
+    box = store.load_org(slug).d.get("mail", {}).get("peer") or []
+    assert [m["kind"] for m in box] == ["notice", "notice"], box
+    assert all(m["from"] == "boss" and "PARTICIPATION" in m["body"] for m in box)
 
 
 check("participants get read + update + evidence + nothing else; membership is explicit and revocable",
