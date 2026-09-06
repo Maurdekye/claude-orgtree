@@ -302,6 +302,18 @@ def sec_schema() -> None:
         assert turnlog.window_of(None) == (None, None)
         assert turnlog.seconds_of(3.9) == 3 and turnlog.seconds_of(-1) is None
         assert turnlog.assistant_shape("junk")["tool_n"] == 0
+        # freeze_shape: no record → no fields (like None); a nonempty record
+        # with no reset instant says reset_known False explicitly
+        assert turnlog.freeze_shape({}) == {} and turnlog.freeze_shape(None) == {}
+        assert turnlog.freeze_shape("junk") == {}
+        fs = turnlog.freeze_shape({"schedule_kind": "probe", "reset_src": "probe",
+                                   "until_ts": None, "untrusted": True},
+                                  parked="untrusted")
+        assert fs == {"reset_known": False, "schedule": "probe", "reset_src": "probe",
+                      "untrusted": True, "parked": "untrusted"}, fs
+        fs2 = turnlog.freeze_shape({"until_ts": time.time() + 120,
+                                    "reset_src": "usage:weekly_all"})
+        assert fs2["reset_known"] is True and 118 <= fs2["delay_s"] <= 120             and fs2["reset_src"] == "usage" and "schedule" not in fs2, fs2
     check("shapes · assistant/user/result/init/window helpers keep counts, "
           "flags and typed numbers, never text; a digit-string status is "
           "null; junk input never raises", _shapes)
@@ -356,6 +368,10 @@ def sec_recorder() -> None:
         assert set(rec["dropped_kinds"]) <= {"assistant", "tool_result"}
         assert rec["truncated"] is False and rec["partial"] is False
         assert rec["cost_usd"] == 0.5 and rec["cost_known"] is True
+        # a HEAD/TAIL gap is insufficient evidence even with the tail kept
+        sm = turnlog.summarize(rec)
+        assert sm["evidence"] == "insufficient" and sm["gapped"] is True             and sm["implied"] == "unknown" and sm["events"] > 0, sm
+        assert turnlog.drift(rec) == []
         assert not [n for n in os.listdir(os.path.dirname(p))
                     if n.endswith(".partial.json")]
         # STALE: a closed recorder drops and writes nothing more
@@ -715,6 +731,23 @@ def sec_summary() -> None:
             assert turnlog.drift(r) == [], "an insufficient summary drifts against nothing"
         empty = _rec([], outcome="completed")
         assert turnlog.summarize(empty)["evidence"] == "insufficient"
+        # a GAP (dropped > 0, truncated false, tail present) asserts nothing;
+        # the identical events with no gap DO drift against the wrong outcome
+        gap = _rec([{"kind": "start"}, {"kind": "freeze", "freeze_kind": "limit"},
+                    {"kind": "owner", "branch": "terminal", "handled": True}],
+                   outcome="completed", dropped=3, truncated=False)
+        sg = turnlog.summarize(gap)
+        assert sg["evidence"] == "insufficient" and sg["gapped"] is True             and sg["implied"] == "unknown" and sg["phase"] == "unknown", sg
+        assert sg["events"] == 3, "the retained timeline is still counted"
+        assert turnlog.drift(gap) == []
+        full = copy.deepcopy(gap)
+        full["dropped"] = 0
+        assert turnlog.summarize(full)["implied"] == "frozen"
+        assert turnlog.drift(full) == ["outcome"]
+        for bad in (True, "3", 3.5, -1):
+            g2 = copy.deepcopy(gap)
+            g2["dropped"] = bad
+            assert turnlog.summarize(g2)["gapped"] is False, bad
         # ORDER is checked: a seq inversion drifts
         r = _rec([{"kind": "start"}, {"kind": "result", "boundary": True}],
                  outcome="completed")
@@ -722,7 +755,8 @@ def sec_summary() -> None:
         assert turnlog.drift(r) == ["order"]
     check("insufficient · a partial or truncated record (or none at all) "
           "yields unknown and no drift even against a wrong outcome; a "
-          "seq inversion drifts as order", _insufficient)
+          "HEAD/TAIL gap is insufficient too while the same events complete "
+          "do drift; a seq inversion drifts as order", _insufficient)
 
     def _fixture_names() -> None:
         ok = "1788682251395-0044-stream-net.json"

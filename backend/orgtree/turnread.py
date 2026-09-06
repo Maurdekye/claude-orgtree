@@ -366,8 +366,8 @@ def freeze_shape(fz: Any, *, parked: Any = None) -> dict[str, Any]:
     record gives absent fields. Never raises."""
     out: dict[str, Any] = {}
     try:
-        if not isinstance(fz, Mapping):
-            return out
+        if not isinstance(fz, Mapping) or not fz:
+            return out          # no record → no fields, exactly like None
         uts = fz.get("until_ts")
         known = isinstance(uts, (int, float)) and not isinstance(uts, bool)
         out["reset_known"] = known
@@ -474,14 +474,20 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
                     when the corresponding event is the LAST disposition-
                     bearing event, else unknown. `dispose`/`end` events are
                     ignored — copying them would be no derivation at all.
-    evidence        "sufficient" | "insufficient" (partial or truncated or no
-                    events): an insufficient summary asserts nothing and
-                    drifts against nothing."""
+    evidence        "sufficient" | "insufficient" (partial, truncated, a
+                    HEAD/TAIL gap — `dropped` > 0 — or no events): an
+                    insufficient summary asserts nothing and drifts against
+                    nothing; the retained timeline is still there to read."""
     events = [e for e in (rec.get("events") or []) if isinstance(e, Mapping)]
     events = [e for e in events if e.get("kind") not in ("dispose", "end")]  # pyright: ignore[reportUnknownMemberType]
     partial = rec.get("partial") is True
     truncated = rec.get("truncated") is True
-    insufficient = partial or truncated or not events
+    dropped = rec.get("dropped")
+    gapped = isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0
+    # a HEAD/TAIL gap (dropped > 0) is insufficient exactly like partial or
+    # truncated: the omitted middle can hide a deciding event — an
+    # unrecoverable owner, an interrupt, a freeze — even with the tail kept
+    insufficient = partial or truncated or gapped or not events
     kinds = [str(e.get("kind")) for e in events]  # pyright: ignore[reportUnknownMemberType]
     first_out = next((e for e in events if e.get("kind") == "first_output"), None)  # pyright: ignore[reportUnknownMemberType]
     started = first_out is not None or any(
@@ -549,6 +555,7 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
     ordered = all(b > a for a, b in zip(seqs, seqs[1:]))
     return {"phase": phase, "implied": implied,
             "evidence": "insufficient" if insufficient else "sufficient",
+            "gapped": gapped,
             "started": started, "boundary": boundary is not None,
             "first_output_ms": t_first, "boundary_ms": t_bound,
             "events": len(events), "ordered": ordered}
