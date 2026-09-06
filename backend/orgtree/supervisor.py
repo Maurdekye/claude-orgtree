@@ -6723,6 +6723,21 @@ def _node_ref(org: Org, nid: str) -> dict[str, Any]:
             "name": str(n.get("name") or nid), "generation": int(n.get("generation") or 0)}
 
 
+#: the engine's own hand as an event actor (design I3)
+_SYSTEM_ACTOR: Final[dict[str, str]] = {"kind": "system", "id": SYSTEM}
+
+
+def _session_ref(org: Org, nid: str) -> dict[str, Any]:
+    """The SessionRef of a node's CURRENT session (runtime family objects)."""
+    n = org.nodes.get(nid) or {}
+    return {"kind": "session", "org": str(org.d.get("slug") or ""), "node": nid,
+            "session_id": str(n.get("session_id") or "")}
+
+
+def _org_ref(org: Org) -> dict[str, Any]:
+    return {"kind": "org", "org": str(org.d.get("slug") or "")}
+
+
 def _segments_for(mail: list[MailEntry] | None, pending: list[NoticeEntry] | None,
                   text: str | None, *, drive: Mapping[str, Any] | None = None
                   ) -> list[dict[str, Any]]:
@@ -17161,23 +17176,6 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
     whether to look at the code, the machine, or the agent. Returns True if
     anyone was actually told — the caller logs the honest thing either way."""
     try:
-        body = (
-            f"[TURN FAILED TERMINALLY — nothing will retry it]\n"
-            f"How it died: {door}\n"
-            f"Error: {err[:300] or 'no output'}\n\n"
-            "orgtree classified this as NOT retryable and stopped. You were "
-            "not driven for it — if the failure is in your CLI or your "
-            "environment, another turn would die the same way — so this mail "
-            "is waiting for you rather than waking you.\n\n"
-            "⚠ WORK MAY BE UNFINISHED. Anything the dead turn had already "
-            "done was NOT undone; anything it was about to do did not "
-            "happen. Do not trust your own last message as a record of what "
-            "ran — a turn can announce an edit in prose and die before the "
-            "tool call. Check the disk.")
-        entry: MailEntry = {
-            "id": uuid_hex8(), "from": "@system",
-            "kind": "message", "body": body[:8000], "at": now_iso(),
-            "relationship": "the orgtree engine"}
         sup = ""
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -17185,32 +17183,19 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
                 return False
             name = str(org.node(nid).get("name") or nid)
             sup = str(org.node(nid).get("parent") or "")
-            box = org.d.setdefault("mail", {})
-            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
-            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
-            log.append(cast(MailEntry, dict(entry)))
-            del log[:-100]
+            # typed (family runtime_recovery): the node's own copy is the frozen
+            # rendering of runtime.turn_failed_terminal (test_events_producers §R)
+            org.append_system_mail(
+                nid, events.mint("runtime.turn_failed_terminal", _SYSTEM_ACTOR,
+                                 _session_ref(org, nid), door=door, err=err),
+                kind="message", sender="@system", relationship="the orgtree engine")
             if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
-                sup_entry: MailEntry = {
-                    **entry, "id": uuid_hex8(),
-                    "body": (
-                        f"[REPORT STALLED — {name} ({nid}) is not running]\n"
-                        f"Its turn failed in a way orgtree does not retry, "
-                        f"and nothing will re-drive it.\n"
-                        f"How it died: {door}\n"
-                        f"Error: {err[:300] or 'no output'}\n\n"
-                        f"It has NOT been driven — if the fault is its CLI or "
-                        f"its environment, waking it would just kill another "
-                        f"turn. It is idle now and will stay idle until "
-                        f"something changes. It may also be holding "
-                        f"unfinished work from the turn that died.\n\n"
-                        f"You are the one who can act: fix the cause, or "
-                        f"message it once you have."
-                    )[:8000]}
-                box.setdefault(sup, []).append(cast(MailEntry, dict(sup_entry)))
-                slog = org.d.setdefault("mail_log", {}).setdefault(sup, [])
-                slog.append(cast(MailEntry, dict(sup_entry)))
-                del slog[:-100]
+                org.append_system_mail(
+                    sup, events.mint("runtime.report_stalled", _SYSTEM_ACTOR,
+                                     _node_ref(org, nid), report=nid, report_name=name,
+                                     cause="terminal", audience="superior",
+                                     attempts=None, classified=None, door=door, err=err),
+                    kind="message", sender="@system", relationship="the orgtree engine")
             else:
                 sup = ""
                 # ⚠ NOBODY UPSTREAM — so tell the USER, in the inbox they
@@ -17228,15 +17213,13 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
                 # report its own death. `parent is None` and "the parent is
                 # archived" both land here and both mean the same thing:
                 # there is no agent left to tell.
+                uev = events.mint("runtime.report_stalled", _SYSTEM_ACTOR,
+                                  _node_ref(org, nid), report=nid, report_name=name,
+                                  cause="terminal", audience="user",
+                                  attempts=None, classified=None, door=door, err=err)
                 org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
-                    "at": now_iso(),
-                    "body": (f"{name} ({nid}) stopped: its turn failed in a "
-                             f"way orgtree does not retry, and it has no "
-                             f"superior to tell.\nHow it died: {door}\n"
-                             f"Error: {err[:300] or 'no output'}\n"
-                             f"It is idle now and nothing will re-drive it. "
-                             f"It may be holding unfinished work.")[:2000]})
+                    "at": now_iso(), "body": events.render_agent(uev)}, uev)
             store.save_org(org)
         mail_spark(slug, "@system", nid)
         if sup:
@@ -17347,24 +17330,6 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
     turn that is already failing, and a bookkeeping error here must not
     replace the real one."""
     try:
-        body = (
-            f"[TURN FAILED REPEATEDLY — {run} attempts, giving up]\n"
-            f"Classified as: {kind}\n"
-            f"Last error: {err[:300] or 'no output'}\n\n"
-            "orgtree retried this turn automatically and has now stopped. "
-            "You are no longer frozen, so this message is itself a live "
-            "turn — you are running right now.\n\n"
-            "⚠ WORK MAY BE UNFINISHED AND UNSAVED. A turn died part-way "
-            "through, possibly more than once. Anything it had already done "
-            "— files edited, mail sent, commands run — DID happen and was "
-            "not undone; anything it was about to do did not. Before "
-            "redoing work, CHECK THE ACTUAL STATE: your working folder, "
-            "`git status` if you are in a repo, and your own last messages. "
-            "Then finish what was interrupted, or report that you cannot.")
-        entry: MailEntry = {
-            "id": uuid_hex8(), "from": "@system",
-            "kind": "message", "body": body[:8000], "at": now_iso(),
-            "relationship": "the orgtree engine"}
         sup = ""
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -17372,29 +17337,21 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
                 return
             name = str(org.node(nid).get("name") or nid)
             sup = str(org.node(nid).get("parent") or "")
-            box = org.d.setdefault("mail", {})
-            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
-            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
-            log.append(cast(MailEntry, dict(entry)))
-            del log[:-100]
+            # typed (family runtime_recovery): frozen renderings of
+            # runtime.turn_failed_repeated / runtime.report_stalled (test_events_producers §R)
+            org.append_system_mail(
+                nid, events.mint("runtime.turn_failed_repeated", _SYSTEM_ACTOR,
+                                 _session_ref(org, nid), attempts=int(run),
+                                 classified=kind, err=err),
+                kind="message", sender="@system", relationship="the orgtree engine")
             if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
-                sup_entry: MailEntry = {
-                    **entry, "id": uuid_hex8(),
-                    "body": (
-                        f"[REPORT STALLED — {name} ({nid})]\n"
-                        f"Its turn failed {run} times in a row and orgtree "
-                        f"has stopped retrying.\n"
-                        f"Classified as: {kind}\n"
-                        f"Last error: {err[:300] or 'no output'}\n\n"
-                        "It has been told and driven, so it may recover on "
-                        "its own — but it may also be holding unfinished or "
-                        "uncommitted work from the turn that died. Nothing "
-                        "will retry it again automatically. Check on it."
-                    )[:8000]}
-                box.setdefault(sup, []).append(cast(MailEntry, dict(sup_entry)))
-                slog = org.d.setdefault("mail_log", {}).setdefault(sup, [])
-                slog.append(cast(MailEntry, dict(sup_entry)))
-                del slog[:-100]
+                org.append_system_mail(
+                    sup, events.mint("runtime.report_stalled", _SYSTEM_ACTOR,
+                                     _node_ref(org, nid), report=nid, report_name=name,
+                                     cause="repeated", audience="superior",
+                                     attempts=int(run), classified=kind, door=None,
+                                     err=err),
+                    kind="message", sender="@system", relationship="the orgtree engine")
             else:
                 sup = ""
                 # ⚠ SAME TOP-OF-TREE HOLE as `_turn_abandoned`, closed the
@@ -17406,16 +17363,13 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
                 # It is closed anyway because leaving ONE of two announce
                 # paths with a known hole is worse than either state: the
                 # next reader finds the fixed one and assumes this matches.
+                uev = events.mint("runtime.report_stalled", _SYSTEM_ACTOR,
+                                  _node_ref(org, nid), report=nid, report_name=name,
+                                  cause="repeated", audience="user",
+                                  attempts=int(run), classified=kind, door=None, err=err)
                 org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
-                    "at": now_iso(),
-                    "body": (f"{name} ({nid}) is stuck: {run} turns in a row "
-                             f"failed and orgtree has stopped retrying. It "
-                             f"has no superior to tell.\nClassified as: "
-                             f"{kind}\nLast error: {err[:300] or 'no output'}\n"
-                             f"It has been told and driven, so it may recover "
-                             f"on its own — but nothing will retry it again "
-                             f"automatically.")[:2000]})
+                    "at": now_iso(), "body": events.render_agent(uev)}, uev)
             store.save_org(org)
         # ⚠ name who was ACTUALLY told. This said "agent and superior told"
         # unconditionally, which for a top-level node (no parent) and for one
@@ -17579,36 +17533,23 @@ def _parked_announce(slug: str, nid: str, kind: str, lane: str) -> bool:
                       f"— already announced this episode, staying quiet")
                 return False
             sup = str(n.get("parent") or "")
-            body = (
-                f"[REPORT STOPPED — {name} ({nid}) {headline}]\n"
-                f"{detail}\n\n"
-                f"Lane: {lane}\n"
-                f"What it said: {err or 'no detail'}\n\n"
-                "It is not frozen on a timer and orgtree will not re-drive it, "
-                "so nothing changes until someone acts. It may also be holding "
-                "unfinished work from the turn that stopped.\n\n"
-                "You have NOT been woken for this, and you will not hear about "
-                "it again until it has completed a turn and got stuck afresh."
-            )[:8000]
+            # typed (family runtime_recovery): runtime.report_parked, one event
+            # per audience; the body is its frozen rendering (test_events_producers §R)
+            def _ev(audience: str) -> dict[str, Any]:
+                return events.mint("runtime.report_parked", _SYSTEM_ACTOR,
+                                   _node_ref(org, nid), report=nid, report_name=name,
+                                   audience=audience, headline=headline, detail=detail,
+                                   lane=lane, err=err or None)
             if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
-                entry: MailEntry = {
-                    "id": uuid_hex8(), "from": "@system", "kind": "message",
-                    "body": body, "at": now_iso(),
-                    "relationship": "the orgtree engine"}
-                box = org.d.setdefault("mail", {})
-                box.setdefault(sup, []).append(cast(MailEntry, dict(entry)))
-                log = org.d.setdefault("mail_log", {}).setdefault(sup, [])
-                log.append(cast(MailEntry, dict(entry)))
-                del log[:-100]
+                org.append_system_mail(sup, _ev("superior"), kind="message",
+                                       sender="@system",
+                                       relationship="the orgtree engine")
             else:
                 sup = ""
+                uev = _ev("user")
                 org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
-                    "at": now_iso(),
-                    "body": (f"{name} ({nid}) {headline} and is stopped with "
-                             f"no reset time — nothing will wake it, and it "
-                             f"has no superior to tell.\nLane: {lane}\n"
-                             f"What it said: {err or 'no detail'}")[:2000]})
+                    "at": now_iso(), "body": events.render_agent(uev)}, uev)
             store.save_org(org)
         if sup:
             mail_spark(slug, "@system", sup)
@@ -17712,7 +17653,6 @@ def _limit_announce(slug: str, nid: str, lane: str,
             run = int(n.get("limit_run") or 0) + 1
             n["limit_run"] = run
             name = str(n.get("name") or nid)
-            until = str(fz.get("until") or "") or "not known"
             err = str(fz.get("error") or "")[:300]
             # ⚠ the count is advanced on EVERY freeze, the message only on the
             # transition to 1. Bumping and announcing together would make the
@@ -17727,45 +17667,25 @@ def _limit_announce(slug: str, nid: str, lane: str,
                       f"staying quiet")
                 return False
             sup = str(n.get("parent") or "")
-            body = (
-                f"[REPORT LIMITED — {name} ({nid}) is out of provider "
-                f"capacity]\n"
-                f"Its provider refused the turn on a usage limit, so it "
-                f"stopped mid-task and is now FROZEN.\n"
-                f"Lane: {lane}\n"
-                f"Limit lifts: {until}\n"
-                f"Provider said: {err or 'no detail'}\n\n"
-                "It is blocked, not broken — the work it was doing is held "
-                "and will be replayed when it runs again. Whether it wakes by "
-                "itself when the window lifts depends on this org's "
-                "auto-resume setting; ▶ resume works either way.\n\n"
-                "You have NOT been woken for this, and you will not hear "
-                "about this wall again: it is one notice per episode, and the "
-                "next one comes only after it has run a turn and been walled "
-                "afresh. If the work cannot wait for the reset, move it to "
-                "another agent or another lane."
-            )[:8000]
+            # typed (family runtime_recovery): runtime.report_limited, one event
+            # per audience; the body is its frozen rendering (test_events_producers §R)
+            def _ev(audience: str) -> dict[str, Any]:
+                return events.mint("runtime.report_limited", _SYSTEM_ACTOR,
+                                   _node_ref(org, nid), report=nid, report_name=name,
+                                   audience=audience, lane=lane,
+                                   reset_at=(str(fz.get("until") or "") or None),
+                                   err=err or None)
             if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
-                entry: MailEntry = {
-                    "id": uuid_hex8(), "from": "@system", "kind": "message",
-                    "body": body, "at": now_iso(),
-                    "relationship": "the orgtree engine"}
-                box = org.d.setdefault("mail", {})
-                box.setdefault(sup, []).append(cast(MailEntry, dict(entry)))
-                log = org.d.setdefault("mail_log", {}).setdefault(sup, [])
-                log.append(cast(MailEntry, dict(entry)))
-                del log[:-100]
+                org.append_system_mail(sup, _ev("superior"), kind="message",
+                                       sender="@system",
+                                       relationship="the orgtree engine")
                 told = True
             else:
                 sup = ""
+                uev = _ev("user")
                 org.to_user_inbox({
                     "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
-                    "at": now_iso(),
-                    "body": (f"{name} ({nid}) is out of provider capacity: "
-                             f"its provider refused the turn on a usage limit "
-                             f"and it is frozen. It has no superior to tell.\n"
-                             f"Lane: {lane}\nLimit lifts: {until}\n"
-                             f"Provider said: {err or 'no detail'}")[:2000]})
+                    "at": now_iso(), "body": events.render_agent(uev)}, uev)
                 told = True
             store.save_org(org)
         if sup:
@@ -17835,29 +17755,17 @@ def _bg_orphaned(slug: str, nid: str,
     Never raises: this runs in a `finally` on a turn that may already be
     failing, and a bookkeeping error here must not replace the real one."""
     try:
-        lines, salvage = [], False
-        for tid, desc, outf in orphans[:20]:
-            outf = outf or _bg_task_output(sid, tid)
-            salvage = salvage or bool(outf)
-            lines.append(f"- \"{desc}\" (task {tid})"
-                         + (f"\n  partial output: {outf}" if outf else ""))
-        body = (
-            f"[SUBAGENT DIED — {len(orphans)} background subagent(s) were "
-            f"killed before finishing]\n"
-            f"Reason: {why}\n\n" + "\n".join(lines)
-            + (f"\n… and {len(orphans) - 20} more" if len(orphans) > 20 else "")
-            + "\n\nNo completion record exists for these — do NOT keep waiting "
-              "on them, and do not assume their work landed."
-            # only promise salvage when a path was actually cited: _bg_task_output
-            # withholds empty and missing files, and for a short-lived orphan
-            # that is the usual outcome. Pointing an agent at "the files above"
-            # when there are none above costs it a turn to find that out.
-            + (" The partial output files named above are real and may hold "
-               "most of the work — READ THEM before redoing anything."
-               if salvage else
-               " Nothing usable was left on disk for these.")
-            + " To retry, relaunch — and prefer run_in_background:false, which "
-              "fails loudly instead of silently if it happens again.")
+        # the event carries EVERY orphan; the renderer shows the first 20 and counts
+        # the rest, exactly as the old text did. A partial-output path is resolved
+        # only for those 20 (as before): _bg_task_output withholds empty and
+        # missing files, so a cited path is real — the renderer promises salvage
+        # only when one was cited (test_events_producers §R).
+        rows: list[dict[str, Any]] = []
+        for i, (tid, desc, outf) in enumerate(orphans):
+            if i < 20:
+                outf = outf or _bg_task_output(sid, tid)
+            rows.append({"id": str(tid), "description": str(desc),
+                         "output_file": (str(outf) if outf else None)})
         # kind is deliberately NOT "notice": that kind is the no-wake marker
         # (Org.waking_mail), and a notice would land in the box to be read at
         # a next turn that is precisely what never comes.
@@ -17868,21 +17776,17 @@ def _bg_orphaned(slug: str, nid: str,
         # renamed to `orgtree` would collide, and node_inbox's Sent folder
         # (which matches on `m["from"] == nid`) would show it every orphan
         # notice in the org as its own sent mail.
-        entry: MailEntry = {
-            "id": uuid_hex8(), "from": "@system",
-            "kind": "message", "body": body[:8000], "at": now_iso(),
-            "relationship": "the orgtree engine"}
         with store.DOC_LOCK:
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return
-            box = org.d.setdefault("mail", {})
-            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
-            # mirror into mail_log like every other sender, or the inbox panel
-            # loses it the moment the next turn drains the queue
-            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
-            log.append(cast(MailEntry, dict(entry)))
-            del log[:-100]
+            ref = _session_ref(org, nid)
+            if sid:
+                ref["session_id"] = str(sid)
+            org.append_system_mail(
+                nid, events.mint("runtime.subagent_died", _SYSTEM_ACTOR, ref,
+                                 orphans=rows, count=len(orphans), reason=why),
+                kind="message", sender="@system", relationship="the orgtree engine")
             store.save_org(org)
         print(f"[orgtree] {slug}/{nid}: {len(orphans)} background subagent(s) "
               f"orphaned — {why}")
@@ -17928,28 +17832,20 @@ def _bg_task_stopped(slug: str, nid: str, task_id: str, desc: str,
     going, or driving a fresh turn once this one actually finishes, the same
     proven path `_bg_orphaned` already relies on."""
     try:
-        body = (
-            f"[BACKGROUND TASK STOPPED — \"{desc}\" did not complete]\n"
-            f"task id: {task_id}\n"
-            + (f"CLI summary: {summary}\n" if summary else "")
-            + (f"partial output: {output_file}\n" if output_file else "")
-            + "\nThis was reported by the CLI itself while your process was "
-              "still alive — it did not die and nothing killed it. Whatever "
-              "you were waiting for did not finish. Do NOT assume the work "
-              "landed; check the actual state before continuing.")
-        entry: MailEntry = {
-            "id": uuid_hex8(), "from": "@system",
-            "kind": "message", "body": body[:8000], "at": now_iso(),
-            "relationship": "the orgtree engine"}
         with store.DOC_LOCK:
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return
-            box = org.d.setdefault("mail", {})
-            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
-            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
-            log.append(cast(MailEntry, dict(entry)))
-            del log[:-100]
+            # typed (family runtime_recovery): runtime.background_task_stopped on a
+            # TaskRef; the body is its frozen rendering (test_events_producers §R)
+            org.append_system_mail(
+                nid, events.mint("runtime.background_task_stopped", _SYSTEM_ACTOR,
+                                 {"kind": "task", "org": str(org.d.get("slug") or ""),
+                                  "id": str(task_id), "node": nid,
+                                  "description": str(desc)},
+                                 summary=(str(summary) if summary else None),
+                                 output_file=(str(output_file) if output_file else None)),
+                kind="message", sender="@system", relationship="the orgtree engine")
             store.save_org(org)
         print(f"[orgtree] {slug}/{nid}: background task {task_id} stopped "
               f"(non-'completed' status) — mailed and driving")
@@ -20771,6 +20667,17 @@ def _org_write_acl(org: Org, blocked: bool) -> None:
             pass
 
 
+def _storage_ev(org: Org, level: str, scope: str, used_mb: float,
+                cap_mb: float | None) -> dict[str, Any]:
+    """The typed storage notice (family runtime_recovery, `runtime.storage`): the
+    tier and scope are literals, the numbers are MB as floats; the rendering is
+    byte for byte the former notice text (test_events_producers §R)."""
+    return events.mint("runtime.storage", _SYSTEM_ACTOR, _org_ref(org),
+                       level=level, used_mb=float(used_mb),
+                       cap_mb=(float(cap_mb) if cap_mb is not None else None),
+                       scope=scope)
+
+
 def _storage_check_disk(slug: str, org: Org) -> str | None:
     """Storage enforcement for a DISK-MIGRATED org (user verdict): the ext4
     cap itself is the hard limit (ENOSPC — no container stop, no ACL, ever);
@@ -20803,31 +20710,17 @@ def _storage_check_disk(slug: str, org: Org) -> str | None:
             result = result or None
         if frac >= 0.90 and not blocked:
             org.d["storage_blocked"] = True
-            org._notify(live,
-                        f"⚠ The org disk is at {used / mb:.0f} of "
-                        f"{total / mb:.0f} MB (past the 90% soft cap). New "
-                        f"turns are PAUSED until usage drops under 85% — "
-                        f"the remaining space is the reserve that keeps "
-                        f"session journaling alive. Delete files (the admin "
-                        f"can also use the recovery browser or grow the "
-                        f"disk); at 100% every write fails with ENOSPC.")
+            org._notify_ev(live, _storage_ev(org, "over", "disk", used / mb, total / mb))
             nudge = live
             result = "blocked"
         elif blocked and frac <= 0.85:
             org.d.pop("storage_blocked", None)
             org.d.pop("storage_warned", None)
-            org._notify(live,
-                        f"The org disk is back under the soft cap "
-                        f"({used / mb:.0f} / {total / mb:.0f} MB) — turns "
-                        f"resume.")
+            org._notify_ev(live, _storage_ev(org, "cleared", "disk", used / mb, total / mb))
             result = "cleared"
         elif frac >= 0.80 and not blocked and not warned:
             org.d["storage_warned"] = True
-            org._notify(live,
-                        f"Heads-up: the org disk is at {used / mb:.0f} of "
-                        f"{total / mb:.0f} MB (past 80%). Clean up or curb "
-                        f"file growth — at 90% new turns pause; at 100% "
-                        f"writes fail with ENOSPC.")
+            org._notify_ev(live, _storage_ev(org, "heads_up", "disk", used / mb, total / mb))
             nudge = live
             result = "warned"
         elif warned and frac < 0.75:
@@ -20884,16 +20777,8 @@ def storage_check(slug: str) -> str | None:
         if over and not blocked:
             org.d["storage_blocked"] = True
             _org_write_acl(org, True)
-            org._notify(live,
-                        f"⚠ The org is OVER its storage limit "
-                        f"({used / 1048576:.1f} / {lim_mb} MB — workspace + "
-                        f"scratch + uploads together). File creation and "
-                        f"writes in the workspace and every scratch folder "
-                        f"are now BLOCKED at the OS level — new writes will "
-                        f"fail with permission errors. Deleting still works: "
-                        f"remove large files you created and the block lifts "
-                        f"automatically at the next check. Do NOT keep "
-                        f"generating files.")
+            org._notify_ev(live, _storage_ev(org, "over", "storage", used / 1048576,
+                                             float(lim_mb)))
             store.save_org(org)
             nudge = live
             result = "blocked"
@@ -20901,10 +20786,8 @@ def storage_check(slug: str) -> str | None:
             org.d.pop("storage_blocked", None)
             org.d.pop("storage_warned", None)   # a fresh climb re-warns
             _org_write_acl(org, False)
-            org._notify(live,
-                        f"Storage is back under the limit "
-                        f"({used / 1048576:.1f} / {lim_mb or '∞'} MB) — "
-                        f"writes are unblocked.")
+            org._notify_ev(live, _storage_ev(org, "cleared", "storage", used / 1048576,
+                                             float(lim_mb) if lim_mb else None))
             store.save_org(org)
             result = "cleared"
         elif (lim_mb and not blocked and not warned
@@ -20912,11 +20795,8 @@ def storage_check(slug: str) -> str | None:
             # user ruling: a soft warning inside the last ~10% so agents can
             # slow down / clean up BEFORE the hard write block lands
             org.d["storage_warned"] = True
-            org._notify(live,
-                        f"Heads-up: the org is at {used / 1048576:.1f} of "
-                        f"{lim_mb} MB (past 90% of the storage limit). Clean "
-                        f"up or curb file growth — at the limit, workspace "
-                        f"AND scratch writes are blocked at the OS level.")
+            org._notify_ev(live, _storage_ev(org, "heads_up", "storage", used / 1048576,
+                                             float(lim_mb)))
             store.save_org(org)
             nudge = live
             result = "warned"
@@ -24185,11 +24065,33 @@ def start_steer_late_watchdog() -> None:
     threading.Thread(target=run, daemon=True, name="steer-late").start()
 
 
+def _journal_mail_ref(org: Org, nid: str, toks: list[str],
+                      sender: str) -> dict[str, Any]:
+    """The MailRef of the mail a late steer carrier holds for `sender`: the first
+    row from `sender` in the node's delivery journal under one of the carrier's
+    tokens. A carrier whose mail cannot be found (bare-string shape, journal
+    already retired) still gets a fully qualified ref — the node box, the sender,
+    an EMPTY id and the row's own stamp — rather than a fabricated id: an empty
+    id is honest and the notice is about the delay, not the row."""
+    slug = str(org.d.get("slug") or "")
+    for b in (org.d.get("delivering") or {}).get(nid, []) or []:
+        if str(b.get("tok") or "") not in toks:
+            continue
+        for m in b.get("mail") or []:
+            if str(m.get("from") or "") == sender:
+                return {"kind": "mail", "org": slug, "box": "node", "node": nid,
+                        "id": str(m.get("id") or ""), "sender": sender,
+                        "at": str(m.get("at") or "")}
+    return {"kind": "mail", "org": slug, "box": "node", "node": nid, "id": "",
+            "sender": sender, "at": now_iso()}
+
+
 def _steer_late_sweep(now: float | None = None) -> list[tuple[str, str, str, float]]:
     """One pass. Returns the (slug, sender, recipient, waited) it alarmed —
     the return value is the test seam; the caller normally ignores it."""
     now = time.time() if now is None else now
     due: list[tuple[str, str, str, float]] = []
+    toks_of: dict[tuple[str, str, str], list[str]] = {}
     with _state_lock:
         for (slug, nid), st in list(_state.items()):
             if not st.get("responding"):
@@ -24205,24 +24107,24 @@ def _steer_late_sweep(now: float | None = None) -> list[tuple[str, str, str, flo
                     continue
                 c["late_told"] = True
                 due.append((slug, str(frm), nid, waited))
+                toks_of[(slug, str(frm), nid)] = [str(t) for t in (c.get("toks") or []) if t]
     for slug, frm, nid, waited in due:
         boundary = steer_wait(slug, nid)
-        text = (
-            f'Your mid-turn message to "{nid}" has NOT been read yet — it has '
-            f'been waiting {_dur(waited)} in its steer store. Mid-turn mail is '
-            f'injected when the recipient\'s current tool call returns'
-            + (f", and {nid} has been inside one call for {_dur(boundary)}"
-               if isinstance(boundary, (int, float)) else "")
-            + f'. Nothing is lost — it is delivered at that boundary, or at '
-              f'{nid}\'s next turn if the turn ends first. If it cannot wait '
-              f'that long, orgtree_interrupt (⏸) on {nid} creates a boundary '
-              f'immediately without ending its session.')
         try:
             with store.DOC_LOCK:
                 org = store.load_org(slug)
                 if frm not in org.nodes or nid not in org.nodes:
                     continue
-                org._notify([frm], text)
+                # typed (family runtime_recovery): runtime.delivery_unread on the
+                # MailRef of the waiting mail — found in the delivery journal by the
+                # carrier's token, the row whose sender is the one being told. The
+                # text is the event's rendering (test_events_producers §R).
+                org._notify_ev([frm], events.mint(
+                    "runtime.delivery_unread", _SYSTEM_ACTOR,
+                    _journal_mail_ref(org, nid, toks_of.get((slug, frm, nid)) or [], frm),
+                    to=nid, waited=_dur(waited),
+                    boundary_for=(_dur(boundary)
+                                  if isinstance(boundary, (int, float)) else None)))
                 store.save_org(org)
         except Exception:                                        # noqa: BLE001
             continue
@@ -24300,20 +24202,15 @@ def start_cred_watcher() -> None:
                                         except ValueError:
                                             pass
                                     org.d["cred_warned_at"] = now_iso()
+                                    # typed: runtime.token_expiry (the days are
+                                    # the fact; the text is its rendering)
+                                    tev = events.mint(
+                                        "runtime.token_expiry", _SYSTEM_ACTOR,
+                                        _org_ref(org), days=float(left_days))
                                     org.to_user_inbox({
                                         "id": uuid_hex8(), "from": "@system",
                                         "kind": "notice", "at": now_iso(),
-                                        "body": (
-                                            "⚠ The Claude subscription's "
-                                            "refresh token expires in "
-                                            f"~{max(0.0, left_days):.1f} "
-                                            "days. When it lapses, re-login "
-                                            "is INTERACTIVE and every turn "
-                                            "fails until someone signs in — "
-                                            "open Claude Code on this "
-                                            "machine soon, or give the org "
-                                            "an API key (settings → "
-                                            "autonomy).")})
+                                        "body": events.render_agent(tev)}, tev)
                                     store.save_org(org)
                             except Exception:                    # noqa: BLE001
                                 pass

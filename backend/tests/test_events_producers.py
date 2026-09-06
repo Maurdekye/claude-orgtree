@@ -314,6 +314,1232 @@ check("public · a fired event projects to a PublicEvent (org withheld, lines ke
       _public_projection)
 
 
+# ======================================================= §R family runtime_recovery
+print("\n§R · runtime — the six engine writers")
+
+# ⚠ VERBATIM copies of the pre-typed writers (supervisor.py @ 6497b15).
+def old_terminal_agent(door, err):
+    return (
+        f"[TURN FAILED TERMINALLY — nothing will retry it]\n"
+        f"How it died: {door}\n"
+        f"Error: {err[:300] or 'no output'}\n\n"
+        "orgtree classified this as NOT retryable and stopped. You were "
+        "not driven for it — if the failure is in your CLI or your "
+        "environment, another turn would die the same way — so this mail "
+        "is waiting for you rather than waking you.\n\n"
+        "⚠ WORK MAY BE UNFINISHED. Anything the dead turn had already "
+        "done was NOT undone; anything it was about to do did not "
+        "happen. Do not trust your own last message as a record of what "
+        "ran — a turn can announce an edit in prose and die before the "
+        "tool call. Check the disk.")[:8000]
+
+
+def old_terminal_sup(name, nid, door, err):
+    return (
+        f"[REPORT STALLED — {name} ({nid}) is not running]\n"
+        f"Its turn failed in a way orgtree does not retry, "
+        f"and nothing will re-drive it.\n"
+        f"How it died: {door}\n"
+        f"Error: {err[:300] or 'no output'}\n\n"
+        f"It has NOT been driven — if the fault is its CLI or "
+        f"its environment, waking it would just kill another "
+        f"turn. It is idle now and will stay idle until "
+        f"something changes. It may also be holding "
+        f"unfinished work from the turn that died.\n\n"
+        f"You are the one who can act: fix the cause, or "
+        f"message it once you have."
+    )[:8000]
+
+
+def old_terminal_user(name, nid, door, err):
+    return (f"{name} ({nid}) stopped: its turn failed in a "
+            f"way orgtree does not retry, and it has no "
+            f"superior to tell.\nHow it died: {door}\n"
+            f"Error: {err[:300] or 'no output'}\n"
+            f"It is idle now and nothing will re-drive it. "
+            f"It may be holding unfinished work.")[:2000]
+
+
+def old_repeated_agent(run, kind, err):
+    return (
+        f"[TURN FAILED REPEATEDLY — {run} attempts, giving up]\n"
+        f"Classified as: {kind}\n"
+        f"Last error: {err[:300] or 'no output'}\n\n"
+        "orgtree retried this turn automatically and has now stopped. "
+        "You are no longer frozen, so this message is itself a live "
+        "turn — you are running right now.\n\n"
+        "⚠ WORK MAY BE UNFINISHED AND UNSAVED. A turn died part-way "
+        "through, possibly more than once. Anything it had already done "
+        "— files edited, mail sent, commands run — DID happen and was "
+        "not undone; anything it was about to do did not. Before "
+        "redoing work, CHECK THE ACTUAL STATE: your working folder, "
+        "`git status` if you are in a repo, and your own last messages. "
+        "Then finish what was interrupted, or report that you cannot.")[:8000]
+
+
+def old_repeated_sup(name, nid, run, kind, err):
+    return (
+        f"[REPORT STALLED — {name} ({nid})]\n"
+        f"Its turn failed {run} times in a row and orgtree "
+        f"has stopped retrying.\n"
+        f"Classified as: {kind}\n"
+        f"Last error: {err[:300] or 'no output'}\n\n"
+        "It has been told and driven, so it may recover on "
+        "its own — but it may also be holding unfinished or "
+        "uncommitted work from the turn that died. Nothing "
+        "will retry it again automatically. Check on it."
+    )[:8000]
+
+
+def old_repeated_user(name, nid, run, kind, err):
+    return (f"{name} ({nid}) is stuck: {run} turns in a row "
+            f"failed and orgtree has stopped retrying. It "
+            f"has no superior to tell.\nClassified as: "
+            f"{kind}\nLast error: {err[:300] or 'no output'}\n"
+            f"It has been told and driven, so it may recover "
+            f"on its own — but nothing will retry it again "
+            f"automatically.")[:2000]
+
+
+def old_parked_sup(name, nid, headline, detail, lane, err):
+    return (
+        f"[REPORT STOPPED — {name} ({nid}) {headline}]\n"
+        f"{detail}\n\n"
+        f"Lane: {lane}\n"
+        f"What it said: {err or 'no detail'}\n\n"
+        "It is not frozen on a timer and orgtree will not re-drive it, "
+        "so nothing changes until someone acts. It may also be holding "
+        "unfinished work from the turn that stopped.\n\n"
+        "You have NOT been woken for this, and you will not hear about "
+        "it again until it has completed a turn and got stuck afresh."
+    )[:8000]
+
+
+def old_parked_user(name, nid, headline, lane, err):
+    return (f"{name} ({nid}) {headline} and is stopped with "
+            f"no reset time — nothing will wake it, and it "
+            f"has no superior to tell.\nLane: {lane}\n"
+            f"What it said: {err or 'no detail'}")[:2000]
+
+
+def old_limited_sup(name, nid, lane, until, err):
+    return (
+        f"[REPORT LIMITED — {name} ({nid}) is out of provider "
+        f"capacity]\n"
+        f"Its provider refused the turn on a usage limit, so it "
+        f"stopped mid-task and is now FROZEN.\n"
+        f"Lane: {lane}\n"
+        f"Limit lifts: {until}\n"
+        f"Provider said: {err or 'no detail'}\n\n"
+        "It is blocked, not broken — the work it was doing is held "
+        "and will be replayed when it runs again. Whether it wakes by "
+        "itself when the window lifts depends on this org's "
+        "auto-resume setting; ▶ resume works either way.\n\n"
+        "You have NOT been woken for this, and you will not hear "
+        "about this wall again: it is one notice per episode, and the "
+        "next one comes only after it has run a turn and been walled "
+        "afresh. If the work cannot wait for the reset, move it to "
+        "another agent or another lane."
+    )[:8000]
+
+
+def old_limited_user(name, nid, lane, until, err):
+    return (f"{name} ({nid}) is out of provider capacity: "
+            f"its provider refused the turn on a usage limit "
+            f"and it is frozen. It has no superior to tell.\n"
+            f"Lane: {lane}\nLimit lifts: {until}\n"
+            f"Provider said: {err or 'no detail'}")[:2000]
+
+
+def old_orphaned(orphans, why):
+    lines, salvage = [], False
+    for tid, desc, outf in orphans[:20]:
+        salvage = salvage or bool(outf)
+        lines.append(f"- \"{desc}\" (task {tid})"
+                     + (f"\n  partial output: {outf}" if outf else ""))
+    return (
+        f"[SUBAGENT DIED — {len(orphans)} background subagent(s) were "
+        f"killed before finishing]\n"
+        f"Reason: {why}\n\n" + "\n".join(lines)
+        + (f"\n… and {len(orphans) - 20} more" if len(orphans) > 20 else "")
+        + "\n\nNo completion record exists for these — do NOT keep waiting "
+          "on them, and do not assume their work landed."
+        + (" The partial output files named above are real and may hold "
+           "most of the work — READ THEM before redoing anything."
+           if salvage else
+           " Nothing usable was left on disk for these.")
+        + " To retry, relaunch — and prefer run_in_background:false, which "
+          "fails loudly instead of silently if it happens again.")[:8000]
+
+
+def old_bg_stopped(task_id, desc, summary, output_file):
+    return (
+        f"[BACKGROUND TASK STOPPED — \"{desc}\" did not complete]\n"
+        f"task id: {task_id}\n"
+        + (f"CLI summary: {summary}\n" if summary else "")
+        + (f"partial output: {output_file}\n" if output_file else "")
+        + "\nThis was reported by the CLI itself while your process was "
+          "still alive — it did not die and nothing killed it. Whatever "
+          "you were waiting for did not finish. Do NOT assume the work "
+          "landed; check the actual state before continuing.")[:8000]
+
+
+def rig2():
+    """boss (top-level) → kid; both live."""
+    _n[0] += 1
+    slug = f"evprod{_n[0]}"
+    o = Org.create(slug, dirs=[_TMP])
+    o.hire(USER, None, "opus", 20, "boss")
+    o.hire("boss", "boss", "haiku", 5, "kid", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="runtime fixture")
+    store.save_org(o)
+    return slug
+
+
+def box_last(slug, nid):
+    o = store.load_org(slug)
+    return dict(o.d["mail"][nid][-1])
+
+
+def user_last(slug):
+    o = store.load_org(slug)
+    rows = (o.d.get("user_mail_log") or []) + (o.d.get("user_inbox") or [])
+    return dict(rows[-1])
+
+
+def _terminal():
+    slug = rig2()
+    with Quiet():
+        assert S._turn_abandoned(slug, "kid", "idle watchdog", "boom " * 100) is True
+    err = "boom " * 100
+    row = box_last(slug, "kid")
+    assert row["body"] == old_terminal_agent("idle watchdog", err), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "runtime.turn_failed_terminal"
+    assert ev["object"]["kind"] == "session" and ev["object"]["node"] == "kid"
+    assert ev["err"] == err, "the event keeps the FULL error; only the text is capped"
+    assert row["body"] == events.render_agent(ev)
+    sup = box_last(slug, "boss")
+    assert sup["body"] == old_terminal_sup("kid", "kid", "idle watchdog", err), sup["body"]
+    sev = decoded(sup)
+    assert sev["variant"] == "runtime.report_stalled" and sev["cause"] == "terminal"
+    assert sev["audience"] == "superior" and sev["object"]["id"] == "kid"
+    assert sev["door"] == "idle watchdog" and sev["attempts"] is None
+    assert sup["body"] == events.render_agent(sev)
+    # top-level: the user's inbox gets the notice
+    with Quiet():
+        assert S._turn_abandoned(slug, "boss", "turn budget", "") is True
+    u = user_last(slug)
+    assert u["body"] == old_terminal_user("boss", "boss", "turn budget", ""), u["body"]
+    uev = decoded(u)
+    assert uev["variant"] == "runtime.report_stalled" and uev["audience"] == "user"
+    assert u["body"] == events.render_agent(uev)
+
+
+check("terminal · agent copy, superior copy and top-level user notice == old text; "
+      "turn_failed_terminal / report_stalled(terminal) events", _terminal)
+
+
+def _repeated():
+    slug = rig2()
+    err = "x" * 400
+    with Quiet():
+        S._retry_exhausted(slug, "kid", 3, err, "net")
+    row = box_last(slug, "kid")
+    assert row["body"] == old_repeated_agent(3, "net", err), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "runtime.turn_failed_repeated" and ev["attempts"] == 3
+    assert ev["classified"] == "net" and row["body"] == events.render_agent(ev)
+    sup = box_last(slug, "boss")
+    assert sup["body"] == old_repeated_sup("kid", "kid", 3, "net", err), sup["body"]
+    sev = decoded(sup)
+    assert sev["cause"] == "repeated" and sev["attempts"] == 3 and sev["door"] is None
+    assert sup["body"] == events.render_agent(sev)
+    with Quiet():
+        S._retry_exhausted(slug, "boss", 2, "", "net")
+    u = user_last(slug)
+    assert u["body"] == old_repeated_user("boss", "boss", 2, "net", ""), u["body"]
+    assert decoded(u)["audience"] == "user"
+
+
+check("repeated · agent copy, superior copy and top-level user notice == old text; "
+      "turn_failed_repeated / report_stalled(repeated) events", _repeated)
+
+
+def _parked_and_limited():
+    slug = rig2()
+    kind = next(iter(S._PARKED_KINDS))
+    headline, detail = S._PARKED_KINDS[kind]
+    o = store.load_org(slug)
+    o.node("kid")["frozen"] = {"cause": "auth", "auth": True, "error": "401 nope"}
+    o.node("boss")["frozen"] = {"cause": "auth", "auth": True, "error": ""}
+    store.save_org(o)
+    with Quiet():
+        assert S._parked_announce(slug, "kid", kind, "claude/primary") is True
+        assert S._parked_announce(slug, "boss", kind, "claude/primary") is True
+    sup = box_last(slug, "boss")
+    assert sup["body"] == old_parked_sup("kid", "kid", headline, detail, "claude/primary",
+                                         "401 nope"), sup["body"]
+    sev = decoded(sup)
+    assert sev["variant"] == "runtime.report_parked" and sev["err"] == "401 nope"
+    assert sup["body"] == events.render_agent(sev)
+    u = user_last(slug)
+    assert u["body"] == old_parked_user("boss", "boss", headline, "claude/primary", ""), u["body"]
+    uev = decoded(u)
+    assert uev["audience"] == "user" and uev["err"] is None
+    # limited
+    slug = rig2()
+    o = store.load_org(slug)
+    o.node("kid")["frozen"] = {"limit": True, "until": "2026-09-07T00:00:00Z", "error": "429"}
+    o.node("boss")["frozen"] = {"limit": True, "error": ""}
+    store.save_org(o)
+    with Quiet():
+        assert S._limit_announce(slug, "kid", "claude/primary") is True
+        assert S._limit_announce(slug, "boss", "codex/account") is True
+    sup = box_last(slug, "boss")
+    assert sup["body"] == old_limited_sup("kid", "kid", "claude/primary",
+                                          "2026-09-07T00:00:00Z", "429"), sup["body"]
+    sev = decoded(sup)
+    assert sev["variant"] == "runtime.report_limited"
+    assert sev["reset_at"] == "2026-09-07T00:00:00Z" and sev["err"] == "429"
+    assert sup["body"] == events.render_agent(sev)
+    u = user_last(slug)
+    assert u["body"] == old_limited_user("boss", "boss", "codex/account", "not known", ""), u["body"]
+    uev = decoded(u)
+    assert uev["reset_at"] is None and uev["err"] is None and uev["audience"] == "user"
+
+
+check("parked + limited · superior copy and top-level user notice == old text; "
+      "report_parked / report_limited events (null reset/err round-trip)",
+      _parked_and_limited)
+
+
+def _orphans():
+    slug = rig2()
+    orphans = [(f"t{i}", f"desc {i}", (f"/out/{i}.txt" if i % 2 else "")) for i in range(23)]
+    with Quiet() as q:
+        S._bg_orphaned(slug, "kid", orphans, "process died", sid="sess-1")
+    assert q.calls == [("kid", False)], q.calls
+    row = box_last(slug, "kid")
+    assert row["body"] == old_orphaned(orphans, "process died"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "runtime.subagent_died" and ev["count"] == 23
+    assert len(ev["orphans"]) == 23, "every orphan on the event; the text shows 20"
+    assert ev["orphans"][1] == {"id": "t1", "description": "desc 1", "output_file": "/out/1.txt"}
+    assert ev["orphans"][0]["output_file"] is None
+    assert ev["object"]["session_id"] == "sess-1"
+    assert row["body"] == events.render_agent(ev)
+    pub = events.public_event(ev)
+    assert "output_file" not in pub["orphans"][1], "host paths are not public"
+    # no salvage → the other sentence
+    slug = rig2()
+    with Quiet():
+        S._bg_orphaned(slug, "kid", [("t9", "only", "")], "killed")
+    row = box_last(slug, "kid")
+    assert row["body"] == old_orphaned([("t9", "only", "")], "killed")
+    assert "Nothing usable" in row["body"]
+
+
+check("orphans · 23 subagents (20 shown, 3 counted, mixed salvage) == old text; "
+      "subagent_died carries all; output paths withheld publicly", _orphans)
+
+
+def _bg_stopped():
+    slug = rig2()
+    with Quiet() as q:
+        S._bg_task_stopped(slug, "kid", "task-7", "run the tests", "killed", "/tmp/o.log")
+    assert q.calls == [("kid", False)], q.calls
+    row = box_last(slug, "kid")
+    assert row["body"] == old_bg_stopped("task-7", "run the tests", "killed", "/tmp/o.log")
+    ev = decoded(row)
+    assert ev["variant"] == "runtime.background_task_stopped"
+    assert ev["object"] == {"kind": "task", "org": slug, "id": "task-7", "node": "kid",
+                            "description": "run the tests"}
+    assert ev["summary"] == "killed" and ev["output_file"] == "/tmp/o.log"
+    assert row["body"] == events.render_agent(ev)
+    assert "output_file" not in events.public_event(ev)
+    slug = rig2()
+    with Quiet():
+        S._bg_task_stopped(slug, "kid", "task-8", "quiet one", "", "")
+    row = box_last(slug, "kid")
+    assert row["body"] == old_bg_stopped("task-8", "quiet one", "", "")
+    ev = decoded(row)
+    assert ev["summary"] is None and ev["output_file"] is None
+
+
+check("background task stopped · with and without summary/output == old text; "
+      "TaskRef object; output path withheld publicly", _bg_stopped)
+
+
+# ================================================ §R2 runtime — notices and engine mail
+print("\n§R2 · runtime — restart notice, storage tiers, token expiry, late steer")
+
+from orgtree import restart_wake                                 # noqa: E402
+
+
+def old_restart_notice(current_commit, current_short, dirty_info, pid_info, started_at,
+                       branch_info):
+    return (
+        f"[ORGTREE RESTART NOTICE] The backend was restarted. This is an informational "
+        f"notice delivered to live agents so you know what code version went live.\n\n"
+        f"Running build:\n"
+        f"- Commit: {current_commit} (short: {current_short}){dirty_info}\n"
+        f"- Backend PID: {pid_info}\n"
+        f"- Started at: {started_at}{branch_info}\n\n"
+        f"What you can do with this:\n"
+        f"- If you were waiting on or verifying a deployed fix, check whether the running "
+        f"commit contains your changes with:\n"
+        f"  git merge-base --is-ancestor <your-commit> {current_commit}\n"
+        f"- If you need to be woken immediately with a turn on the NEXT restart, call orgtree_restart_wake.\n"
+        f"- Otherwise, no action is needed; this notice is for your awareness."
+    )
+
+
+def _restart_notice():
+    import json as _json
+    restart_wake._reset_startup_done_for_tests()
+    wp = restart_wake._wakes_path()
+    with open(wp, "w", encoding="utf-8") as f:
+        _json.dump({"running_backend_pid": 9999, "running_commit": "0000000", "wakes": {}}, f)
+    restart_wake._reset_boot_build_info_for_tests({
+        "commit": "1fecd8b48f0e9112233445566778899aabbccdde", "commit_short": "1fecd8b",
+        "branch": "fable/x", "dirty": True, "backend_pid": 12345,
+        "started_at": "2026-09-04T12:00:00Z"})
+    slug = rig2()
+    try:
+        res = restart_wake.on_backend_startup(dry_run=True)
+        assert any(n["org"] == slug for n in res["notified"]), res
+        row = box_last(slug, "boss")
+        want = old_restart_notice("1fecd8b48f0e9112233445566778899aabbccdde", "1fecd8b",
+                                  " [DIRTY - uncommitted changes present at boot]",
+                                  "12345 (was: 9999)", "2026-09-04T12:00:00Z",
+                                  ", branch: fable/x")
+        assert row["body"] == want, (row["body"], want)
+        ev = decoded(row)
+        assert ev["variant"] == "runtime.restart_notice"
+        assert ev["object"] == {"kind": "build", "commit": "1fecd8b48f0e9112233445566778899aabbccdde",
+                                "short": "1fecd8b", "dirty": True, "pid": 12345}
+        assert ev["prev_pid"] == 9999 and ev["branch"] == "fable/x"
+        assert row["body"] == events.render_agent(ev)
+        assert row.get("restart_notice") is True and row["kind"] == "notice"
+        # a second boot SUPERSEDES by the typed variant (one restart row, the new one)
+        restart_wake._reset_startup_done_for_tests()
+        restart_wake._reset_boot_build_info_for_tests({
+            "commit": "2222222222222222222222222222222222222222", "commit_short": "2222222",
+            "branch": None, "dirty": False, "backend_pid": 12346,
+            "started_at": "2026-09-04T13:00:00Z"})
+        restart_wake.on_backend_startup(dry_run=True)
+        o = store.load_org(slug)
+        rows = [m for m in o.d["mail"]["boss"]
+                if (events.decode(m.get("ev"), m).get("ev") or {}).get("variant")
+                == "runtime.restart_notice"]
+        assert len(rows) == 1 and rows[0]["body"] == old_restart_notice(
+            "2222222222222222222222222222222222222222", "2222222", "", "12346 (was: 12345)",
+            "2026-09-04T13:00:00Z", ""), [r["body"][:80] for r in rows]
+        assert decoded(rows[0])["branch"] is None
+    finally:
+        restart_wake._reset_startup_done_for_tests()
+        restart_wake._reset_boot_build_info_for_tests()
+        try:
+            os.remove(wp)
+        except FileNotFoundError:
+            pass
+
+
+check("restart notice · body == old literal (dirty, was-pid, branch on the Started-at "
+      "line); BuildRef; a later boot supersedes by typed variant", _restart_notice)
+
+
+def old_disk(level, used, total):
+    mb = 1
+    if level == "over":
+        return (f"⚠ The org disk is at {used / mb:.0f} of "
+                f"{total / mb:.0f} MB (past the 90% soft cap). New "
+                f"turns are PAUSED until usage drops under 85% — "
+                f"the remaining space is the reserve that keeps "
+                f"session journaling alive. Delete files (the admin "
+                f"can also use the recovery browser or grow the "
+                f"disk); at 100% every write fails with ENOSPC.")
+    if level == "cleared":
+        return (f"The org disk is back under the soft cap "
+                f"({used / mb:.0f} / {total / mb:.0f} MB) — turns "
+                f"resume.")
+    return (f"Heads-up: the org disk is at {used / mb:.0f} of "
+            f"{total / mb:.0f} MB (past 80%). Clean up or curb "
+            f"file growth — at 90% new turns pause; at 100% "
+            f"writes fail with ENOSPC.")
+
+
+def old_storage(level, used_b, lim_mb):
+    if level == "over":
+        return (f"⚠ The org is OVER its storage limit "
+                f"({used_b / 1048576:.1f} / {lim_mb} MB — workspace + "
+                f"scratch + uploads together). File creation and "
+                f"writes in the workspace and every scratch folder "
+                f"are now BLOCKED at the OS level — new writes will "
+                f"fail with permission errors. Deleting still works: "
+                f"remove large files you created and the block lifts "
+                f"automatically at the next check. Do NOT keep "
+                f"generating files.")
+    if level == "cleared":
+        return (f"Storage is back under the limit "
+                f"({used_b / 1048576:.1f} / {lim_mb or '∞'} MB) — "
+                f"writes are unblocked.")
+    return (f"Heads-up: the org is at {used_b / 1048576:.1f} of "
+            f"{lim_mb} MB (past 90% of the storage limit). Clean "
+            f"up or curb file growth — at the limit, workspace "
+            f"AND scratch writes are blocked at the OS level.")
+
+
+def _storage():
+    slug = rig2()
+    o = store.load_org(slug)
+    # every tier × scope renders the old text
+    for lvl in ("over", "cleared", "heads_up"):
+        ev = S._storage_ev(o, lvl, "disk", 921.4, 1024.0)
+        assert events.render_agent(ev) == old_disk(lvl, 921.4, 1024.0), lvl
+        ev = S._storage_ev(o, lvl, "storage", 460.7 * 1048576 / 1048576, 500.0)
+        assert events.render_agent(ev) == old_storage(lvl, 460.7 * 1048576, 500), lvl
+    ev = S._storage_ev(o, "cleared", "storage", 3.25, None)
+    assert events.render_agent(ev) == old_storage("cleared", 3.25 * 1048576, 0)
+    assert ev["cap_mb"] is None
+    # big integer caps print as ints (the old text used the int)
+    assert "/ 1500000 MB" in events.render_agent(S._storage_ev(o, "over", "storage", 1.0, 1500000.0))
+    # integration: the disk check at 95% blocks and notifies every live node, typed
+    from orgtree import disk as dsk
+    orig = dsk.usage
+    dsk.usage = lambda slug_, max_age=5.0: (int(0.95 * 1024 * 1048576), 1024 * 1048576)
+    try:
+        with Quiet():
+            assert S._storage_check_disk(slug, store.load_org(slug)) == "blocked"
+    finally:
+        dsk.usage = orig
+    o = store.load_org(slug)
+    for nid in ("boss", "kid"):
+        row = dict(o.d["notices"][nid][-1])
+        assert row["text"] == old_disk("over", 0.95 * 1024, 1024), row["text"]
+        ev = decoded(row)
+        assert ev["variant"] == "runtime.storage" and ev["level"] == "over"
+        assert ev["scope"] == "disk" and abs(ev["used_mb"] - 0.95 * 1024) < 1e-6
+        assert ev["object"] == {"kind": "org", "org": slug}
+    assert o.d.get("storage_blocked") is True
+
+
+check("storage · six tier/scope texts == old; ∞ cap; int cap; disk check at 95% "
+      "notifies every live node with a typed runtime.storage row", _storage)
+
+
+def _token():
+    slug = rig2()
+    o = store.load_org(slug)
+    ev = events.mint("runtime.token_expiry", S._SYSTEM_ACTOR, S._org_ref(o), days=1.234)
+    assert events.render_agent(ev) == (
+        "⚠ The Claude subscription's refresh token expires in "
+        f"~{max(0.0, 1.234):.1f} days. When it lapses, re-login "
+        "is INTERACTIVE and every turn fails until someone signs in — "
+        "open Claude Code on this machine soon, or give the org "
+        "an API key (settings → autonomy).")
+    assert "~0.0 days" in events.render_agent(
+        events.mint("runtime.token_expiry", S._SYSTEM_ACTOR, S._org_ref(o), days=-2.0))
+
+
+check("token expiry · rendering == old literal (negative days clamp to 0.0)", _token)
+
+
+def old_late(nid, waited, boundary):
+    return (
+        f'Your mid-turn message to "{nid}" has NOT been read yet — it has '
+        f'been waiting {S._dur(waited)} in its steer store. Mid-turn mail is '
+        f'injected when the recipient\'s current tool call returns'
+        + (f", and {nid} has been inside one call for {S._dur(boundary)}"
+           if isinstance(boundary, (int, float)) else "")
+        + f'. Nothing is lost — it is delivered at that boundary, or at '
+          f'{nid}\'s next turn if the turn ends first. If it cannot wait '
+          f'that long, orgtree_interrupt (⏸) on {nid} creates a boundary '
+          f'immediately without ending its session.')
+
+
+def _late_steer():
+    import time as _time
+    slug = rig2()
+    # boss mailed kid; the drain journaled it under tok "t-1"; kid is mid-turn
+    o = store.load_org(slug)
+    o.d.setdefault("delivering", {})["kid"] = [{
+        "tok": "t-1", "at": "2026-09-06T21:00:00Z", "via": "steer",
+        "mail": [{"id": "abc123def456", "from": "boss", "kind": "message",
+                  "body": "hi", "at": "2026-09-06T21:00:00Z"}], "notices": []}]
+    store.save_org(o)
+    now = _time.time()
+    with S._state_lock:
+        S._state[(slug, "kid")] = {"responding": True, "busy": True,
+                                   "boundary_at": now - 400.0,
+                                   "steer": [{"toks": ["t-1"], "text": "…", "view": "",
+                                              "from": "boss", "at": now - 300.0}]}
+    try:
+        with Quiet() as q:
+            due = S._steer_late_sweep(now)
+        assert [(d[0], d[1], d[2]) for d in due] == [(slug, "boss", "kid")], due
+        assert q.calls == [("boss", False)], q.calls
+        o = store.load_org(slug)
+        row = dict(o.d["notices"]["boss"][-1])
+        bnd = S.steer_wait(slug, "kid")
+        # the boundary is measured at alarm time; re-measure within the same second
+        want_a = old_late("kid", 300.0, bnd)
+        assert row["text"].split(", and kid has been inside")[0] == \
+            want_a.split(", and kid has been inside")[0], row["text"]
+        assert "inside one call for" in row["text"]
+        ev = decoded(row)
+        assert ev["variant"] == "runtime.delivery_unread" and ev["to"] == "kid"
+        assert ev["waited"] == "5m00s" and ev["boundary_for"]
+        assert ev["object"] == {"kind": "mail", "org": slug, "box": "node", "node": "kid",
+                                "id": "abc123def456", "sender": "boss",
+                                "at": "2026-09-06T21:00:00Z"}
+        assert row["text"] == events.render_agent(ev)
+        # second sweep: told once
+        assert S._steer_late_sweep(now + 10) == []
+        # a carrier whose mail the journal no longer holds: qualified ref, EMPTY id
+        with S._state_lock:
+            S._state[(slug, "kid")]["steer"].append(
+                {"toks": ["gone"], "text": "…", "view": "", "from": "boss", "at": now - 700.0})
+        with Quiet():
+            S._steer_late_sweep(now)
+        row = dict(store.load_org(slug).d["notices"]["boss"][-1])
+        ev = decoded(row)
+        assert ev["object"]["id"] == "" and ev["object"]["sender"] == "boss"
+        assert ev["waited"] == "11m40s"
+    finally:
+        with S._state_lock:
+            S._state.pop((slug, "kid"), None)
+
+
+check("late steer · sender's notice == old text; runtime.delivery_unread on the journaled "
+      "MailRef (id resolved by token); once per carrier; missing mail → empty id",
+      _late_steer)
+
+
+# ================================================================== §S family status
+print("\n§S · status — orgtree_status done/blocked report to the superior")
+
+from fastapi.testclient import TestClient                        # noqa: E402
+from orgtree import api                                          # noqa: E402
+
+_client = TestClient(api.app)
+
+
+def _status_report():
+    slug = rig2()
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "done",
+                                                      "summary": "shipped the thing"}})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res.get("reported_to") == "boss" and res.get("id"), res
+    row = box_last(slug, "boss")
+    assert row["id"] == res["id"]
+    assert row["body"] == "[DONE] shipped the thing", row["body"]    # the old f-string
+    assert row["kind"] == "status" and row["from"] == "kid"
+    ev = decoded(row)
+    assert ev["variant"] == "status.report" and ev["state"] == "done"
+    assert ev["summary"] == "shipped the thing"
+    assert ev["actor"] == {"kind": "agent", "id": "kid"}
+    assert ev["object"]["kind"] == "node" and ev["object"]["id"] == "kid"
+    assert row["body"] == events.render_agent(ev)
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "blocked", "summary": "need X"}})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == "[BLOCKED] need X" and decoded(row)["state"] == "blocked"
+    # working/idle: no mail (unchanged)
+    before = len(store.load_org(slug).d["mail"]["boss"])
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "working", "summary": "…"}})
+    assert r.status_code == 200 and len(store.load_org(slug).d["mail"]["boss"]) == before
+
+
+check("status · done/blocked reports mint status.report ('[DONE] summary' byte-identical); "
+      "working/idle send no mail", _status_report)
+
+
+# ============================================================ §D docket producers
+print("\n§D · docket — assignment, review request, review decisions, participation, "
+      "attention dismissed")
+
+# ⚠ VERBATIM copies of the pre-typed producers (ledger.py / api.py @ efb8d48).
+def old_assign(actor, it, own, prev):
+    return (
+        f"[DOCKET ASSIGNMENT · {it['slug']} \"{str(it.get('title') or '')[:80]}\"] "
+        f"You are now the ASSIGNMENT on this docket item — that is "
+        f"OWNERSHIP: you hold its management rights, the user's replies on "
+        f"it come to you, and you are who the docket names as responsible."
+        f"\nAssigned by {'the user' if actor == USER else actor}"
+        f"{f' (previously {prev})' if prev and prev != own else ''}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nLatest status — done so far: "
+        f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}"
+        f"\nWorking on / next: "
+        f"{'; '.join(it.get('working_on_next') or []) or '(nothing recorded)'}"
+        f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
+        f"`update` it at the next meaningful boundary — your update is what "
+        f"the user reads.")
+
+
+def old_review_req(actor, it, owner_node):
+    return (
+        f"[DOCKET REVIEW REQUEST · {it['slug']} "
+        f"\"{str(it.get('title') or '')[:80]}\"] "
+        f"You are named as the REVIEWER of this docket item. THIS IS NOT "
+        f"OWNERSHIP: {owner_node or 'its owner'} "
+        f"keeps the work and the responsibility for delivering it. You "
+        f"hold exactly three things — read it, add `evidence`, and record "
+        f"ONE decision with orgtree_work action='review': `approve` (the "
+        f"check passed — that COMPLETES the item) or `changes` (it goes "
+        f"back to the owner as in_progress, and your note is what they act "
+        f"on). Until you decide, the next action on this item is yours."
+        f"\nRequested by {'the user' if actor == USER else actor}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nWhat the owner says is done: "
+        f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}")
+
+
+def old_participation(actor, it, owner):
+    return (
+        f"[DOCKET PARTICIPATION · {it['slug']} "
+        f"\"{str(it.get('title') or '')[:80]}\"] You are now a "
+        f"PARTICIPANT on this docket item — not its assignment. "
+        f"The item is owned by {owner or 'nobody (unassigned)'}; "
+        f"you may read it, update it, add evidence and attach "
+        f"questions, and the user's replies addressed to you on "
+        f"it arrive as item-linked mail. Added by "
+        f"{'the user' if actor == USER else actor}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nRead it with orgtree_work get slug={it['slug']} when "
+        f"your work touches it; no reply is expected to this "
+        f"notice.")
+
+
+def old_review_head(it):
+    return (f"[DOCKET REVIEW · {it['slug']} "
+            f"\"{str(it.get('title') or '')[:80]}\"] ")
+
+
+def old_approved(actor, note):
+    return (f"REVIEW PASSED — {'the user' if actor == USER else actor} "
+            f"approved this item and it is now DONE. Nothing further is "
+            f"needed on it."
+            + (f"\nReviewer's note: {str(note)[:500]}" if note else ""))
+
+
+def old_changes(actor, note):
+    return (f"CHANGES REQUESTED by "
+            f"{'the user' if actor == USER else actor} — the item is "
+            f"back with you as in_progress and the next action is "
+            f"yours."
+            + (f"\nWhat the reviewer asked for: {str(note)[:500]}"
+               if note else
+               "\nThe reviewer left no note; ask them what they want "
+               "changed rather than guessing."))
+
+
+def old_relay(actor):
+    return (f"\n(This notice comes from the docket itself: "
+            f"{actor} is the item's reviewer but cannot address you "
+            f"directly under the mail rules. Reply to your own superior "
+            f"if you need to reach them.)")
+
+
+def old_dismiss(wid, reason, pending):
+    return (f"[DOCKET · {wid}] The user DISMISSED your "
+            f"attention flag (\"{str(reason or '')[:200]}\") "
+            f"— the item is now BLOCKED. Do not re-raise the "
+            f"same reason without material new information; "
+            f"{pending} question(s) on "
+            f"the item are still pending.")
+
+
+def rig3():
+    """boss → kid, kid2 (siblings under boss)."""
+    slug = rig2()
+    o = store.load_org(slug)
+    o.hire("boss", "boss", "haiku", 5, "kid2", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="docket fixture")
+    store.save_org(o)
+    return slug
+
+
+def _assignment():
+    slug = rig3()
+    o = store.load_org(slug)
+    r = o.work_create("boss", "Ship the widget", "widgets are missing; ship one",
+                      owner="boss", done_so_far=["a", "b"], working_on_next=["c"])
+    wid = r["created"]
+    o.work_assign("boss", wid, "kid")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "kid")
+    assert row["body"] == old_assign("boss", it, "kid", "boss"), row["body"]
+    assert row["kind"] == "request"
+    ev = decoded(row)
+    assert ev["variant"] == "docket.assigned" and ev["owner"] == "kid"
+    assert ev["previous_owner"] == "boss" and ev["assigner"] == "boss"
+    assert ev["object"] == {"kind": "work_item", "org": slug, "slug": wid,
+                            "title": "Ship the widget"}
+    assert ev["done_so_far"] == ["a", "b"] and ev["working_on_next"] == ["c"]
+    assert ev["status"] == it["status"]
+    assert row["body"] == events.render_agent(ev)
+    # the user assigning: 'the user', no previous when unowned
+    o = store.load_org(slug)
+    r2 = o.work_create(USER, "Unowned thing", "nobody owns it; assign it")
+    o.work_assign(USER, r2["created"], "kid2")
+    store.save_org(o)
+    it2 = dict(store.load_org(slug)._work_find(r2["created"])[0])
+    row = box_last(slug, "kid2")
+    assert row["body"] == old_assign(USER, it2, "kid2", None), row["body"]
+    ev = decoded(row)
+    assert ev["previous_owner"] is None and ev["actor"] == {"kind": "user", "id": "@user"}
+    assert ev["done_so_far"] == [] and "(nothing recorded)" in row["body"]
+
+
+check("assignment · agent- and user-assigned bodies == old text; docket.assigned with "
+      "WorkItemRef, previous_owner null when unowned", _assignment)
+
+
+def _review_flow():
+    slug = rig3()
+    o = store.load_org(slug)
+    wid = o.work_create("kid", "Review me", "needs a check; review it",
+                        done_so_far=["did x"])["created"]
+    o.work_update("kid", wid, ["did x", "did y"], [], status="review", reviewer="boss")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "boss")
+    assert row["body"] == old_review_req("kid", it, "kid"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_requested" and ev["reviewer"] == "boss"
+    assert ev["requested_by"] == "kid" and ev["owner"] == "kid"
+    assert ev["done_so_far"] == ["did x", "did y"]
+    assert row["body"] == events.render_agent(ev)
+    # changes, no note
+    o = store.load_org(slug)
+    o.work_review_decide("boss", wid, "changes")
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    assert row["body"] == old_review_head(it) + old_changes("boss", None), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_changes" and ev["note"] is None
+    assert ev["relayed"] is False and ev["reviewer"] == "boss" and ev["owner"] == "kid"
+    # back to review, then approve with a note
+    o = store.load_org(slug)
+    o.work_update("kid", wid, ["did x", "did y", "fixed"], [], status="review", reviewer="boss")
+    o.work_review_decide("boss", wid, "approve", note="nice work")
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    assert row["body"] == old_review_head(it) + old_approved("boss", "nice work"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_approved" and ev["note"] == "nice work"
+    assert row["body"] == events.render_agent(ev)
+
+
+check("review · request, changes (no note) and approval (with note) == old text; "
+      "review_requested / review_changes / review_approved events", _review_flow)
+
+
+def _review_relayed():
+    """A reviewer that cannot address the owner: the docket's own voice, SAYING SO."""
+    slug = rig3()
+    o = store.load_org(slug)
+    # grandkid (under kid2) owns; kid — its uncle — is named reviewer by boss. An
+    # uncle is neither superior nor peer of the owner, so it cannot address it.
+    o.hire("kid2", "kid2", "haiku", 2, "grandkid", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="relay fixture")
+    wid = o.work_create("grandkid", "Uncle review", "an uncle cannot mail; relay it")["created"]
+    o.work_update("boss", wid, ["draft"], [], status="review", reviewer="kid", owner="grandkid")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    o = store.load_org(slug)
+    o.work_review_decide("kid", wid, "changes", note="please rename")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["from"] == USER, row["from"]
+    assert row["body"] == old_review_head(it) + old_changes("kid", "please rename") \
+        + old_relay("kid"), row["body"]
+    ev = decoded(row)
+    assert ev["relayed"] is True and ev["reviewer"] == "kid"
+    assert ev["actor"] == {"kind": "agent", "id": "kid"}, "the reviewer authored it, whoever carried it"
+    assert row["body"] == events.render_agent(ev)
+
+
+check("review · relayed decision (reviewer cannot address owner) == old text incl. the "
+      "docket-voice suffix; relayed=True, actor stays the reviewer", _review_relayed)
+
+
+def _participation_and_dismiss():
+    slug = rig3()
+    o = store.load_org(slug)
+    wid = o.work_create("boss", "Shared item", "two hands needed; share it", owner="boss")["created"]
+    o.work_participants("boss", wid, add=["kid"])
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "kid")
+    assert row["body"] == old_participation("boss", it, "boss"), row["body"]
+    assert row["kind"] == "notice"
+    ev = decoded(row)
+    assert ev["variant"] == "docket.participant_added" and ev["owner"] == "boss"
+    assert ev["added_by"] == "boss" and row["body"] == events.render_agent(ev)
+    # attention flag raised by kid, dismissed by the user through the route
+    o = store.load_org(slug)
+    o.work_update("kid", wid, ["x"], [], attention=True, attention_reason="please look")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    rev = int(it["manual_attention_rev"])
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention",
+                         json={"set_rev": rev})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "kid")
+    assert row["body"] == old_dismiss(wid, "please look", 0), row["body"]
+    assert row["kind"] == "status" and row["from"] == USER
+    ev = decoded(row)
+    assert ev["variant"] == "decision.attention_dismissed"
+    assert ev["reason"] == "please look" and ev["pending_questions"] == 0
+    assert ev["object"]["slug"] == wid
+    assert row["body"] == events.render_agent(ev)
+    assert "dismissed_by" not in events.public_event(ev)
+
+
+check("participation notice and attention-dismissed status == old text; "
+      "participant_added / attention_dismissed events", _participation_and_dismiss)
+
+
+# ====================================================== §A family answer_decision
+print("\n§A · answers — ask answer/dismiss, batch, credit, audience, routed question")
+
+# ⚠ VERBATIM copies of the pre-typed producers (ledger.py @ e0d9a78).
+def old_single(question, sel, txt):
+    body = "[ANSWER to your question]\nQ: " + question
+    if sel:
+        body += "\nSelected: " + " · ".join(sel)
+    if txt:
+        body += ("\nAnswer: " if not sel else "\nAlso: ") + txt
+    return body
+
+
+def old_multi(qs, norm, txt):
+    lines = ["[ANSWER to your questions]"]
+    for i, (qd, v) in enumerate(zip(qs, norm)):
+        label = qd.get("header") or f"Q{i + 1}"
+        ans = " · ".join(v) if isinstance(v, list) else v
+        lines.append(f"{label} — {qd['question']}\n→ {ans}")
+    if txt:
+        lines.append("Also: " + txt)
+    return "\n".join(lines)
+
+
+def old_dismiss(question):
+    return ("[QUESTION DISMISSED] The user closed your question "
+            "without answering:\nQ: " + question
+            + "\nProceed on your best judgment, or re-ask later "
+              "with a sharper framing.")
+
+
+def old_batch_ask(qs, norm):
+    answered = sum(1 for v in norm if v is not None)
+    lines = []
+    for i, (qd, v) in enumerate(zip(qs, norm)):
+        label = qd.get("header") or f"Q{i + 1}"
+        if v is None:
+            lines.append(f"{label} — {qd['question']}\n→ (skipped — "
+                         f"the user left this one unanswered)")
+        else:
+            ans = (" · ".join(str(x) for x in v) if isinstance(v, list) else str(v))
+            lines.append(f"{label} — {qd['question']}\n→ {ans}")
+    return (("[ANSWERS to your questions]\n" if answered else
+             "[your questions were SKIPPED]\n") + "\n".join(lines))
+
+
+def old_credit_skipped(old, new):
+    return (f"[CREDIT REQUEST skipped] Your ask "
+            f"({old:g} → {new:g}) was left "
+            f"undecided — you may re-ask later.")
+
+
+def old_credit(old, new, give, now_g):
+    asked = f"you asked {old:g} → {new:g}"
+    if give == new:
+        return (f"The user APPROVED your credit request — your "
+                f"grant is now {now_g:g}.")
+    elif give > old:
+        return (f"The user COUNTER-OFFERED: {asked}; granted "
+                f"{old:g} → {give:g} ({give - old:+g}). You may take "
+                f"this as-is, request more later, or find another "
+                f"way within it.")
+    elif give == old:
+        return (f"The user DECLINED the increase — {asked}; your "
+                f"grant stays {now_g:g}. You may re-ask with a "
+                f"stronger case, or work within it.")
+    return (f"The user REDUCED your grant: {asked}; your grant "
+            f"is now {give:g} ({give - old:+g} — unused credits "
+            f"reclaimed). You may re-ask, or work within it.")
+
+
+def old_credit_denied(old, new):
+    return (f"The user DENIED your credit request "
+            f"({old:g} → {new:g}). Your grant stays "
+            f"{old:g} — work within it, re-ask with a stronger "
+            f"case, or escalate differently.")
+
+
+def old_routed(batch):
+    parts = []
+    for qd in batch:
+        p = str(qd.get("question"))
+        if qd.get("header"):
+            p = f"[{qd['header']}] {p}"
+        if qd.get("work_item"):
+            p = f"(docket item {qd['work_item']}) {p}"
+        o = qd.get("options") or []
+        if o:
+            p += "\nOptions: " + " · ".join(x["label"] for x in o) \
+                + (" (several may apply)" if qd.get("multi") else "")
+        parts.append(p)
+    return ("[QUESTION — needs an answer]\n"
+            if len(batch) == 1 else
+            f"[QUESTIONS — {len(batch)} need answers]\n") + "\n\n".join(parts)
+
+
+def _asks():
+    slug = rig2()
+    # single, selected + text, via the route
+    o = store.load_org(slug)
+    o.ask_user("boss", "which db?", options=["sqlite", "pg"], header="DB")
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    store.save_org(o)
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/asks/{aid}/answer",
+                         json={"selected": ["sqlite"], "text": "and keep WAL on"})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == old_single("which db?", ["sqlite"], "and keep WAL on"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "answer.ask" and ev["single"] is True and ev["dismissed"] is False
+    assert ev["questions"] == [{"label": "DB", "question": "which db?", "selected": ["sqlite"]}]
+    assert ev["text"] == "and keep WAL on" and ev["object"] == {"kind": "ask", "org": slug,
+                                                                 "id": aid, "node": "boss"}
+    assert row["body"] == events.render_agent(ev) and row["from"] == USER
+    # multi (three tabs, one multi-select), no text — ledger call, body returned too
+    o = store.load_org(slug)
+    qs = [{"question": "storage?", "header": "Storage", "options": ["sqlite", "pg"]},
+          {"question": "flags?", "options": ["a", "b"], "multi": True},
+          {"question": "who reviews?"}]
+    o.ask_user("boss", questions=qs)
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    r2 = o.ask_answer(aid, selected=["sqlite", ["a", "b"], "opus"])
+    stored = o.d["asks"][-1]["questions"]
+    want = old_multi(stored, ["sqlite", ["a", "b"], "opus"], "")
+    assert r2["body"] == want, (r2["body"], want)
+    ev = r2["ev"]
+    assert ev["single"] is False and ev["questions"][1] == {"label": None, "question": "flags?",
+                                                           "selected": ["a", "b"]}
+    assert ev["questions"][0]["label"] == "Storage" and ev["text"] is None
+    assert events.render_agent(ev) == want
+    # dismissed
+    o.ask_user("boss", "later?", options=["y", "n"])
+    aid = [a for a in o.d["asks"] if a["status"] == "open"][0]["id"]
+    r3 = o.ask_dismiss(aid)
+    assert r3["body"] == old_dismiss("later?"), r3["body"]
+    assert r3["ev"]["dismissed"] is True and r3["ev"]["questions"][0]["selected"] == []
+    assert events.render_agent(r3["ev"]) == r3["body"]
+
+
+check("asks · single (selected+text via the route), multi (headers, multi-select) and "
+      "dismissed bodies == old text; answer.ask events with AskRef", _asks)
+
+
+def _batch():
+    slug = rig2()
+    o = store.load_org(slug)
+    o.set_scope(USER, "boss", tools={"bash": False, "web": False, "edit": True,
+                                     "subagents": False, "mcp": []})
+    o.ask_user("boss", questions=[{"question": "a?", "header": "A"}, {"question": "b?"}])
+    o.request_credits("boss", 30, "more compute")
+    o.request_scope("boss", [{"kind": "dir", "path": "E:/data", "mode": "ro"},
+                             {"kind": "tool", "tool": "web"}], "the dataset")
+    card = o.node_ask("boss")
+    store.save_org(o)
+    o = store.load_org(slug)
+    r = o.resolve_batch("boss", card["revs"], answers=["yes", None],
+                        credits={"skip": True}, scope=["approve", "deny"])
+    store.save_org(o)
+    qs = o.d["asks"][0]["questions"]
+    want_ask = old_batch_ask(qs, ["yes", None])
+    want_cr = old_credit_skipped(20, 30)
+    assert r["body"].startswith(want_ask + "\n\n" + want_cr + "\n\n[SCOPE REQUEST decided]\n"), \
+        r["body"]
+    assert "- folder E:/data (ro) → GRANTED — live from your next turn" in r["body"]
+    assert "- tool: web → denied" in r["body"]
+    ev = r["ev"]
+    assert ev["variant"] == "answer.batch"
+    assert [sct["kind"] for sct in ev["sections"]] == ["ask", "credit", "scope"]
+    assert ev["sections"][0]["questions"] == [{"label": "A", "question": "a?", "answer": "yes"},
+                                              {"label": None, "question": "b?", "answer": None}]
+    assert ev["sections"][1] == {"kind": "credit", "outcome": "skipped", "old": 20.0,
+                                 "asked": 30.0, "granted": None, "now": None}
+    assert ev["sections"][2]["decisions"] == [
+        {"label": "folder E:/data (ro)", "decision": "approve"},
+        {"label": "tool: web", "decision": "deny"}]
+    assert events.render_agent(ev) == r["body"]
+    assert ev["object"]["kind"] == "batch" and ev["object"]["node"] == "boss"
+    pub = events.public_event(ev)
+    assert "label" not in pub["sections"][2]["decisions"][0], "scope labels carry paths"
+    assert "ask_id" not in pub["sections"][0]
+    # credit decided inside the batch: the credit section renders the credit text
+    o = store.load_org(slug)
+    o.ask_user("boss", "c?", options=["x"])
+    o.request_credits("boss", 40, "even more")
+    card = o.node_ask("boss")
+    r = o.resolve_batch("boss", card["revs"], answers=["x"], credits={"granted": 25})
+    assert r["body"].endswith("\n\n" + old_credit(20, 40, 25, 25)), r["body"]
+    assert r["ev"]["sections"][1]["outcome"] == "counter"
+
+
+check("batch · answers + skipped credit + scope verdicts == old text; answer.batch "
+      "sections; credit decided in-batch renders the credit text", _batch)
+
+
+def _credit_route():
+    for give, expect_outcome in ((30, "approved"), (25, "counter"), (20, "declined"),
+                                 (10, "reduced")):
+        slug = rig2()
+        o = store.load_org(slug)
+        o.request_credits("boss", 30, "more")
+        rid = o.d["credit_requests"][0]["id"]
+        store.save_org(o)
+        with Quiet():
+            r = _client.post(f"/api/orgs/{slug}/credit-requests",
+                             json={"id": rid, "action": "approve", "granted": give})
+        assert r.status_code == 200, (give, r.text)
+        assert "ev" not in r.json()
+        now_g = store.load_org(slug).node("boss")["grant"]
+        row = box_last(slug, "boss")
+        assert row["body"] == old_credit(20, 30, give, now_g), (give, row["body"])
+        ev = decoded(row)
+        assert ev["variant"] == "decision.credit" and ev["outcome"] == expect_outcome
+        assert ev["old"] == 20.0 and ev["asked"] == 30.0 and ev["granted"] == float(give)
+        assert ev["object"] == {"kind": "credit_request", "org": slug, "id": rid, "node": "boss"}
+        assert row["body"] == events.render_agent(ev)
+    slug = rig2()
+    o = store.load_org(slug)
+    o.request_credits("boss", 30, "more")
+    rid = o.d["credit_requests"][0]["id"]
+    store.save_org(o)
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/credit-requests",
+                         json={"id": rid, "action": "deny"})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == old_credit_denied(20, 30), row["body"]
+    ev = decoded(row)
+    assert ev["outcome"] == "denied" and ev["granted"] is None and ev["now"] is None
+
+
+check("credit · approved/counter/declined/reduced/denied via the route == old text; "
+      "decision.credit with CreditReqRef", _credit_route)
+
+
+def _audience():
+    def rig_g():
+        slug_ = rig2()
+        o_ = store.load_org(slug_)
+        o_.hire("kid", "kid", "haiku", 2, "grandkid", add_dirs=[],
+                tools={"bash": True, "web": False, "edit": False, "subagents": False,
+                       "mcp": []}, org_visibility="team", charter="audience fixture")
+        store.save_org(o_)
+        return slug_
+    # grandkid asks for boss (its grandparent); boss — the target — grants: mail from boss
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", "boss", "need to talk")
+    o.audience_forward("kid", "grandkid", "boss")
+    o.audience_grant("boss", "grandkid", "boss")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["body"] == "Audience granted: you may message boss directly until it is rescinded."
+    assert row["kind"] == "decision" and row["from"] == "boss"
+    ev = decoded(row)
+    assert ev["variant"] == "decision.audience" and ev["granted"] is True
+    assert ev["object"] == {"kind": "audience_request", "org": slug, "node": "grandkid",
+                            "target": "boss"}
+    assert row["body"] == events.render_agent(ev)
+    # denied by the agent it currently awaits (kid, the first hop)
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", "boss", "again")
+    o.audience_deny("kid", "grandkid", "boss")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["body"] == "Your audience request to reach boss was declined at kid.", row["body"]
+    ev = decoded(row)
+    assert ev["granted"] is False and ev["decided_by"] == "kid" and ev["target"] == "boss"
+    assert row["body"] == events.render_agent(ev)
+    # denied by the user: a passive NOTICE row
+    slug = rig_g()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", USER, "please")
+    o.audience_deny(USER, "grandkid", USER)
+    store.save_org(o)
+    n = dict(store.load_org(slug).d["notices"]["grandkid"][-1])
+    assert n["text"] == "The user declined your audience request.", n
+    ev = decoded(n)
+    assert ev["granted"] is False and ev["decided_by"] == USER and ev["actor"]["kind"] == "user"
+    assert n["text"] == events.render_agent(ev)
+
+
+check("audience · grant by the target, deny by an agent (mail) and by the user (notice) "
+      "== old text; decision.audience on the (node, target) ref", _audience)
+
+
+def _routed():
+    slug = rig2()
+    o = store.load_org(slug)
+    wid = o.work_create("kid", "Linked", "linked question; route it")["created"]
+    batch = [{"question": "storage?", "header": "Storage", "options": ["sqlite", "pg"],
+              "work_item": wid},
+             {"question": "flags?", "options": ["a", "b"], "multi": True},
+             {"question": "plain?"}]
+    r = o.ask_user("kid", questions=batch)
+    assert r.get("routed") == "boss", r
+    store.save_org(o)
+    normd = [{"question": "storage?", "header": "Storage",
+              "options": [{"label": "sqlite"}, {"label": "pg"}], "work_item": wid},
+             {"question": "flags?", "options": [{"label": "a"}, {"label": "b"}], "multi": True},
+             {"question": "plain?"}]
+    row = box_last(slug, "boss")
+    assert row["body"] == old_routed(normd), row["body"]
+    assert row["kind"] == "question" and row["from"] == "kid"
+    ev = decoded(row)
+    assert ev["variant"] == "ask.routed" and ev["object"]["kind"] == "node"
+    assert ev["object"]["id"] == "kid" and ev["from_node"] == "kid"
+    assert ev["questions"][0] == {"header": "Storage", "text": "storage?", "work_item": wid,
+                                  "options": ["sqlite", "pg"], "multi": False}
+    assert ev["questions"][1]["multi"] is True and ev["questions"][2]["options"] == []
+    assert row["body"] == events.render_agent(ev)
+    o = store.load_org(slug)
+    r = o.ask_user("kid", "one?", options=["y"])
+    store.save_org(o)
+    row = box_last(slug, "boss")
+    assert row["body"] == old_routed([{"question": "one?", "options": [{"label": "y"}]}])
+    assert row["body"].startswith("[QUESTION — needs an answer]\n")
+
+
+check("routed question · three tabs (header, docket link, multi) and a single == old text; "
+      "ask.routed on the asker's NodeRef", _routed)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:

@@ -2719,9 +2719,12 @@ class Org:
                             f'may now write to your inbox. Revoke it from the '
                             f'audience panel at will.'})
         elif target == actor:
-            self.post_mail(actor, frm,
-                           f"Audience granted: you may message {actor} directly until "
-                           f"it is rescinded.", kind="decision")
+            # typed (family answer_decision): decision.audience, granted by the
+            # target itself (test_events_producers §A)
+            self.post_mail(actor, frm, "", kind="decision",
+                           ev=_mint("decision.audience", actor_of(actor),
+                                    self._audience_req_ref(frm, target),
+                                    granted=True, target=target, decided_by=actor))
             drive.append(frm)
         else:
             self._notify([frm],
@@ -2789,12 +2792,22 @@ class Org:
         if actor not in (req["currently_at"], target, USER):
             raise LedgerError(f"the request currently awaits {req['currently_at']}")
         self.d["audience_requests"].remove(req)
-        self.post_mail(actor if actor != USER else USER, frm,
-                       f"Your audience request to reach {target} was declined "
-                       f"at {actor}.", kind="decision") if actor != USER else \
-            self._notify([frm], f"The user declined your audience request.")
+        # typed (family answer_decision): decision.audience declined — mail with
+        # a drive when an agent decides, a passive notice when the user does
+        dev = _mint("decision.audience", actor_of(actor),
+                    self._audience_req_ref(frm, target),
+                    granted=False, target=target, decided_by=actor)
+        if actor != USER:
+            self.post_mail(actor, frm, "", kind="decision", ev=dev)
+        else:
+            self._notify_ev([frm], dev)
         self._log("audience_deny", actor, {"from": frm, "target": target}, [])
         return {"drive": [frm] if actor != USER else [], "warnings": []}
+
+    def _audience_req_ref(self, frm: str, target: str) -> dict[str, Any]:
+        """(from, target) IS an audience request's identity (`_find_request`)."""
+        return {"kind": "audience_request", "org": str(self.d.get("slug") or ""),
+                "node": frm, "target": target}
 
     def audience_revoke(self, actor: str, grantee: str,
                         grantor: str | None = None) -> dict[str, Any]:
@@ -6356,7 +6369,7 @@ class Org:
                     "the card changed after it rendered (a request was "
                     "appended or amended) — re-read the batch and submit "
                     "what it shows now")
-        sections: list[str] = []
+        sections: list[dict[str, Any]] = []      # typed Section records (answer.batch)
         # ---- question tabs
         if ask is not None:
             qs = cast("list[dict[str, Any]]", ask.get("questions") or [])
@@ -6386,22 +6399,17 @@ class Org:
                           if isinstance(v, list) else [v])]
             if flat:
                 ask["answer"] = {"selected": flat}
-            lines: list[str] = []
-            for i, (qd, v) in enumerate(zip(qs, norm)):
-                label = qd.get("header") or f"Q{i + 1}"
-                if v is None:
-                    lines.append(f"{label} — {qd['question']}\n→ (skipped — "
-                                 f"the user left this one unanswered)")
-                else:
+            bq: list[dict[str, Any]] = []
+            for qd, v in zip(qs, norm):
+                if v is not None:
                     qd["answer"] = v
-                    ans = (" · ".join(str(x) for x in cast("list[Any]", v))
-                           if isinstance(v, list) else str(v))
-                    lines.append(f"{label} — {qd['question']}\n→ {ans}")
+                ans = (None if v is None else
+                       " · ".join(str(x) for x in cast("list[Any]", v))
+                       if isinstance(v, list) else str(v))
+                bq.append({"label": (str(qd.get("header")) if qd.get("header") else None),
+                           "question": str(qd["question"]), "answer": ans})
             ask["resolved_at"] = now()
-            sections.append(("[ANSWERS to your questions]\n"
-                             if answered else
-                             "[your questions were SKIPPED]\n")
-                            + "\n".join(lines))
+            sections.append({"kind": "ask", "ask_id": str(ask["id"]), "questions": bq})
             self._log("ask_answered", USER,
                       {"id": ask["id"], "node": nid,
                        "skipped": len(qs) - answered}, [])
@@ -6415,17 +6423,20 @@ class Org:
                 cr["status"] = "dismissed"
                 cr["reason"] = "skipped at batch submit"
                 cr["resolved_at"] = now()
-                sections.append(f"[CREDIT REQUEST skipped] Your ask "
-                                f"({cr['old']:g} → {cr['new']:g}) was left "
-                                f"undecided — you may re-ask later.")
+                sections.append({"kind": "credit", "outcome": "skipped",
+                                 "old": float(cr["old"]), "asked": float(cr["new"]),
+                                 "granted": None, "now": None})
                 self._log("credit_dismissed", USER, {"id": cr["id"]}, [])
             else:
                 r = self.credit_request_action(
                     cr["id"], "deny" if c.get("deny") else "approve",
                     granted=(None if c.get("granted") is None
                              else int(c["granted"])))
-                if r.get("notice"):
-                    sections.append(str(r["notice"]))
+                cev = r.get("ev")
+                if cev is not None:
+                    sections.append({"kind": "credit", "outcome": cev["outcome"],
+                                     "old": cev["old"], "asked": cev["asked"],
+                                     "granted": cev["granted"], "now": cev["now"]})
         # ---- the scope tabs
         if sr is not None:
             its = cast("list[dict[str, Any]]", sr["items"])
@@ -6530,13 +6541,28 @@ class Org:
             outcome = "\n".join(
                 f"- {self._scope_item_label(it)} → " + _verdict(it)
                 for it in its)
-            sections.append("[SCOPE REQUEST decided]\n" + outcome
-                            + ("\n" + "\n".join(granted_lines)
-                               if granted_lines else ""))
+            # the verdict lines are composed from scope state this renderer cannot
+            # see (clamp measurement, set_scope warnings): carried as data, joined
+            # by the renderer exactly as they were joined here
+            text = ("[SCOPE REQUEST decided]\n" + outcome
+                    + ("\n" + "\n".join(granted_lines) if granted_lines else ""))
+            sections.append({"kind": "scope", "lines": text.split("\n"),
+                             "decisions": [{"label": self._scope_item_label(it),
+                                            "decision": str(it["decision"])}
+                                           for it in its]})
             self._log("scope_decided", USER,
                       {"id": sr["id"],
                        "decisions": [str(x["decision"]) for x in its]}, [])
-        return {"node": nid, "body": "\n\n".join(sections)}
+        # typed (family answer_decision): answer.batch on the BatchRef — the id is
+        # the first component's (ask, credit request, scope request), the body
+        # is the sections' rendering, byte for byte the old "\n\n" join
+        first = ask or cr or sr
+        assert first is not None
+        ev = _mint("answer.batch", actor_of(USER),
+                   {"kind": "batch", "org": str(self.d.get("slug") or ""),
+                    "id": str(first["id"]), "node": nid},
+                   sections=sections)
+        return {"node": nid, "body": events.render_agent(ev), "ev": ev}
 
     # ---------------------------------------------------- FR-18 watchdogs
     WATCHDOG_KINDS: Final = ("file", "command", "process", "stream")
@@ -6926,6 +6952,20 @@ class Org:
             return True
         age = (datetime.now(timezone.utc) - spent).total_seconds()
         return age < 0 or age > self.WATCHDOG_TOMB_TTL_S
+
+    # ---- canonical Refs (design §2) — the ONE place each Ref shape is built
+    def node_ref(self, nid: str) -> dict[str, Any]:
+        n = self.nodes.get(nid) or {}
+        return {"kind": "node", "org": str(self.d.get("slug") or ""), "id": nid,
+                "name": str(n.get("name") or nid),
+                "generation": int(n.get("generation") or 0)}
+
+    def work_item_ref(self, it: Mapping[str, Any]) -> dict[str, Any]:
+        return {"kind": "work_item", "org": str(self.d.get("slug") or ""),
+                "slug": str(it.get("slug") or ""), "title": str(it.get("title") or "")}
+
+    def org_ref(self) -> dict[str, Any]:
+        return {"kind": "org", "org": str(self.d.get("slug") or "")}
 
     def _watchdog_ref(self, w: Mapping[str, Any]) -> dict[str, Any]:
         """The canonical WatchdogRef of a dog as the monitor family mints it."""
@@ -7480,36 +7520,33 @@ class Org:
             req["status"] = "answered"
             req["granted"] = give
             now_g = self.node(nid)["grant"]
-            asked = f"you asked {old:g} → {req['new']:g}"
-            if give == req["new"]:
-                notice = (f"The user APPROVED your credit request — your "
-                          f"grant is now {now_g:g}.")
-            elif give > old:
-                notice = (f"The user COUNTER-OFFERED: {asked}; granted "
-                          f"{old:g} → {give:g} ({give - old:+g}). You may take "
-                          f"this as-is, request more later, or find another "
-                          f"way within it.")
-            elif give == old:
-                notice = (f"The user DECLINED the increase — {asked}; your "
-                          f"grant stays {now_g:g}. You may re-ask with a "
-                          f"stronger case, or work within it.")
-            else:
-                notice = (f"The user REDUCED your grant: {asked}; your grant "
-                          f"is now {give:g} ({give - old:+g} — unused credits "
-                          f"reclaimed). You may re-ask, or work within it.")
-            req["notice"] = notice
+            # typed (family answer_decision): decision.credit — the outcome is a
+            # literal, the amounts are the facts, the notice is its rendering
+            # (test_events_producers §A). `ev` rides the RESULT, not the record.
+            outcome = ("approved" if give == req["new"] else
+                       "counter" if give > old else
+                       "declined" if give == old else "reduced")
+            ev = _mint("decision.credit", actor_of(USER), self._credit_ref(req),
+                       outcome=outcome, old=float(old), asked=float(req["new"]),
+                       granted=float(give), now=float(now_g))
+            req["notice"] = events.render_agent(ev)
             self._log("credit_answer", USER,
                       {"node": nid, "asked": req["new"], "granted": give},
                       warnings)
-            return {**req, "warnings": warnings}
+            return {**req, "warnings": warnings, "ev": ev}
         req["status"] = "denied"
+        ev = None
         if nid in self.nodes:
-            req["notice"] = (f"The user DENIED your credit request "
-                            f"({old:g} → {req['new']:g}). Your grant stays "
-                            f"{old:g} — work within it, re-ask with a stronger "
-                            f"case, or escalate differently.")
+            ev = _mint("decision.credit", actor_of(USER), self._credit_ref(req),
+                       outcome="denied", old=float(old), asked=float(req["new"]),
+                       granted=None, now=None)
+            req["notice"] = events.render_agent(ev)
         self._log("credit_deny", USER, {"node": nid, "new": req["new"]}, [])
-        return req
+        return {**req, "ev": ev} if ev is not None else req
+
+    def _credit_ref(self, req: Mapping[str, Any]) -> dict[str, Any]:
+        return {"kind": "credit_request", "org": str(self.d.get("slug") or ""),
+                "id": str(req["id"]), "node": str(req["node"])}
 
     def credit_preview(self, rid: str, granted: int) -> dict[str, Any]:
         """F-05 dry run: the warnings a `granted` amount WOULD raise, before
@@ -7725,25 +7762,18 @@ class Org:
         n = self.node(nid)
         if n["parent"] is not None and not self._has_audience(nid, USER):
             sup = n["parent"]
-            parts: list[str] = []
-            for qd in batch:
-                p = str(qd.get("question"))
-                if qd.get("header"):
-                    p = f"[{qd['header']}] {p}"
-                if qd.get("work_item"):
-                    # routed mail is not a user card: the linkage rides the
-                    # text so the superior can find the item
-                    p = f"(docket item {qd['work_item']}) {p}"
-                o = cast("list[dict[str, Any]]", qd.get("options") or [])
-                if o:
-                    p += "\nOptions: " + " · ".join(x["label"] for x in o) \
-                        + (" (several may apply)" if qd.get("multi") else "")
-                parts.append(p)
-            body = ("[QUESTION — needs an answer]\n"
-                    if len(batch) == 1 else
-                    f"[QUESTIONS — {len(batch)} need answers]\n") \
-                + "\n\n".join(parts)
-            r = self.post_mail(nid, sup, body, kind="question")
+            # typed (family answer_decision): ask.routed — the tabs as data (the
+            # docket linkage rides the text so the superior can find the item;
+            # the renderer prints it exactly as this used to); object = the asker
+            routed = [{"header": (str(qd["header"]) if qd.get("header") else None),
+                       "text": str(qd.get("question")),
+                       "work_item": (str(qd["work_item"]) if qd.get("work_item") else None),
+                       "options": [str(x["label"]) for x in
+                                   cast("list[dict[str, Any]]", qd.get("options") or [])],
+                       "multi": bool(qd.get("multi"))} for qd in batch]
+            r = self.post_mail(nid, sup, "", kind="question",
+                               ev=_mint("ask.routed", actor_of(nid), self.node_ref(nid),
+                                        from_node=nid, questions=routed))
             return {"routed": sup, "deferred": bool(r.get("deferred")),
                     "status": f"you hold no user audience — the question was "
                               f"mailed to your superior \"{sup}\"; their "
@@ -8073,11 +8103,20 @@ class Org:
         a["reason"] = "dismissed by the user without an answer"
         a["resolved_at"] = now()
         self._log("ask_dismissed", USER, {"id": aid, "node": a["node"]}, [])
-        return {"node": a["node"],
-                "body": "[QUESTION DISMISSED] The user closed your question "
-                        "without answering:\nQ: " + a["question"]
-                        + "\nProceed on your best judgment, or re-ask later "
-                          "with a sharper framing."}
+        # typed (family answer_decision): answer.ask with dismissed=True; the
+        # caller posts `ev` and the body is its rendering (test_events_producers §A)
+        qs = cast("list[dict[str, Any]]", a.get("questions") or [])
+        ev = _mint("answer.ask", actor_of(USER), self._ask_ref(a),
+                   questions=[{"label": (str(q.get("header")) if q.get("header") else None),
+                               "question": str(q.get("question") or ""), "selected": []}
+                              for q in qs] or [{"label": None, "question": str(a["question"]),
+                                                "selected": []}],
+                   text=None, dismissed=True, single=len(qs) <= 1)
+        return {"node": a["node"], "body": events.render_agent(ev), "ev": ev}
+
+    def _ask_ref(self, a: Mapping[str, Any]) -> dict[str, Any]:
+        return {"kind": "ask", "org": str(self.d.get("slug") or ""),
+                "id": str(a["id"]), "node": str(a["node"])}
 
     def ask_answer(self, aid: str, selected: list[Any] | None = None,
                    text: str | None = None,
@@ -8145,17 +8184,20 @@ class Org:
             flat = [x for v in norm
                     for x in (v if isinstance(v, list) else [v])]
             a["answer"] = {"selected": flat, **({"text": txt} if txt else {})}
-            lines = ["[ANSWER to your questions]"]
-            for i, (qd, v) in enumerate(zip(qs, norm)):
+            answered: list[dict[str, Any]] = []
+            for qd, v in zip(qs, norm):
                 qd["answer"] = v
-                label = qd.get("header") or f"Q{i + 1}"
-                ans = " · ".join(v) if isinstance(v, list) else v
-                lines.append(f"{label} — {qd['question']}\n→ {ans}")
-            if txt:
-                lines.append("Also: " + txt)
+                answered.append({
+                    "label": (str(qd.get("header")) if qd.get("header") else None),
+                    "question": str(qd["question"]),
+                    "selected": list(v) if isinstance(v, list) else [v]})
             a["resolved_at"] = now()
             self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
-            return {"node": a["node"], "body": "\n".join(lines)}
+            # typed (family answer_decision): answer.ask, one AnsweredQ per tab
+            ev = _mint("answer.ask", actor_of(USER), self._ask_ref(a),
+                       questions=answered, text=(txt or None), dismissed=False,
+                       single=False)
+            return {"node": a["node"], "body": events.render_agent(ev), "ev": ev}
         sel = [str(s).strip() for s in (selected or []) if str(s).strip()]
         if not sel and not txt:
             raise LedgerError("an answer needs selected options or text")
@@ -8166,13 +8208,13 @@ class Org:
         if qs:
             qs[0]["answer"] = sel if len(sel) > 1 else (sel[0] if sel else txt)
         a["resolved_at"] = now()
-        body = "[ANSWER to your question]\nQ: " + a["question"]
-        if sel:
-            body += "\nSelected: " + " · ".join(sel)
-        if txt:
-            body += ("\nAnswer: " if not sel else "\nAlso: ") + txt
         self._log("ask_answered", USER, {"id": aid, "node": a["node"]}, [])
-        return {"node": a["node"], "body": body}
+        ev = _mint("answer.ask", actor_of(USER), self._ask_ref(a),
+                   questions=[{"label": (str(qs[0].get("header")) if qs and qs[0].get("header")
+                                         else None),
+                               "question": str(a["question"]), "selected": sel}],
+                   text=(txt or None), dismissed=False, single=True)
+        return {"node": a["node"], "body": events.render_agent(ev), "ev": ev}
 
     def _restart_authority(self, nid: str, what: str) -> None:
         """May `nid` decide that this machine restarts? Live, not a kiosk,
@@ -11232,22 +11274,16 @@ class Org:
         an item, `orgtree_staff`). Written as an instruction the recipient can
         act on without a second lookup: what it now holds, who handed it over,
         what the item is for, and where the status stands."""
+        # typed (family assignment): docket.assigned — the body is its frozen
+        # rendering, byte for byte the former f-string (test_events_producers §D)
         return self.post_mail(
-            actor, own,
-            f"[DOCKET ASSIGNMENT · {it['slug']} \"{str(it.get('title') or '')[:80]}\"] "
-            f"You are now the ASSIGNMENT on this docket item — that is "
-            f"OWNERSHIP: you hold its management rights, the user's replies on "
-            f"it come to you, and you are who the docket names as responsible."
-            f"\nAssigned by {'the user' if actor == USER else actor}"
-            f"{f' (previously {prev})' if prev and prev != own else ''}."
-            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-            f"\nLatest status — done so far: "
-            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}"
-            f"\nWorking on / next: "
-            f"{'; '.join(it.get('working_on_next') or []) or '(nothing recorded)'}"
-            f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
-            f"`update` it at the next meaningful boundary — your update is what "
-            f"the user reads.", "request")
+            actor, own, "", "request",
+            ev=_mint("docket.assigned", actor_of(actor), self.work_item_ref(it),
+                     owner=own, previous_owner=(str(prev) if prev else None),
+                     assigner=actor, status=str(it.get("status") or "open"),
+                     objective=str(it.get("objective") or ""),
+                     done_so_far=[str(x) for x in (it.get("done_so_far") or [])],
+                     working_on_next=[str(x) for x in (it.get("working_on_next") or [])]))
 
     def _work_name_reviewer(self, actor: str, it: WorkItem,
                             reviewer: str | None, status: str | None,
@@ -11326,23 +11362,14 @@ class Org:
         self._work_hist(it, actor, "reviewer", {"from": prev, "to": it["reviewer"]})
         if want == actor:
             return None                 # naming yourself mails nobody
+        # typed (family review): docket.review_requested (test_events_producers §D)
         self.post_mail(
-            actor, want,
-            f"[DOCKET REVIEW REQUEST · {it['slug']} "
-            f"\"{str(it.get('title') or '')[:80]}\"] "
-            f"You are named as the REVIEWER of this docket item. THIS IS NOT "
-            f"OWNERSHIP: {self._work_actor_node(it.get('owner')) or 'its owner'} "
-            f"keeps the work and the responsibility for delivering it. You "
-            f"hold exactly three things — read it, add `evidence`, and record "
-            f"ONE decision with orgtree_work action='review': `approve` (the "
-            f"check passed — that COMPLETES the item) or `changes` (it goes "
-            f"back to the owner as in_progress, and your note is what they act "
-            f"on). Until you decide, the next action on this item is yours."
-            f"\nRequested by {'the user' if actor == USER else actor}."
-            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-            f"\nWhat the owner says is done: "
-            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}",
-            "request")
+            actor, want, "", "request",
+            ev=_mint("docket.review_requested", actor_of(actor), self.work_item_ref(it),
+                     reviewer=want, requested_by=actor,
+                     owner=str(self._work_actor_node(it.get("owner")) or ""),
+                     objective=str(it.get("objective") or ""),
+                     done_so_far=[str(x) for x in (it.get("done_so_far") or [])]))
         return want
 
     def work_assign(self, actor: str, wid: str, owner: str,
@@ -11419,25 +11446,17 @@ class Org:
             if pid == actor:
                 continue
             try:
+                # typed (family context_change): docket.participant_added
                 m = self.post_mail(
-                    actor, pid,
-                    f"[DOCKET PARTICIPATION · {it['slug']} "
-                    f"\"{str(it.get('title') or '')[:80]}\"] You are now a "
-                    f"PARTICIPANT on this docket item — not its assignment. "
-                    f"The item is owned by {owner or 'nobody (unassigned)'}; "
-                    f"you may read it, update it, add evidence and attach "
-                    f"questions, and the user's replies addressed to you on "
-                    f"it arrive as item-linked mail. Added by "
-                    f"{'the user' if actor == USER else actor}."
-                    f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-                    f"\nRead it with orgtree_work get slug={it['slug']} when "
-                    f"your work touches it; no reply is expected to this "
-                    f"notice.",
-                    "notice",
+                    actor, pid, "", "notice",
                     # KEEP EXISTING PERMISSIONS (user 2026-09-06): this notice
                     # is automatic, so it must not mint the §7.3 reply
                     # audience an explicit message to a deep descendant would
-                    grant_reply_audience=False)
+                    grant_reply_audience=False,
+                    ev=_mint("docket.participant_added", actor_of(actor),
+                             self.work_item_ref(it), added_by=actor,
+                             owner=str(owner or ""),
+                             objective=str(it.get("objective") or "")))
             except LedgerError as e:
                 refused.append({"node": pid, "reason": str(e)})
                 continue
@@ -11668,11 +11687,8 @@ class Org:
             out = self._work_accept_core(actor, it, note, "review_approve")
             out["decision"] = "approve"
             out["notified"] = self._work_tell_owner(
-                actor, it, own,
-                f"REVIEW PASSED — {'the user' if actor == USER else actor} "
-                f"approved this item and it is now DONE. Nothing further is "
-                f"needed on it."
-                + (f"\nReviewer's note: {str(note)[:500]}" if note else ""))
+                actor, it, own, "docket.review_approved",
+                note=(str(note) if note else None))
             return out
         frm = it.get("status")
         it["status"] = "in_progress"
@@ -11699,19 +11715,14 @@ class Org:
         return {"reviewed": wid, "decision": "changes", "rev": it["rev"],
                 "status": it["status"],
                 "notified": self._work_tell_owner(
-                    actor, it, own,
-                    f"CHANGES REQUESTED by "
-                    f"{'the user' if actor == USER else actor} — the item is "
-                    f"back with you as in_progress and the next action is "
-                    f"yours."
-                    + (f"\nWhat the reviewer asked for: {str(note)[:500]}"
-                       if note else
-                       "\nThe reviewer left no note; ask them what they want "
-                       "changed rather than guessing."))}
+                    actor, it, own, "docket.review_changes",
+                    note=(str(note) if note else None))}
 
     def _work_tell_owner(self, actor: str, it: WorkItem, own: str | None,
-                         what: str) -> str | None:
-        """Tell the OWNER what a review decided. Returns the node mailed.
+                         variant: str, **fields: Any) -> str | None:
+        """Tell the OWNER what a review decided — a typed `docket.review_*`
+        event (family review); `relayed` on the event says which voice carried
+        it. Returns the node mailed.
 
         ⚠ IT FALLS BACK TO THE DOCKET'S OWN VOICE RATHER THAN GOING UNSENT.
         A reviewer is named from the NAMER's reach, so it can legitimately end
@@ -11724,18 +11735,21 @@ class Org:
         misrepresented as the reviewer."""
         if not own or own == actor or own == USER:
             return None
-        head = (f"[DOCKET REVIEW · {it['slug']} "
-                f"\"{str(it.get('title') or '')[:80]}\"] ")
+
+        def _ev(relayed: bool) -> dict[str, Any]:
+            # ⚠ a literal per branch: the coverage scan (test_events_ledger §7)
+            # wants every mint( site to name its variant as a string literal
+            if variant == "docket.review_approved":
+                return _mint("docket.review_approved", actor_of(actor),
+                             self.work_item_ref(it), reviewer=actor, owner=own,
+                             relayed=relayed, **fields)
+            return _mint("docket.review_changes", actor_of(actor),
+                         self.work_item_ref(it), reviewer=actor, owner=own,
+                         relayed=relayed, **fields)
         try:
-            self.post_mail(actor, own, head + what, "request")
+            self.post_mail(actor, own, "", "request", ev=_ev(False))
         except LedgerError:
-            self.post_mail(
-                USER, own,
-                head + what
-                + f"\n(This notice comes from the docket itself: "
-                  f"{actor} is the item's reviewer but cannot address you "
-                  f"directly under the mail rules. Reply to your own superior "
-                  f"if you need to reach them.)", "request")
+            self.post_mail(USER, own, "", "request", ev=_ev(True))
         return own
 
     def work_archive_now(self, actor: str, wid: str) -> dict[str, Any]:

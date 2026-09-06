@@ -112,15 +112,20 @@ def _r_review_changes(ev: _R) -> str:
     return (_docket_head("REVIEW", ev)
             + f"CHANGES REQUESTED by {_user_or(str(ev['reviewer']))} — the item is "
               "back with you as in_progress and the next action is yours."
-            + (f"\nWhat the reviewer asked for: {str(note)[:500]}" if note else "")
+            + (f"\nWhat the reviewer asked for: {str(note)[:500]}" if note else
+               "\nThe reviewer left no note; ask them what they want changed rather "
+               "than guessing.")
             + _relay_suffix(ev))
 
 
 @renderer("docket.review_approved")
 def _r_review_approved(ev: _R) -> str:
+    note = ev.get("note")
     return (_docket_head("REVIEW", ev)
             + f"REVIEW PASSED — {_user_or(str(ev['reviewer']))} approved this item and "
-              "it is now DONE. Nothing further is needed on it." + _relay_suffix(ev))
+              "it is now DONE. Nothing further is needed on it."
+            + (f"\nReviewer's note: {str(note)[:500]}" if note else "")
+            + _relay_suffix(ev))
 
 
 @renderer("docket.participant_added")
@@ -971,7 +976,8 @@ def _build_lines(ev: _R) -> str:
     dirty = " [DIRTY - uncommitted changes present at boot]" if o["dirty"] else ""
     prev = ev.get("prev_pid")
     pid = f"{o['pid']}" + (f" (was: {prev})" if prev is not None and prev != o["pid"] else "")
-    branch = f"\n- Branch: {ev['branch']}" if ev.get("branch") else ""
+    # the branch rides on the Started-at line, exactly as restart_wake.py wrote it
+    branch = f", branch: {ev['branch']}" if ev.get("branch") else ""
     return (f"Running build:\n- Commit: {o['commit']} (short: {o['short']}){dirty}\n"
             f"- Backend PID: {pid}\n- Started at: {ev['started_at']}{branch}")
 
@@ -1008,7 +1014,9 @@ def _r_storage(ev: _R) -> str:
         return (f"Heads-up: the org disk is at {used:.0f} of {total:.0f} MB (past 80%). "
                 f"Clean up or curb file growth — at 90% new turns pause; at 100% "
                 f"writes fail with ENOSPC.")
-    lim = f"{cap:g}" if cap is not None else "∞"
+    # the cap was an int (`storage_limit_mb`) in the old text: print it as one
+    lim = ("∞" if cap is None else
+           str(int(cap)) if float(cap).is_integer() else f"{float(cap):g}")
     if lvl == "over":
         return (f"⚠ The org is OVER its storage limit ({used:.1f} / {lim} MB — "
                 f"workspace + scratch + uploads together). File creation and writes in "

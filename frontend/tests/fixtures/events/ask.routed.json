@@ -9,10 +9,11 @@
       "id": "ask.routed·actor"
     },
     "object": {
-      "kind": "ask",
+      "kind": "node",
       "org": "ask.routed·object.org",
       "id": "ask.routed·object.id",
-      "node": "ask.routed·object.node"
+      "name": "ask.routed·object.name",
+      "generation": 3
     },
     "engine_authored": false,
     "from_node": "ask.routed·from_node",
@@ -37,9 +38,10 @@
       "id": "ask.routed·actor"
     },
     "object": {
-      "kind": "ask",
+      "kind": "node",
       "id": "ask.routed·object.id",
-      "node": "ask.routed·object.node"
+      "name": "ask.routed·object.name",
+      "generation": 3
     },
     "questions": [
       {

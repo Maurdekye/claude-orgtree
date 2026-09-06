@@ -11,8 +11,8 @@
     "object": {
       "kind": "audience_request",
       "org": "access.audience_requested·object.org",
-      "id": "access.audience_requested·object.id",
-      "node": "access.audience_requested·object.node"
+      "node": "access.audience_requested·object.node",
+      "target": "access.audience_requested·object.target"
     },
     "engine_authored": false,
     "stage": "initial",
@@ -30,8 +30,8 @@
     },
     "object": {
       "kind": "audience_request",
-      "id": "access.audience_requested·object.id",
-      "node": "access.audience_requested·object.node"
+      "node": "access.audience_requested·object.node",
+      "target": "access.audience_requested·object.target"
     },
     "stage": "initial",
     "from_node": "access.audience_requested·from_node",
