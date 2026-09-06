@@ -500,6 +500,7 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # admin-only, like every other repair surface.
         or rest.endswith("/repair-rename")
         or rest == "/api/fs"                                 # filesystem browse
+        or re.match(r"^/api/orgs/[^/]+/git(?:/|$)", rest) is not None
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         # rewrites the whole docket and writes a JSON export to disk — an
         # operator control, frozen explicitly like `/settings` beside it
@@ -9055,6 +9056,11 @@ async def org_ws(ws: WebSocket, slug: str) -> None:
 
 
 # ------------------------------------------------------------------- static
+from . import gitapi, gitworkspace  # Git workspace owns its isolated router/jobs.
+app.include_router(gitapi.router)
+app.router.add_event_handler("startup", gitworkspace.scheduler.start)
+app.router.add_event_handler("shutdown", gitworkspace.scheduler.stop)
+
 if os.path.isdir(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
               name="assets")

@@ -81,7 +81,7 @@ const timeoutSignal = (ms: number): AbortSignal | undefined => {
 // the one wire-boundary cast in the app: runtime JSON is untyped, and each
 // endpoint's declared Promise<T> return type is the contract that types it.
 // T infers from that declared return at every call site - no `any` escapes.
-const req = <T,>(path: string, init?: RequestInit,
+export const req = <T,>(path: string, init?: RequestInit,
                  timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> =>
   fetch(u(path), init?.signal || !timeoutMs
     ? init

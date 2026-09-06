@@ -18,6 +18,8 @@ import { bumpLive } from './livebus'
 import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
 import { KillSwitch } from './KillSwitch'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
+import { GitWorkspace } from './GitWorkspace'
+import type { GitContext } from './git/types'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
   DataUsageIcon, DeleteIcon, DocIcon, DocketIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
@@ -257,6 +259,15 @@ export default function App() {
   // the native work docket (docket-final-spec.md) — its own list+pane modal,
   // same pattern as the gallery above.
   const [showDocket, setShowDocket] = useState(false)
+  const [gitContext, setGitContext] = useState<GitContext | null>(null)
+  useEffect(() => {
+    const openGit = (event: Event) => {
+      const detail = (event as CustomEvent<GitContext>).detail
+      if (!BASE && detail?.slug === slug) setGitContext(detail)
+    }
+    window.addEventListener('orgtree:git-open', openGit)
+    return () => window.removeEventListener('orgtree:git-open', openGit)
+  }, [slug])
   // a docket link from a tool chip: open the panel AT one item. Held as a
   // one-shot so re-opening the docket later does not silently re-select what
   // some earlier link pointed at — the panel consumes it and clears it.
@@ -289,6 +300,10 @@ export default function App() {
     onFocusAgent: (id) => { setShowGallery(false); setFocusAgent(id) },
     onOpenDoc: (id) => { setShowGallery(false); setDocJump(id) },
     onOpenMail: (r) => { setShowGallery(false); setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq }) },
+  })
+  const gitRefs = useShellRefs(slug ?? '', tree ?? null, {
+    onOpenItem: (item) => { setGitContext(null); setDocketJump(jumpTo(item)); setShowDocket(true) },
+    onFocusAgent: (id) => { setGitContext(null); setFocusAgent(id) },
   })
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -981,6 +996,8 @@ export default function App() {
                 <DocketToolbarButton
                   summary={tree.work_items_summary}
                   onClick={() => setShowDocket(true)} />
+                {!tree.public && <button className="iconbtn" title="Git repositories"
+                  onClick={() => setGitContext({ slug })}>⑂</button>}
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —
@@ -1020,6 +1037,10 @@ export default function App() {
                   the browser — it carries the button (user refinement) */}
               {tree.disk?.full && (
                 <DiskFullAlert onOpen={() => setShowDisk('largest')} />
+              )}
+              {gitContext && gitContext.slug === slug && !tree.public && (
+                <GitWorkspace key={slug} slug={slug} context={gitContext} routes={gitRefs}
+                  toast={toast} close={() => setGitContext(null)} />
               )}
               {showDisk && (
                 <DiskBrowser slug={slug} isPublic={!!tree.public} toast={toast}

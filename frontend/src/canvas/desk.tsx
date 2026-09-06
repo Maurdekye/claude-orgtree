@@ -43,6 +43,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { AgentDocketView, agentItems } from './docket'
+import { GitContextButton } from '../git/GitContextButton'
 import { PresentationCard } from './docs'
 import { buildNodeFacts } from './docket'
 import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
@@ -1877,6 +1878,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <span className="spacer" aria-hidden="true" />
         <span className="cc-head-right">
           <span className="cc-actions">
+            <GitContextButton slug={slug} agent={node.id} />
             {live && !liveKids &&
               <button className="danger" onClick={() => setAsking('retire')}>
                 retire · {fmtCredits(node.seat! + node.grant!)}</button>}

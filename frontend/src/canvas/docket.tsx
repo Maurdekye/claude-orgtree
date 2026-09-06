@@ -1263,6 +1263,8 @@ function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark,
   )
 }
 
+import { GitContextButton } from '../git/GitContextButton'
+
 function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent,
   facts, refIndex, onGoToItem, refWorld, onOpenRef }: {
   slug: string
@@ -1329,6 +1331,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
       <div className="mailer-head docket-pane-head">
         <b>{item.title || '(untitled)'}</b>
         <span className="spacer" />
+        <GitContextButton slug={slug} item={item.slug} />
         {canDismiss && (
           <button className="badge docket-dismiss" onClick={() => onDismiss(item)}>
             Dismiss
