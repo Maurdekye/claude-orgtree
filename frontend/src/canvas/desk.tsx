@@ -51,6 +51,7 @@ import { mailRefTarget, useRefRoutes } from './reflinks'
 import type { RefRoutes } from './reflinks'
 import type { TypedRef } from './workrefs'
 import { RefMdBody } from './refmd'
+import { ReceivedMailBody } from './mailpreview'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
@@ -2808,7 +2809,7 @@ function TurnMailCard({ mail, slug, nid, refs }:
         <time>{fmtFull(mail.at)}</time>
         {mail.passive && <span className="turn-mail-passive">no reply expected</span>}
       </header>
-      {body && <RefMdBody className="turn-mail-body md"
+      {body && <ReceivedMailBody
         world={refs?.world} onOpen={refs?.onOpen} html={md(body, fb)} />}
       {files.length > 0 && (
         <div className="attach-row">

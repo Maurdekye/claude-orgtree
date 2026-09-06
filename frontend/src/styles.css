@@ -1397,6 +1397,21 @@ button.cc-name:hover {
    is not. Its own **bold** remains meaningful and is the only bold it gets. */
 .turn-mail-body { font-weight: 400; }
 .turn-mail-body > :last-child { margin-bottom: 0; }
+.turn-mail-preview { position: relative; }
+.turn-mail-preview.expandable { cursor: pointer; }
+.turn-mail-preview-content { display: flow-root; }
+.turn-mail-preview.folded .turn-mail-preview-content {
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+.turn-mail-toggle {
+  position: absolute; right: 0; bottom: 0; z-index: 1;
+  padding: 2px 6px; border: 0; border-radius: 3px;
+  background: var(--panel); color: var(--dim); font: 11px/1.4 var(--sans);
+  opacity: 0; cursor: pointer;
+}
+.turn-mail-preview:hover > .turn-mail-toggle,
+.turn-mail-toggle:focus-visible { opacity: 1; }
 .turn-mail-tail { margin-top: 1px; }
 .msg.sys { align-self: center; color: var(--dim); font-size: 10px; background: none; }
 /* markdown inside chat messages */
