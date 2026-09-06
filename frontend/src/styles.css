@@ -5459,7 +5459,13 @@ label.set-row { cursor: pointer; }
 .modalpin-bar.on {
   /* sticky, not fixed-in-flow: `.settings` is the scroll container, and a
      title bar that scrolled away would take the window's drag handle with it */
-  position: sticky; top: 0; z-index: 6; margin: -8px -10px 0;
+  /* ⚠ top: -8px, NOT 0. A sticky element's offset is measured from the
+     scroll container's CONTENT box, so `top: 0` parks the bar 8px (this
+     panel's padding) below the window's edge as soon as it scrolls —
+     measured in Edge, 63px against a window at 54px. -8px cancels the
+     padding, the same distance the negative margin above already takes
+     out of its resting position. */
+  position: sticky; top: -8px; z-index: 6; margin: -8px -10px 0;
   padding: 0 4px 0 8px; height: 26px; font-size: 13px;
   background: var(--panel-2, var(--panel));
   border-bottom: 1px solid var(--line); cursor: grab; touch-action: none;

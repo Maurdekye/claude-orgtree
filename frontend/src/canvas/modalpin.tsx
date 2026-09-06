@@ -310,10 +310,19 @@ export function PinFrame({ kind, title, panel, close, children, onEsc,
   }
   const gestureRect = (g: Gesture, e: ReactPointerEvent<HTMLElement>): PinRect => {
     // window px: a drag is 1:1 with the pointer, with no zoom to divide out —
-    // nothing about this rect is in world space
+    // nothing about this rect is in world space.
+    //
+    // ⚠ NOT CLAMPED HERE. There is ONE clamp boundary — the render, which has
+    // to clamp anyway (a browser resize moves no pointer and still must not
+    // strand a window) and the commit, which is the same call. A third clamp
+    // in here would be a guard nothing could ever be seen failing: with the
+    // other two in place it changes no pixel and no stored byte, and
+    // `modalpin_probe.py`'s `no-render-time-clamp` mutant is what proves the
+    // remaining one is load-bearing. Keeping the raw offset also means a drag
+    // that overshoots an edge and comes back lands where the pointer says,
+    // rather than from wherever it was pinned to the edge.
     const dx = e.clientX - g.sx, dy = e.clientY - g.sy
-    const size = winSize()
-    if (g.kind === 'move') return clampRect({ ...g.o, x: g.o.x + dx, y: g.o.y + dy }, size)
+    if (g.kind === 'move') return { ...g.o, x: g.o.x + dx, y: g.o.y + dy }
     let { x, y, w, h } = g.o
     if (g.edge.includes('e')) w = g.o.w + dx
     if (g.edge.includes('s')) h = g.o.h + dy
@@ -323,7 +332,7 @@ export function PinFrame({ kind, title, panel, close, children, onEsc,
     // west/north must not walk the window across the screen
     if (w < PIN_MIN_W) { if (g.edge.includes('w')) x = g.o.x + g.o.w - PIN_MIN_W; w = PIN_MIN_W }
     if (h < PIN_MIN_H) { if (g.edge.includes('n')) y = g.o.y + g.o.h - PIN_MIN_H; h = PIN_MIN_H }
-    return clampRect({ x, y, w, h }, size)
+    return { x, y, w, h }
   }
   const move = (e: ReactPointerEvent<HTMLElement>) => {
     const g = gesture.current
