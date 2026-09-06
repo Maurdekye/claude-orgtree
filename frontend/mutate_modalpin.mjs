@@ -168,6 +168,15 @@ const MUTANTS = [
     to: `    <PinFrame kind="doc" title={doc?.title ?? 'document'}`,
     mustFail: '§7',
   },
+  {
+    // put the live state back inside the heading — where a pinned window hides
+    // it, which is the whole reason it was moved out
+    file: 'src/canvas/modals.tsx',
+    name: 'the-dogs-state-goes-back-into-the-heading',
+    from: `        <h3>\u{1F415} {dog.name}</h3>`,
+    to: `        <h3>\u{1F415} {dog.name} <span className="dim">\u00b7 watchdog \u00b7 {dog.spent ? 'departing' : dog.state}</span>{dog.once && <span className="wd-once-label">one-shot dog</span>}</h3>`,
+    mustFail: '\u00a78',
+  },
 ]
 
 // Normalise to LF, mutate, write CRLF back, restore the original bytes.

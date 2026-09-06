@@ -48,6 +48,8 @@ import {
 } from '../src/canvas/modalpin'
 import { PIN_MIN_H, PIN_MIN_W } from '../src/canvas/pins'
 import { DocReader } from '../src/canvas/docs'
+import { WatchdogPanel } from '../src/canvas/modals'
+import type { Watchdog } from '../src/types'
 
 const noop = () => {}
 const reset = () => { localStorage.clear(); forgetModalPins() }
@@ -468,5 +470,50 @@ test('§7 two readers open at once are two windows, not one', async () => {
   assert.equal(isModalPinned('doc-docket'), true,
     'unpinning one reader did not unpin the other')
   await a.unmount(); await b.unmount()
+  reset()
+})
+
+// ================= §8 what is NOT a title had to leave the heading first
+// Pinned, a panel's own title <h3> is hidden — the window's title bar says the
+// same words. So anything that was ALSO living in that h3 and is not a title
+// would have vanished with it: the default settings' scope line, the watchdog's
+// live state and one-shot label, the agent config's process lifecycle mark, the
+// disk browser's mode tabs and close button. Astra 2026-09-06 required those to
+// stay visible in BOTH modes, so they moved out of the heading.
+//
+// ⚠ WHAT THIS CHECK IS AND IS NOT. jsdom applies no stylesheet, so it cannot
+// see `display: none` and cannot tell you a thing about what is on screen. What
+// it CAN answer is the question the fix actually turns on — whether the text is
+// still INSIDE the element that stands down — and it goes red the moment
+// anybody puts it back. The visible half is the browser probe's `title` check.
+test('§8 a panel\'s live state is not inside the heading that hides when pinned', async () => {
+  reset()
+  const dog: Watchdog = {
+    id: 'w1', owner: 'agent', name: 'build-watch', kind: 'file',
+    target: 'C:/x/build.log', interval_s: 30, state: 'armed',
+    at: '2026-09-06T09:00:00Z', fired: 0, once: true,
+  } as Watchdog
+  const v = await mountView(
+    <WatchdogPanel slug="probe" dog={dog} toast={noop} close={noop} />,
+    (host: HTMLElement) => ({
+      h3: host.querySelector('.overlay > div > h3'),
+      panel: host.querySelector<HTMLElement>('.overlay > div'),
+    }))
+  await flush()
+  const { h3, panel } = v.last()
+  // CONTROL: the panel and its heading are really there, and the heading is
+  // really the one the CSS hides (the panel's own first h3). Without this the
+  // assertions below would pass on an empty render.
+  assert.ok(panel, 'the watchdog panel rendered')
+  assert.ok(h3, 'it has the title h3 the pinned mode hides')
+  assert.match(h3!.textContent ?? '', /build-watch/, 'which names the dog')
+
+  const text = panel!.textContent ?? ''
+  for (const s of ['armed', 'one-shot dog']) {
+    assert.ok(text.includes(s), `the panel still shows ${s!}`)
+    assert.equal((h3!.textContent ?? '').includes(s), false,
+      `${s} is NOT inside the heading that hides when pinned`)
+  }
+  await v.unmount()
   reset()
 })
