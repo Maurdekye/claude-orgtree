@@ -1519,7 +1519,10 @@
             "in_progress",
             "blocked",
             "waiting",
-            "review"
+            "review",
+            "done",
+            "superseded",
+            "dropped"
           ]
         },
         "objective": {
@@ -1680,6 +1683,16 @@
         "owner": {
           "type": "string"
         },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "relayed": {
           "type": "boolean"
         }
@@ -1692,6 +1705,7 @@
         "object",
         "reviewer",
         "owner",
+        "note",
         "relayed"
       ],
       "additionalProperties": false
@@ -6643,7 +6657,10 @@
             "in_progress",
             "blocked",
             "waiting",
-            "review"
+            "review",
+            "done",
+            "superseded",
+            "dropped"
           ]
         },
         "objective": {
@@ -6804,6 +6821,16 @@
         "owner": {
           "type": "string"
         },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "relayed": {
           "type": "boolean"
         }
@@ -6816,6 +6843,7 @@
         "object",
         "reviewer",
         "owner",
+        "note",
         "relayed"
       ],
       "additionalProperties": false

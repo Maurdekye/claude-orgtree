@@ -17,6 +17,7 @@
     "engine_authored": false,
     "reviewer": "docket.review_approved·reviewer",
     "owner": "docket.review_approved·owner",
+    "note": "docket.review_approved·note",
     "relayed": false
   },
   "public": {
@@ -34,7 +35,8 @@
     },
     "reviewer": "docket.review_approved·reviewer",
     "owner": "docket.review_approved·owner",
+    "note": "docket.review_approved·note",
     "relayed": false
   },
-  "body": "[DOCKET REVIEW · docket.review_approved·object.slug \"docket.review_approved·object.title\"] REVIEW PASSED — docket.review_approved·reviewer approved this item and it is now DONE. Nothing further is needed on it."
+  "body": "[DOCKET REVIEW · docket.review_approved·object.slug \"docket.review_approved·object.title\"] REVIEW PASSED — docket.review_approved·reviewer approved this item and it is now DONE. Nothing further is needed on it.\nReviewer's note: docket.review_approved·note"
 }

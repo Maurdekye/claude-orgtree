@@ -82,7 +82,7 @@ from . import ledger as ledger_mod
 from . import (accounts, antigravity_limits, appsettings, bridgeauth,
                codex_limits, codex_route, limits, net,
                providers, restart_wake, sandbox, store, subproxy, supervisor, warmpool)
-from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
+from .ledger import LedgerError, Org, USER, VIS_LEVELS, actor_of, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -4188,13 +4188,17 @@ def work_item_dismiss(slug: str, wid: str, body: WorkDismiss) -> dict[str, Any]:
             # passive: the flag's author learns the user saw and dismissed it,
             # and that the work now stands Blocked — without spending a turn
             try:
-                org.post_mail(USER, str(notify),
-                              f"[DOCKET · {wid}] The user DISMISSED your "
-                              f"attention flag (\"{str(r.get('reason') or '')[:200]}\") "
-                              f"— the item is now BLOCKED. Do not re-raise the "
-                              f"same reason without material new information; "
-                              f"{r.get('pending_questions')} question(s) on "
-                              f"the item are still pending.", kind="status")
+                # typed (family answer_decision): decision.attention_dismissed on
+                # the item's WorkItemRef (canonical slug — the old text echoed the
+                # caller's spelling of `wid`, identical for a canonical name)
+                it, _ = org._work_find(wid)
+                org.post_mail(
+                    USER, str(notify), "", kind="status",
+                    ev=events.mint("decision.attention_dismissed", actor_of(USER),
+                                   org.work_item_ref(it),
+                                   reason=str(r.get("reason") or ""),
+                                   pending_questions=int(r.get("pending_questions") or 0),
+                                   dismissed_by=USER))
             except LedgerError:
                 notify = None
         store.save_org(org)
@@ -7423,8 +7427,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 if status in ("done", "blocked"):
                     parent = org.node(body.node)["parent"]
                     if parent:
-                        r = org.post_mail(body.node, parent,
-                                          f"[{status.upper()}] {summary}", kind="status")
+                        # typed (family status): status.report on the reporter's
+                        # NodeRef; the body is its rendering, "[DONE] summary"
+                        # byte for byte (test_events_producers §S)
+                        r = org.post_mail(
+                            body.node, parent, "", kind="status",
+                            ev=events.mint("status.report", actor_of(body.node),
+                                           org.node_ref(body.node),
+                                           state=str(status), summary=str(summary)))
                         mail_notify(body.org, body.node, parent)
                         drive.append(parent)
                         result["reported_to"] = parent
