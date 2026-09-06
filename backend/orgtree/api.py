@@ -4222,33 +4222,9 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
 
 
 def _row_out(row: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
-    """The WIRE projection of one stored mail / notice / user-inbox row (design
-    typed-message-architecture-backend.md v5 §6). The stored `ev` is ROW-ENCODED
-    (an ordinary body is elided on the row); the wire NEVER carries that form and
-    carries no marker for it. The stored decoder runs here, once, and emits:
-      admin  · `ev`        the FULL event   (or `ev_raw` + `ev_error` when the stored
-                           value is unsupported/malformed; nothing on a legacy row)
-      public · `ev_public` the PublicEvent projection (or `ev_error` = {code} only;
-                           `ev`/`ev_raw` NEVER; body/text untouched — root 18:38)
-    Every route that returns a row passes it through here (test_events_public walks
-    the whole route table through the PublicGateway to prove it)."""
-    out = {k: v for k, v in row.items() if k != "ev"}
-    raw = row.get("ev")
-    if raw is None:
-        return out
-    r = events.decode(raw, row)
-    if r["status"] == "ok":
-        if public:
-            out["ev_public"] = events.public_event(r["ev"])
-        else:
-            out["ev"] = events.encode_ev(r["ev"])
-    else:
-        if public:
-            out["ev_error"] = {"code": r["error"]["code"]}
-        else:
-            out["ev_raw"] = raw
-            out["ev_error"] = r["error"]
-    return out
+    """The WIRE projection of one stored row — events.wire_row (design §6): full
+    `ev` for the operator, `ev_public` for a visitor, never the row-encoded form."""
+    return events.wire_row(row, public=public)
 
 
 def _rows_out(rows: list[Any], *, public: bool) -> list[Any]:
@@ -8498,10 +8474,15 @@ def node_chat(slug: str, nid: str, request: Request = cast(Request, None),
     body_cap = 2000 if n_pending <= 20 else 800 if n_pending <= 100 else 250
     pending = pending[-800:]
     _pub = _public_slug(request) is not None
+    for msg in out.get("messages") or []:
+        if isinstance(msg, dict) and msg.get("segments") is not None:
+            msg["segments"] = events.wire_segments(msg["segments"], public=_pub)
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
                             "body": m["body"][:body_cap], "at": m["at"],
                             **{k: v for k, v in _row_out(m, public=_pub).items()
                                if k in ("ev", "ev_public", "ev_raw", "ev_error")},
+                            **({"delivery": m["delivery"]} if m.get("delivery")
+                               else {}),
                             **({"delivering": True} if m.get("delivering")
                                else {}),
                             # the two in-flight carriers read differently to a

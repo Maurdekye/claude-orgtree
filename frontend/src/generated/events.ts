@@ -2264,6 +2264,41 @@ export type PublicEvent =
   | PublicContextDriveRestartInterrupted
   | PublicContextDriveRestartWake;
 
+// ---- WIRE rows, segments and the delivery envelope (design §6)
+export type EvError = { code: string; path: string; expected: string };
+export type PublicEvError = { code: string };
+export interface WireMailRow {
+  id?: string; from: string; kind: string; body: string; at: string;
+  relationship?: string | null; attachments?: unknown[]; attachments_missing?: string[];
+  reply_to?: Record<string, unknown>; model_only?: boolean; retracted?: boolean;
+  delivering?: boolean; via?: string; stage?: string; ref?: string;
+  ev?: Event; ev_raw?: unknown; ev_error?: EvError;
+}
+export interface PublicWireMailRow {
+  id?: string; from: string; kind: string; body: string; at: string;
+  relationship?: string | null; attachments?: unknown[]; attachments_missing?: string[];
+  reply_to?: Record<string, unknown>; retracted?: boolean; delivering?: boolean;
+  via?: string; stage?: string; ref?: string;
+  ev_public?: PublicEvent; ev_error?: PublicEvError;
+}
+export interface WireNoticeRow { at: string; text: string; ev?: Event; ev_raw?: unknown; ev_error?: EvError; }
+export interface PublicWireNoticeRow { at: string; text: string; ev_public?: PublicEvent; ev_error?: PublicEvError; }
+export type Segment =
+  | { kind: "notices"; rows: WireNoticeRow[] }
+  | { kind: "mail"; rows: WireMailRow[] }
+  | { kind: "state"; event?: Event; text: string; ev_error?: EvError }
+  | { kind: "drive"; event?: Event; text: string; ev_error?: EvError }
+  | { kind: "text"; text: string };
+export type PublicSegment =
+  | { kind: "notices"; rows: PublicWireNoticeRow[] }
+  | { kind: "mail"; rows: PublicWireMailRow[] }
+  | { kind: "state"; event_public?: PublicEvent; text: string; ev_error?: PublicEvError }
+  | { kind: "drive"; event_public?: PublicEvent; text: string; ev_error?: PublicEvError }
+  | { kind: "text"; text: string };
+export const DELIVERY_MODES = ["turn","steer","boundary","reconcile","rehire","idle_only"] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+export interface Delivery { mode: DeliveryMode; via: "turn" | "steer"; attempt: number; at: string; }
+
 export const FAMILY_OF: Record<Event['variant'], Family> = {
   "ordinary.message": "ordinary",
   "ordinary.question": "ordinary",

@@ -41,7 +41,7 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import wraps
 from typing import Any, Final, Protocol, cast
 
-from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
+from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits, events,
                codex_route, deployment, envelope, failfix, handoff, imgblock,
                limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
@@ -2882,7 +2882,8 @@ def _prompt_view_path(slug: str, session_id: str) -> str:
 
 def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
                         at: str | None = None,
-                        spans: list[dict[str, Any]] | None = None) -> None:
+                        spans: list[dict[str, Any]] | None = None,
+                        segments: list[dict[str, Any]] | None = None) -> None:
     """Durably pair a raw provider user event with its human projection.
 
     Best effort and fail-open for turn admission: losing display metadata may
@@ -2906,6 +2907,10 @@ def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
         row["v"] = 2
         row["spans"] = spans
         row["vsha256"] = hashlib.sha256(visible.encode("utf-8")).hexdigest()
+    if segments is not None:
+        # the typed composition (design §6), persisted WITH the projection so an
+        # archived/copied transcript keeps its snapshots after the mail_log cap rolls
+        row["segments"] = segments
     try:
         path = _prompt_view_path(slug, session_id)
         with _view_journal_lock:
@@ -3032,7 +3037,7 @@ def _load_prompt_views(slug: str, session_id: str
 def _take_prompt_view(views: dict[str, list[dict[str, Any]]], raw: str,
                       event_at: Any = None,
                       consumed: list[dict[str, Any]] | None = None
-                      ) -> tuple[bool, str]:
+                      ) -> tuple[bool, str, list[dict[str, Any]] | None]:
     """Consume the provenance row matching this exact provider user event.
 
     A timestamp proximity check prevents a newly-created sidecar row from
@@ -3063,8 +3068,8 @@ def _take_prompt_view(views: dict[str, list[dict[str, Any]]], raw: str,
         rows.pop(i)
         if consumed is not None:
             consumed.append(row)
-        return True, str(row.get("visible") or "")
-    return False, raw
+        return True, str(row.get("visible") or ""), (row.get('segments') if isinstance(row.get('segments'), list) else None)
+    return False, raw, None
 
 
 #: How long a provider user event may go without its durable projection
@@ -6677,7 +6682,9 @@ def _user_event(text: str,
 
 
 def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
-                   pending: list[NoticeEntry] | None, via: str = "steer") -> str:
+                   pending: list[NoticeEntry] | None, via: str = "steer", *,
+                   mode: str | None = None, drive: Mapping[str, Any] | None = None,
+                   segments: list[dict[str, Any]] | None = None) -> str:
     """Record a drained-but-not-yet-delivered batch in the org doc (caller
     saves). Draining REMOVES mail from the doc; until the text carrying it
     reaches the agent's process, this journal is the only copy that survives
@@ -6690,10 +6697,39 @@ def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
                 the journal is the only thing that can show it
     Durability is identical either way; this only governs display."""
     tok = os.urandom(8).hex()
+    # DELIVERY ENVELOPE (design §6): mode/attempt/segments live HERE, on the journal
+    # row, never inside an event. `attempt` counts re-drains of the same rows (a
+    # fold-back stamps `redelivered` on the row it puts back). `segments` is the
+    # ordered typed composition the agent text was built from, with FULL events.
+    attempt = 1 + max([int(m.get("redelivered") or 0) for m in (mail or [])] or [0])
     org.d.setdefault("delivering", {}).setdefault(nid, []).append(
         {"tok": tok, "at": now_iso(), "mail": mail or [],
-         "notices": pending or [], "via": via})
+         "notices": pending or [], "via": via,
+         "mode": mode or via, "attempt": attempt,
+         "drive": events.encode_ev(drive) if drive is not None else None,
+         "segments": segments if segments is not None
+         else _segments_for(mail, pending, None, drive=drive)})
     return tok
+
+
+def _segments_for(mail: list[MailEntry] | None, pending: list[NoticeEntry] | None,
+                  text: str | None, *, drive: Mapping[str, Any] | None = None
+                  ) -> list[dict[str, Any]]:
+    """The typed composition of an envelope, in the order the agent text carries it
+    (design §6): notices, mail, then the drive nudge — as a typed `drive` segment
+    when the producer minted one, else as plain text. Every row carries its FULL
+    event (journal copies outlive the mail_log cap)."""
+    segs: list[dict[str, Any]] = []
+    if pending:
+        segs.append({"kind": "notices", "rows": [events.journal_row(n) for n in pending]})
+    if mail:
+        segs.append({"kind": "mail", "rows": [events.journal_row(m) for m in mail
+                                              if not m.get("model_only")]})
+    if drive is not None:
+        segs.append({"kind": "drive", "event": events.encode_ev(drive), "text": text or ""})
+    elif text:
+        segs.append({"kind": "text", "text": text})
+    return segs
 
 
 def delivering_mail(org: Org, nid: str,
@@ -6753,10 +6789,13 @@ def delivering_mail(org: Org, nid: str,
     for b in batches:
         turn = b.get("via", "steer") == "turn"
         stage = stages.get(str(b.get("tok") or ""), "")
+        delivery = {"mode": str(b.get("mode") or b.get("via") or "steer"),
+                    "via": "turn" if turn else "steer",
+                    "attempt": int(b.get("attempt") or 1), "at": str(b.get("at") or "")}
         for m in b.get("mail") or []:
             if shown is not None and shown(m):
                 continue        # the transcript is showing it — hand over
-            out.append({**m, "delivering": True,
+            out.append({**m, "delivering": True, "delivery": delivery,
                         **({"via": "turn"} if turn else {}),
                         **({"stage": stage} if stage else {})})
     return out
@@ -6977,6 +7016,8 @@ def _fold_back_undelivered(slug: str, nid: str,
                 dlmap.pop(nid, None)
             if nid in org.nodes:
                 mails = [m for b in fold for m in b.get("mail") or []]
+                for m in mails:              # delivery fact, not content (design §6)
+                    m["redelivered"] = int(m.get("redelivered") or 0) + 1
                 nots = [p for b in fold for p in b.get("notices") or []]
                 if mails:
                     org.d.setdefault("mail", {}).setdefault(nid, [])[0:0] = mails
@@ -7156,7 +7197,8 @@ def _human_view_spans(human_mail: list[MailEntry], base_view: str,
 def _envelope(slug: str, nid: str, text: str,
               via: str = "steer", *, base_view: str = "",
               view_out: list[str] | None = None,
-              spans_out: list[list[dict[str, Any]]] | None = None
+              spans_out: list[list[dict[str, Any]]] | None = None,
+              segments_out: list[list[dict[str, Any]]] | None = None
               ) -> tuple[str, str | None, list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
@@ -7182,9 +7224,12 @@ def _envelope(slug: str, nid: str, text: str,
             return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
+        segments = _segments_for(mail, pending, text)
         if pending or mail:
-            tok = _journal_drain(org, nid, mail, pending, via)
+            tok = _journal_drain(org, nid, mail, pending, via, segments=segments)
             store.save_org(org)
+    if segments_out is not None:
+        segments_out.append(segments)
     prelude = []
     if pending:
         lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
@@ -11058,6 +11103,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                images: list[dict[str, Any]] | None = None,
                turn_view: str = "",
                view_spans: list[dict[str, Any]] | None = None,
+               view_segments: list[dict[str, Any]] | None = None,
                startup_manifest: dict[str, Any] | None = None,
                trec: turnlog.Recorder | None = None,
                ) -> tuple[dict[str, Any], int]:
@@ -11095,7 +11141,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     try:
         return _codex_leg_attempt(
             slug, nid, org, st, text, toks, images, turn_view,
-            view_spans=view_spans, startup_manifest=startup_manifest,
+            view_spans=view_spans, view_segments=view_segments, startup_manifest=startup_manifest,
             trec=trec)
     except _CodexRouteRejected as rj:
         _note(rj, retrying=True)
@@ -11103,7 +11149,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         turnlog.emit(trec, "codex_redrive", to=str(rj.other.get("pool") or ""))
         try:
             return _codex_leg_attempt(slug, nid, org, st, text, [], images,
-                                      turn_view, view_spans=view_spans,
+                                      turn_view, view_spans=view_spans, view_segments=view_segments,
                                       route=rj.other,
                                       journal_sid=rj.journal_sid,
                                       startup_manifest=startup_manifest,
@@ -11129,6 +11175,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                        images: list[dict[str, Any]] | None = None,
                        turn_view: str = "",
                        view_spans: list[dict[str, Any]] | None = None,
+                       view_segments: list[dict[str, Any]] | None = None,
                        route: codex_route.Route | None = None,
                        journal_sid: str | None = None,
                        startup_manifest: dict[str, Any] | None = None,
@@ -12026,7 +12073,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 pending_recs = list(jstate["pending"])
                 jstate["pending"].clear()
                 _record_prompt_view(slug, jstate["sid"], text, turn_view,
-                                    at=_iso_ts(t0), spans=view_spans)
+                                    at=_iso_ts(t0), spans=view_spans, segments=view_segments)
                 _codex_journal(slug, jstate["sid"], [
                     {"type": "user", "timestamp": _iso_ts(t0),
                      "message": {"role": "user", "content": text}},
@@ -12747,6 +12794,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                      images: list[dict[str, Any]] | None = None,
                      turn_view: str = "",
                      view_spans: list[dict[str, Any]] | None = None,
+                     view_segments: list[dict[str, Any]] | None = None,
                      trec: turnlog.Recorder | None = None,
                      ) -> tuple[dict[str, Any], int]:
     """One antigravity turn behind the provider seam (D-186, re-walked for
@@ -13239,7 +13287,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 pending_recs = list(jstate["pending"])
                 jstate["pending"].clear()
                 _record_prompt_view(slug, jstate["sid"], text, turn_view,
-                                    at=_iso_ts(t0), spans=view_spans)
+                                    at=_iso_ts(t0), spans=view_spans, segments=view_segments)
                 _codex_journal(slug, jstate["sid"], [
                     {"type": "user", "timestamp": _iso_ts(t0),
                      "message": {"role": "user", "content": text}},
@@ -13739,6 +13787,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
     # no envelope went into it. It is never None here: every path below
     # composes, so 'unknown' can only describe a row written before v2.
     view_spans: list[dict[str, Any]] = []
+    view_segments: list[dict[str, Any]] | None = None
     # the session this turn actually launched on — NOT whatever the node
     # points at when the turn ends (a cheap-compact can land mid-turn)
     ran_sid: str | None = None
@@ -13955,11 +14004,14 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 pending = None if is_cmd \
                     else (org.d.get("notices") or {}).pop(nid, None)
                 mail = [] if is_cmd else org.take_mail(nid)
+                view_segments = None if is_cmd else _segments_for(
+                    mail, pending, text if isinstance(text, str) else None)
                 if pending or mail:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
                     # die with the turn — the journal folds it back
-                    toks.append(_journal_drain(org, nid, mail, pending, "turn"))
+                    toks.append(_journal_drain(org, nid, mail, pending, "turn",
+                                               segments=view_segments))
                     store.save_org(org)
             if cache_forecast_event is not None:
                 stream(slug, nid, {"kind": "cache_forecast",
@@ -14127,7 +14179,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 # + the SHARED finally via the control raise below.
                 res, codex_occ = _codex_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view,
-                    view_spans=view_spans,
+                    view_spans=view_spans, view_segments=view_segments,
                     startup_manifest=cache_codex_manifest, trec=_trec)
                 if res.get("_codex_account_ambiguous"):
                     # The provider turn is real, but no local observation can
@@ -14155,7 +14207,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 # its own control raise, the SHARED finally owns the queue.
                 res, agy_occ = _antigravity_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view,
-                    view_spans=view_spans, trec=_trec)
+                    view_spans=view_spans, view_segments=view_segments, trec=_trec)
                 if _trec is not None:
                     _trec.dispose("interrupted" if str(res.get("status") or "")
                                   == "interrupted" else "completed")
@@ -14537,7 +14589,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     _mcp_gate_terminal(_mcp_wait_for_surface(
                         org, nid, proc, "claude", turn_mcp_fingerprint))
                     _record_prompt_view(slug, sid, text, turn_view,
-                                        spans=view_spans)
+                                        spans=view_spans, segments=view_segments)
                     proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                     proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
                 except (OSError, ValueError):
@@ -15334,17 +15386,20 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 ncmd = bool(nxt.get("cmd"))
                                 nview = str(nxt.get("view") or "")
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
+                            nsegs: list[dict[str, Any]] | None = None
                             if ncmd:
                                 nview = str(nxt)
                             if not ncmd:      # a slash command goes verbatim
                                 nviews: list[str] = []
                                 nspans_out: list[list[dict[str, Any]]] = []
+                                nseg_out: list[list[dict[str, Any]]] = []
                                 nxt, ntok, nimgs = _envelope(
                                     slug, nid, nxt, via="turn",
                                     base_view=nview, view_out=nviews,
-                                    spans_out=nspans_out)
+                                    spans_out=nspans_out, segments_out=nseg_out)
                                 nview = nviews[0] if nviews else nview
                                 nspans = nspans_out[0] if nspans_out else []
+                                nsegs = nseg_out[0] if nseg_out else None
                                 if ntok:
                                     ntoks.append(ntok)
                                 elif nping and not ntoks:
@@ -15436,7 +15491,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                         + "\n\n" + nxt)
                                 _record_prompt_view(slug, ran_sid or sid,
                                                     str(nxt), nview,
-                                                    spans=nspans)
+                                                    spans=nspans, segments=nsegs)
                                 proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]
                                 proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming
@@ -26958,11 +27013,10 @@ def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
                             and isinstance(block.get("text"), str)):
                         raw_prompt = block["text"]
                         break
-            projected, human_text = ((False, "") if raw_prompt is None else
-                                      _take_prompt_view(
-                                          prompt_views, raw_prompt,
-                                          rec.get("timestamp"),
-                                          consumed=views_consumed))
+            projected, human_text, view_segments = (
+                (False, "", None) if raw_prompt is None else
+                _take_prompt_view(prompt_views, raw_prompt, rec.get("timestamp"),
+                                  consumed=views_consumed))
             # Cache source truth, not one reader's answer. Freshness, pending
             # coverage and `hold_back` can all change while both files remain
             # byte-identical, so an unresolved envelope is retained as a
@@ -27193,6 +27247,8 @@ def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
         if prompt_unresolved:
             mrow["_prompt_unresolved"] = True
             mrow["_prompt_raw"] = prompt_raw
+        if t == "user" and projected and view_segments is not None:
+            mrow["segments"] = view_segments
         if thinks or sealed:
             if thinks:
                 mrow["thinking"] = "\n\n".join(thinks)[:6000]
