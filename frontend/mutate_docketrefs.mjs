@@ -111,16 +111,15 @@ const MUTANTS = [
     from: '    [slug], 5000, `${bump}-${showArchived}-${showBacklog}`)',
     to: '    [slug], 5000, `${bump}`)',
   },
-  // ------------------------- w2d5fab0a elements 3 and 4 (the two that need
-  // ------------------------- no parent relation)
-  {
-    name: 'the status dot echoes the status even when the row is flagged',
-    file: DOCKET, kills: 'ATTENTION outranks it',
-    from: `        <span className={'docket-dot status-' + item.status
-          + (attention ? ' attention' : '')} aria-hidden="true" />`,
-    to: `        <span className={'docket-dot status-' + item.status}
-          aria-hidden="true" />`,
-  },
+  // ------------------------- w2d5fab0a element 4 (needs no parent relation)
+  //
+  // ⚠ ELEMENT 3'S MUTANT — "the status dot echoes the status even when the row
+  // is flagged" — WAS DELETED, NOT REPAIRED (user 2026-09-06 removed the dot
+  // from the row for the width). Its rule no longer exists to break, so
+  // repointing it at anything would be inventing a target; a mutant kept alive
+  // against removed markup is the inert guard this harness exists to catch. The
+  // attention precedence it protected is still checked where it still runs: on
+  // the left edge and the status word.
   {
     name: 'both progress lists are handed over as the same kind',
     file: DOCKET, kills: 'different kinds of line',

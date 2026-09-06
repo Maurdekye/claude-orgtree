@@ -2975,34 +2975,23 @@ main.solo { width: 100%; }
 .docket-modal .mailrow.status-dropped { border-left: 3px solid var(--line-soft); }
 .docket-modal .mailrow.attention { border-left: 3px solid var(--accent); }
 
-/* w2d5fab0a element 3 — the small status dot that rides with the name.
-   The coloured left edge above already existed; the dot is the other half of
-   the approved element. Two readings of one fact on purpose: the 3px edge is
-   easy to lose against a selected row's tint and against the panel border,
-   while the dot sits where the eye already is. Same colour vocabulary as the
-   edge and the status word, so they can never disagree. */
-.docket-row .l1 .docket-dot {
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  background: var(--line); align-self: center;
-}
-/* ⚠ THE DOT IS A THIRD CHILD, AND `.mailrow .l1` IS `space-between`. With two
-   children that put the name left and the time right; with three it CENTRES
-   the name between them, which is exactly what it did — caught in the browser
-   preview, not by any DOM test. The name is pinned left and the time pushed
-   right explicitly, so adding a fourth child later cannot repeat this. */
+/* ⚠ THE `.docket-dot` RULES ARE GONE WITH THE DOT (user 2026-09-06: "remove
+   the little colored dot ... we need that space cor long slug names"). It was
+   w2d5fab0a element 3, a second reading of the status beside the coloured left
+   edge; the edge above and the status word in `.l2` both remain. The row is a
+   flex line with a `gap`, so removing the element gives the name BOTH the
+   dot's 6px and the gap that followed it — there is no reserved slot left
+   behind, and nothing here reserves one.
+
+   THE THREE RULES BELOW STAY, and they are not dot rules. `.mailrow .l1` is
+   `space-between`, which only puts the name left and the time right while
+   there are exactly two children — the fold arrow already makes three on any
+   parent row, and that CENTRED the name (caught in the browser preview, not by
+   any DOM test). Pinning the name left and pushing the time right explicitly
+   is what keeps a third child from doing it again. */
 .docket-row .l1 { justify-content: flex-start; }
 .docket-row .l1 .mfrom { min-width: 0; }
 .docket-row .l1 .mtime { margin-left: auto; }
-.docket-row .l1 .docket-dot.status-in_progress { background: var(--work); }
-.docket-row .l1 .docket-dot.status-blocked { background: var(--bad); }
-.docket-row .l1 .docket-dot.status-review { background: var(--review); }
-.docket-row .l1 .docket-dot.status-waiting { background: var(--warn); }
-.docket-row .l1 .docket-dot.status-backlogged { background: var(--backlog); }
-.docket-row .l1 .docket-dot.status-done { background: var(--ok); }
-.docket-row .l1 .docket-dot.status-superseded,
-.docket-row .l1 .docket-dot.status-dropped { background: var(--line-soft); }
-/* attention outranks the status, exactly as the edge and the word do */
-.docket-row .l1 .docket-dot.attention { background: var(--accent); }
 
 .docket-modal .tier {
   width: 16px; height: 16px; display: inline-grid; place-items: center;

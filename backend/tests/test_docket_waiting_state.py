@@ -5,7 +5,9 @@ Run: python backend/tests/test_docket_waiting_state.py
 
 Everything here is driven through the real ledger on a throwaway data root —
 no scheduler, no provider, no clock to wait on. What is pinned: that `waiting`
-is ACTIVE work and not a second backlog; that entering blocked or waiting
+is read in the main list and counted in no badge, and that after an hour it
+ages into the archive still waiting (user 2026-09-06, §1 and §5) rather than
+becoming a second backlog or a completion; that entering blocked or waiting
 requires its own field while staying in the state does not; that a blank string
 is refused rather than erasing what is recorded; that a refused transition
 writes NOTHING; that the field is cleared on every way out of the state; and
@@ -22,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 ROOT = tempfile.mkdtemp(prefix="orgtree-waiting-state-")
 os.environ["ORGTREE_DATA"] = ROOT
@@ -102,28 +105,61 @@ def upd(slug: str, wid: str, **kw):
         USER, wid, kw.pop("done", ["a step"]), kw.pop("next", []), **kw))
 
 
-print("\n§1  waiting is ACTIVE work, not a second backlog")
+print("\n§1  waiting is READ in the main list, and COUNTED nowhere")
 
 
-def waiting_is_active() -> None:
+def waiting_is_listed_but_not_counted() -> None:
+    """⚠ THIS CHECK WAS INVERTED ON 2026-09-06, and only in its second half.
+
+    It used to assert `active == 1` for a waiting item. The user asked for the
+    opposite — "waiting tasks shouldn't count towards the number in the corner
+    of the docket button" — so the count is now 0 while every other thing this
+    check pinned is unchanged: waiting stays in the MAIN list, it is not the
+    backlog, and it keeps its status and its reason. The two halves are held
+    apart on purpose, because "not counted" and "not shown" are exactly the
+    pair that would be easy to conflate into hiding the row."""
     slug = fixture()
     wid = item(slug, "Waits on a build")
     upd(slug, wid, status="waiting", waiting_reason=EVENT)
     back = item(slug, "Nobody has started this", status="backlogged")
+    live = item(slug, "Somebody is on this", status="in_progress")
     counts = store.load_org(slug).work_counts()
-    assert counts["active"] == 1, counts        # the waiting item, not the backlog
+    # THE CONTROL IS IN THE SAME NUMBER: the in_progress item is counted, so
+    # this is about excluding waiting and not about a badge stuck at zero
+    assert counts["active"] == 1, counts
     assert counts["backlogged"] == 1, counts
     lst = store.load_org(slug).work_list(USER, include_backlogged=True,
                                          include_archived=True)
-    assert [r["slug"] for r in lst["items"]] == [wid], lst["items"]
+    assert sorted(r["slug"] for r in lst["items"]) == sorted([wid, live]), \
+        lst["items"]
     assert [r["slug"] for r in lst["backlogged"]] == [back], lst["backlogged"]
     assert not lst["archived"], lst["archived"]
     v = view(slug, wid)
     assert v["status"] == "waiting" and v["waiting_reason"] == EVENT, v
 
 
-check("a waiting item counts as active and stays in the main list "
-      "(a backlogged one does neither)", waiting_is_active)
+check("a waiting item stays in the main list but is out of the active count "
+      "(control: an in_progress item in the same org is counted)",
+      waiting_is_listed_but_not_counted)
+
+
+def an_agents_own_count_agrees_with_the_badge() -> None:
+    """The org-wide badge and a single agent's readable set are counted by two
+    different code paths (`work_counts` and `work_list`'s own sum). Two rules,
+    one number: an agent reading its docket must not be told a different amount
+    of work in flight than the button shows."""
+    slug = fixture(peers=("peer",))
+    wid = item(slug, "Waits on a build", owner="peer")
+    upd(slug, wid, status="waiting", waiting_reason=EVENT)
+    item(slug, "Somebody is on this", owner="peer", status="in_progress")
+    org = store.load_org(slug)
+    assert org.work_list("peer")["counts"]["active"] == 1, \
+        org.work_list("peer")["counts"]
+    assert org.work_counts()["active"] == 1, org.work_counts()
+
+
+check("an agent's own docket count excludes waiting exactly as the badge does",
+      an_agents_own_count_agrees_with_the_badge)
 
 
 def waiting_is_a_real_transition() -> None:
@@ -498,6 +534,172 @@ def one_agent_one_list() -> None:
 
 check("own work and somebody else's review arrive in ONE list, each row "
       "saying which it is", one_agent_one_list)
+
+
+print("\n§5  waiting ages out of the main list on the DONE clock, as waiting")
+
+
+def backdate(slug: str, wid: str, seconds: int) -> float:
+    """Push the item's docket clock into the past. Returns the `now` it has
+    been aged against, so the caller never compares against a second clock."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, _ = org._work_find(wid)
+        dt = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        it["docket_at"] = dt.isoformat()
+        store.save_org(org)
+    return dt.timestamp() + seconds
+
+
+def sweep(slug: str, at: float) -> list[str]:
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        moved = org._work_sweep(at)
+        store.save_org(org)
+    return moved
+
+
+def an_hour_old_waiting_item_archives_as_waiting() -> None:
+    """The user asked for waiting to be archived "like done tasks" — the same
+    clock, and nothing else about done. What that means in practice is that the
+    row moves LIST and keeps its STATE: it is not accepted, not completed, and
+    its reason survives the move."""
+    slug = fixture()
+    wid = item(slug, "Waits on a build")
+    upd(slug, wid, status="waiting", waiting_reason=EVENT)
+    at = backdate(slug, wid, 3601)
+    assert sweep(slug, at) == [wid], "the sweep left an hour-old waiting item"
+    org = store.load_org(slug)
+    assert [i["slug"] for i in org._work_archive()] == [wid], "not moved"
+    assert not org._work_active(), org._work_active()
+    v = org.work_get(USER, wid, at)
+    assert v["archived"] is True, v["archived"]
+    assert v["status"] == "waiting", ("archived AS something else", v["status"])
+    assert v["waiting_reason"] == EVENT, v
+    assert v["accepted"] is None, ("the sweep recorded a completion", v)
+    lst = org.work_list(USER, include_archived=True, now_ts=at)
+    assert not lst["items"], lst["items"]
+    assert [r["slug"] for r in lst["archived"]] == [wid], lst["archived"]
+    assert lst["counts"]["archived"] == 1 and lst["counts"]["active"] == 0, \
+        lst["counts"]
+
+
+check("a waiting item over an hour old archives, still waiting and never done",
+      an_hour_old_waiting_item_archives_as_waiting)
+
+
+def the_boundary_is_the_same_strict_hour() -> None:
+    """No new clock and no new threshold: the same STRICTLY-greater-than-an-hour
+    rule `done` and `dropped` age out on. A waiting item one second short is
+    still on the main list, and a done item beside it behaves identically."""
+    slug = fixture()
+    young = item(slug, "Waits on a build")
+    upd(slug, young, status="waiting", waiting_reason=EVENT)
+    fine = item(slug, "Finished", status="review")
+    do(slug, lambda org: org.work_accept(USER, fine))
+    at = min(backdate(slug, young, 3599), backdate(slug, fine, 3599))
+    assert sweep(slug, at) == [], "something archived a second early"
+    org = store.load_org(slug)
+    assert not org.work_get(USER, young, at)["archived"], "derived too early"
+    assert not org.work_get(USER, fine, at)["archived"], \
+        "control: done archived early too, so this is the clock, not waiting"
+    # PAST the boundary both go, on the same call
+    at = max(backdate(slug, young, 3601), backdate(slug, fine, 3601))
+    assert sorted(sweep(slug, at)) == sorted([young, fine])
+
+
+check("the waiting archive is the same strict one-hour boundary as done "
+      "(control: done ages on exactly the same call)",
+      the_boundary_is_the_same_strict_hour)
+
+
+def the_durable_log_does_not_call_it_closed() -> None:
+    """The sweep writes an org-log row that used to say the batch was "closed
+    for over an hour". A waiting item is NOT closed, and the durable record is
+    the one place that mistake would outlive the screen."""
+    slug = fixture()
+    waits = item(slug, "Waits on a build")
+    upd(slug, waits, status="waiting", waiting_reason=EVENT)
+    fine = item(slug, "Finished", status="review")
+    do(slug, lambda org: org.work_accept(USER, fine))
+    at = max(backdate(slug, waits, 3601), backdate(slug, fine, 3601))
+    sweep(slug, at)
+    rows = [r for r in (store.load_org(slug).d.get("events") or [])
+            if r.get("op") == "work_archived"]
+    assert rows, "the sweep archived items and logged nothing"
+    d = rows[-1]["detail"]
+    assert d["outcomes"][waits] == "waiting", d["outcomes"]
+    # the CONTROL is in the same row: the accepted item still reads `done`
+    assert d["outcomes"][fine] == "done", d["outcomes"]
+    assert "closed" not in str(d["why"]), d["why"]
+    assert "done" not in str(d["why"]), d["why"]
+
+
+check("the durable archive log records the waiting item AS waiting, and the "
+      "batch reason no longer claims anything closed",
+      the_durable_log_does_not_call_it_closed)
+
+
+def the_timer_never_resumes_it() -> None:
+    """Ageing out changes where the row is served, never what state it is in.
+    Coming back is an explicit act — the same reopen an archived done item
+    takes — and the refusal that asks for it names the real status."""
+    slug = fixture()
+    wid = item(slug, "Waits on a build")
+    upd(slug, wid, status="waiting", waiting_reason=EVENT)
+    sweep(slug, backdate(slug, wid, 3601))
+    msg = refused(lambda: upd(slug, wid, done=["the build finished"]))
+    assert "ARCHIVED (waiting for over an hour)" in msg, msg
+    assert "reopen=true" in msg, msg
+    # nothing about the refusal moved it back
+    assert [i["slug"] for i in store.load_org(slug)._work_archive()] == [wid]
+    upd(slug, wid, reopen=True, status="in_progress", done=["the build finished"])
+    org = store.load_org(slug)
+    assert [i["slug"] for i in org._work_active()] == [wid], "not brought back"
+    assert not org._work_archive(), org._work_archive()
+    v = org.work_get(USER, wid)
+    assert v["status"] == "in_progress" and v["archived"] is False, v
+    assert v["waiting_reason"] is None, "a reason outlived its state"
+    assert org.work_counts()["active"] == 1, org.work_counts()
+    # the history kept the whole trip: into waiting, and back out of the archive
+    ops = [h.get("op") for h in v["history"]]
+    assert "reopen" in ops, ops
+
+
+check("the timer archives a waiting item but never resumes or completes it — "
+      "coming back takes an explicit reopen", the_timer_never_resumes_it)
+
+
+def attention_still_holds_it_out_of_the_archive() -> None:
+    """The archive exemption is about the BADGE being able to open onto a
+    visible row, and it is decided before the status is looked at — so it must
+    hold for the newest status that ages out, not just for done."""
+    slug = fixture()
+    wid = item(slug, "Waits on a build")
+    upd(slug, wid, status="waiting", waiting_reason=EVENT,
+        attention=True, attention_reason="confirm the extra switch I added")
+    # ⚠ THE CONTROL IS A SECOND WAITING ITEM OF THE SAME AGE, flagged by
+    # nothing. Without it "the sweep moved neither" is exactly what a build
+    # where waiting never archives at all would print, and this check would
+    # pass while proving nothing about the exemption.
+    plain = item(slug, "Also waits on a build")
+    upd(slug, plain, status="waiting", waiting_reason=EVENT)
+    at = min(backdate(slug, wid, 3601), backdate(slug, plain, 3601))
+    assert sweep(slug, at) == [plain], \
+        "an attention-holding waiting item archived, or its control did not"
+    org = store.load_org(slug)
+    assert not org.work_get(USER, wid, at)["archived"], "derived as archived"
+    lst = org.work_list(USER, include_archived=True, now_ts=at)
+    assert [r["slug"] for r in lst["items"]] == [wid], lst["items"]
+    # and the badge that points at it is the ATTENTION number, never `active`
+    assert org.work_counts(at) == {"attention": 1, "active": 0,
+                                   "archived": 1, "backlogged": 0}, \
+        org.work_counts(at)
+
+
+check("an hour-old waiting item that holds attention stays in the main list, "
+      "counted as attention and not as active",
+      attention_still_holds_it_out_of_the_archive)
 
 
 print(f"\nALL {PASS} CHECKS PASS" if not FAIL else f"\n{FAIL} FAILED, {PASS} PASSED")

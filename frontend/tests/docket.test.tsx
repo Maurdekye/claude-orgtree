@@ -1593,13 +1593,27 @@ uiTest('§35 a Waiting item has its own group, below what somebody can act on to
   assert.deepEqual(titles(el), ['Blocked One', 'Moving One', 'Reviewed One',
     'Open One', 'Waiting One', 'Backlog One'])
 
-  // it is ACTIVE work: it is in the main list, and the toolbar counts it
+  // it is REAL work and it is in the main list — what changed on 2026-09-06 is
+  // only that the toolbar stops counting it (a backend rule, pinned in
+  // test_docket_waiting_state.py §1) and that it ages into the archive after an
+  // hour. The row itself still says what it is, in words.
   const waiting = rows(el)[4]!
   assert.ok(waiting.querySelector('.docket-status.status-waiting'),
     'the status word carries its own class, as every other status does')
   assert.equal(waiting.querySelector('.docket-status')?.textContent, 'Waiting')
-  assert.ok(waiting.querySelector('.docket-dot.status-waiting'),
-    'and so does the dot, or it cannot be coloured')
+
+  // ⚠ AND THE NAME LINE STARTS WITH THE NAME (user 2026-09-06 removed the
+  // status dot for the width). Asserted across EVERY row rather than on this
+  // one, so a dot left behind on any other status still fails; the first child
+  // is checked, not merely the dot's absence, because a replacement element in
+  // the same slot would take the same width back.
+  for (const r of rows(el)) {
+    assert.equal(r.querySelector('.l1 .docket-dot'), null,
+      'a status dot is still eating the width the name was given')
+    assert.ok((r.querySelector('.l1')?.firstElementChild as HTMLElement)
+      ?.classList.contains('docket-rowname'),
+      'something sits between the start of the row and its name')
+  }
 })
 
 uiTest('§36 the pane explains the state the item is IN, never a leftover one', async (mount) => {
@@ -1697,14 +1711,16 @@ const paintOf = (selector: string, prop: string): string | null => {
   return new RegExp(prop + String.raw`:\s*var\((--[\w-]+)\)`).exec(m[1]!)?.[1] ?? null
 }
 
-test('§37 Waiting is painted, word and dot, and not with Open’s colour', () => {
+test('§37 Waiting is painted, and not with Open’s colour', () => {
   // ⚠ THIS CHECKS THE DECLARATION, NOT THE PIXELS. Two different tokens are
   // not a promise that anyone can tell the two apart; all it rules out is the
   // state the branch shipped in, where `waiting` had no rule at all and so
   // rendered exactly as `open` did.
+  //
+  // The dot half of this check went with the dot itself (user 2026-09-06), so
+  // the status WORD is now the only painted reading of the state in the row —
+  // which is why it is worth keeping this half.
   assert.equal(paintOf('.docket-status.status-waiting', 'color'), '--warn')
-  assert.equal(paintOf('.docket-row .l1 .docket-dot.status-waiting',
-    'background'), '--warn')
   assert.notEqual(paintOf('.docket-status.status-waiting', 'color'),
     paintOf('.docket-status.status-open', 'color'),
     'Waiting and Open declare the same colour again')
