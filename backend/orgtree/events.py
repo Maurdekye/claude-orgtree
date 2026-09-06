@@ -435,6 +435,85 @@ def public_event(ev: Mapping[str, Any]) -> dict[str, Any]:
     return ordered
 
 
+# ======================================================================== wire helpers
+SEGMENT_KINDS: Final = ("notices", "mail", "state", "drive", "text")
+DELIVERY_MODES: Final = ("turn", "steer", "boundary", "reconcile", "rehire", "idle_only")
+
+
+def wire_row(row: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
+    """The WIRE projection of one stored mail / notice / user-inbox row (design §6):
+    the stored `ev` is ROW-ENCODED (an ordinary body is elided) and never crosses the
+    wire in that form. Emits, for the operator, `ev` = the FULL event (or `ev_raw` +
+    static `ev_error`; nothing on a legacy row); for a visitor, `ev_public` = the
+    PublicEvent (or `ev_error` = {code}); never both, never `ev`/`ev_raw` publicly.
+    body/text are untouched."""
+    out = {k: v for k, v in row.items() if k != "ev"}
+    raw = row.get("ev")
+    if raw is None:
+        return out
+    r = decode(raw, row)
+    if r["status"] == "ok":
+        if public:
+            out["ev_public"] = public_event(r["ev"])
+        else:
+            out["ev"] = encode_ev(r["ev"])
+    else:
+        if public:
+            out["ev_error"] = {"code": r["error"]["code"]}
+        else:
+            out["ev_raw"] = raw
+            out["ev_error"] = r["error"]
+    return out
+
+
+def journal_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A row as a journal/projection SEGMENT stores it: the FULL event (bare codec —
+    these copies must outlive the mail_log cap, Opus E1)."""
+    return wire_row(row, public=False)
+
+
+def wire_segments(segments: list[Mapping[str, Any]] | None, *,
+                  public: bool) -> list[dict[str, Any]] | None:
+    """Project a stored segment list for the wire. Segments store FULL events; the
+    operator gets them as stored, a visitor gets PublicEvent / withheld."""
+    if segments is None:
+        return None
+    out: list[dict[str, Any]] = []
+    for seg in segments:
+        k = str(seg.get("kind") or "")
+        if k in ("notices", "mail"):
+            rows = [dict(r) for r in seg.get("rows") or []]
+            if public:
+                proj: list[dict[str, Any]] = []
+                for r in rows:
+                    ev = r.pop("ev", None)
+                    r.pop("ev_raw", None)
+                    err = r.pop("ev_error", None)
+                    if ev is not None:
+                        try:
+                            r["ev_public"] = public_event(ev)
+                        except EventInvalid as e:
+                            r["ev_error"] = e.public()
+                    elif err is not None:
+                        r["ev_error"] = {"code": str(err.get("code") or "bad_structure")}
+                    proj.append(r)
+                rows = proj
+            out.append({"kind": k, "rows": rows})
+        elif k in ("state", "drive"):
+            ev = seg.get("event")
+            item: dict[str, Any] = {"kind": k, "text": str(seg.get("text") or "")}
+            if ev is not None:
+                try:
+                    item["event_public" if public else "event"] = (
+                        public_event(ev) if public else encode_ev(ev))
+                except EventInvalid as e:
+                    item["ev_error"] = e.public() if public else e.admin()
+            out.append(item)
+        elif k == "text":
+            out.append({"kind": "text", "text": str(seg.get("text") or "")})
+    return out
+
+
 # ============================================================================ manifest
 def manifest() -> dict[str, Any]:
     """Every field of every leaf/ref/record with its type, disposition, public flag and
@@ -594,6 +673,41 @@ def emit_typescript() -> str:
             out.append("\n".join(lines))
         out.append(f"export type {pfx}Event =\n  | " + "\n  | ".join(names) + ";")
         out.append("")
+    out.append("""// ---- WIRE rows, segments and the delivery envelope (design §6)
+export type EvError = { code: string; path: string; expected: string };
+export type PublicEvError = { code: string };
+export interface WireMailRow {
+  id?: string; from: string; kind: string; body: string; at: string;
+  relationship?: string | null; attachments?: unknown[]; attachments_missing?: string[];
+  reply_to?: Record<string, unknown>; model_only?: boolean; retracted?: boolean;
+  delivering?: boolean; via?: string; stage?: string; ref?: string;
+  ev?: Event; ev_raw?: unknown; ev_error?: EvError;
+}
+export interface PublicWireMailRow {
+  id?: string; from: string; kind: string; body: string; at: string;
+  relationship?: string | null; attachments?: unknown[]; attachments_missing?: string[];
+  reply_to?: Record<string, unknown>; retracted?: boolean; delivering?: boolean;
+  via?: string; stage?: string; ref?: string;
+  ev_public?: PublicEvent; ev_error?: PublicEvError;
+}
+export interface WireNoticeRow { at: string; text: string; ev?: Event; ev_raw?: unknown; ev_error?: EvError; }
+export interface PublicWireNoticeRow { at: string; text: string; ev_public?: PublicEvent; ev_error?: PublicEvError; }
+export type Segment =
+  | { kind: "notices"; rows: WireNoticeRow[] }
+  | { kind: "mail"; rows: WireMailRow[] }
+  | { kind: "state"; event?: Event; text: string; ev_error?: EvError }
+  | { kind: "drive"; event?: Event; text: string; ev_error?: EvError }
+  | { kind: "text"; text: string };
+export type PublicSegment =
+  | { kind: "notices"; rows: PublicWireNoticeRow[] }
+  | { kind: "mail"; rows: PublicWireMailRow[] }
+  | { kind: "state"; event_public?: PublicEvent; text: string; ev_error?: PublicEvError }
+  | { kind: "drive"; event_public?: PublicEvent; text: string; ev_error?: PublicEvError }
+  | { kind: "text"; text: string };
+export const DELIVERY_MODES = ["turn","steer","boundary","reconcile","rehire","idle_only"] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+export interface Delivery { mode: DeliveryMode; via: "turn" | "steer"; attempt: number; at: string; }
+""")
     out.append("export const FAMILY_OF: Record<Event['variant'], Family> = "
                + json.dumps(FAMILY_OF, indent=2) + ";")
     out.append("export const VARIANTS = " + json.dumps(list(VARIANTS), indent=2) + " as const;")
