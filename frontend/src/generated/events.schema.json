@@ -3946,6 +3946,9 @@
         },
         "count": {
           "type": "integer"
+        },
+        "once": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -3956,7 +3959,8 @@
         "object",
         "prefix",
         "lines",
-        "count"
+        "count",
+        "once"
       ],
       "additionalProperties": false
     },
@@ -9046,6 +9050,9 @@
         },
         "count": {
           "type": "integer"
+        },
+        "once": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -9056,7 +9063,8 @@
         "object",
         "prefix",
         "lines",
-        "count"
+        "count",
+        "once"
       ],
       "additionalProperties": false
     },

@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
 LEDGER = os.path.join(BACKEND, "orgtree", "ledger.py")
 SUP = os.path.join(BACKEND, "orgtree", "supervisor.py")
+RENDER = os.path.join(BACKEND, "orgtree", "events_render.py")
 SUITE = os.path.join(HERE, "test_watchdog_oneshot.py")
 
 # (label, file, find, replace, what it breaks)
@@ -55,18 +56,19 @@ MUTANTS = [
      '            "once": False}  # MUTANT\n',
      "an owner cannot verify what it armed"),
 
+    # the note is produced in ONE place — events_render.watchdog_once_note —
+    # shared by the typed fire (renderer) and the raw-body ledger path, so a
+    # mutant there is felt on both
     ("the fire mail does not mention self-removal",
-     LEDGER,
-     "            body = body[:8000 - len(self.WATCHDOG_ONCE_NOTE)].rstrip() \\\n"
-     "                + self.WATCHDOG_ONCE_NOTE\n",
-     "            body = body[:8000]  # MUTANT\n",
+     RENDER,
+     "    return body[:8000 - len(WATCHDOG_ONCE_NOTE)].rstrip() + WATCHDOG_ONCE_NOTE\n",
+     "    return body[:8000]  # MUTANT\n",
      "the owner is not told why its dog vanished"),
 
     ("the note is appended and then truncated away",
-     LEDGER,
-     "            body = body[:8000 - len(self.WATCHDOG_ONCE_NOTE)].rstrip() \\\n"
-     "                + self.WATCHDOG_ONCE_NOTE\n",
-     "            body = (body + self.WATCHDOG_ONCE_NOTE)  # MUTANT\n",
+     RENDER,
+     "    return body[:8000 - len(WATCHDOG_ONCE_NOTE)].rstrip() + WATCHDOG_ONCE_NOTE\n",
+     "    return (body + WATCHDOG_ONCE_NOTE)[:8000]  # MUTANT\n",
      "a long event pushes the explanation off the end"),
 
     ("an ALERT also spends the dog",
@@ -106,14 +108,14 @@ MUTANTS = [
      "                notice = one_shot = False\n"
      "            owner = org.watchdog_fire(wid, lines[0] if lines else "
      "\"event\",\n"
-     "                                      body)\n",
+     "                                      lines=lines, prefix=prefix)\n",
      "                one_shot = bool(org._watchdog(wid).get(\"once\"))\n"
      "                kind = str(org._watchdog(wid).get(\"kind\") or \"\")\n"
      "            except LedgerError:\n"
      "                one_shot = False\n"
      "            owner = org.watchdog_fire(wid, lines[0] if lines else "
      "\"event\",\n"
-     "                                      body)\n"
+     "                                      lines=lines, prefix=prefix)\n"
      "            try:  # MUTANT: the pre-D-200 ordering\n"
      "                notice = bool(org._watchdog(wid).get(\"notice\"))\n"
      "            except LedgerError:\n"
@@ -146,18 +148,24 @@ def main():
 
     survivors = []
     for label, path, find, repl, why in MUTANTS:
-        src = open(path, encoding="utf-8").read()
+        # newline="" on BOTH sides: read with translation and the restore
+        # writes the file back as LF, which .gitattributes then reports as
+        # permanently dirty (and the deploy guard refuses). Anchors below are
+        # written with "\n" and matched against the normalised text.
+        raw = open(path, encoding="utf-8", newline="").read()
+        nl = "\r\n" if "\r\n" in raw else "\n"
+        src = raw.replace("\r\n", "\n")
         if find not in src:
             print(f"  ✗ {label}\n      MUTATION DID NOT APPLY — the code it "
                   f"targets has moved. This mutant tested NOTHING.")
             survivors.append((label, "did not apply"))
             continue
         open(path, "w", encoding="utf-8", newline="").write(
-            src.replace(find, repl, 1))
+            src.replace(find, repl, 1).replace("\n", nl))
         try:
             rc, out = run_suite()
         finally:
-            open(path, "w", encoding="utf-8", newline="").write(src)
+            open(path, "w", encoding="utf-8", newline="").write(raw)
         killed = rc != 0
         mm = re.search(r"(\d+) passed, (\d+) failed", out)
         print(f"  {'✓ killed ' if killed else '✗ SURVIVED'} {label}")

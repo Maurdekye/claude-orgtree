@@ -350,7 +350,8 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
                                node=F("str", B, True, _YOU), released=F("[str]", B, True, _VARIANT)),
     # ---- family monitor
     "monitor.watchdog_fired": leaf("monitor", "WatchdogRef", prefix=F("str", B, True),
-                                   lines=F("[str]{1}", B, True), count=F("int", B, True)),
+                                   lines=F("[str]{1}", B, True), count=F("int", B, True),
+                                   once=F("bool", B, True)),
     "monitor.watchdog_quiet": leaf("monitor", "WatchdogRef", headline=F("str", B, True, "printed upper-cased"),
                                    facts=F("[str]{1}", B, True), advice=F("str", B, True)),
     # ---- family runtime_recovery
