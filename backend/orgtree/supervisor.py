@@ -6716,6 +6716,13 @@ def _journal_drain(org: Org, nid: str, mail: list[MailEntry] | None,
     return tok
 
 
+def _node_ref(org: Org, nid: str) -> dict[str, Any]:
+    """The canonical NodeRef of a node as the producers mint it (design §2)."""
+    n = org.nodes.get(nid) or {}
+    return {"kind": "node", "org": str(org.d.get("slug") or ""), "id": nid,
+            "name": str(n.get("name") or nid), "generation": int(n.get("generation") or 0)}
+
+
 def _segments_for(mail: list[MailEntry] | None, pending: list[NoticeEntry] | None,
                   text: str | None, *, drive: Mapping[str, Any] | None = None
                   ) -> list[dict[str, Any]]:
@@ -9212,14 +9219,19 @@ def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
         mid = uuid_hex8()
         stamp = _iso_ts(now)
         n["working_activity_at"] = stamp
+        # typed (design family `reminder`): the body is the frozen rendering of the
+        # event — byte-identical to WORKING_CHECKUP_PROMPT (test_events_producers)
+        ev = events.mint("reminder.working_checkup", {"kind": "system", "id": SYSTEM},
+                         _node_ref(org, nid))
         entry: MailEntry = {
             "id": mid, "from": SYSTEM, "kind": "message",
-            "body": WORKING_CHECKUP_PROMPT, "at": stamp,
+            "body": events.render_agent(ev), "at": stamp,
             "model_only": True,
             "relationship": (
                 "the orgtree engine automatically checking a durable working "
                 "status after 20 minutes without an agent wake"),
         }
+        entry["ev"] = events.encode_row_ev(ev, entry)
         box = org.d.setdefault("mail", {})
         box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
         log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
@@ -9310,15 +9322,25 @@ def _idle_docket_reminder_reserve(
         mid = uuid_hex8()
         stamp = _iso_ts(now)
         n["docket_reminder_at"] = stamp
+        # typed (design family `reminder`): the listed items ride the event; the
+        # body is the frozen rendering — byte-identical to _idle_docket_reminder_body
+        shown = items[:IDLE_DOCKET_REMINDER_MAX_ITEMS]
+        ev = events.mint(
+            "reminder.idle_docket", {"kind": "system", "id": SYSTEM}, _node_ref(org, nid),
+            items=[{"slug": str(it.get("slug") or ""), "title": str(it.get("title") or ""),
+                    "status": str(it.get("status") or ""),
+                    "role": str(it.get("role") or "owner")} for it in shown],
+            more=len(items) - len(shown))
         entry: MailEntry = {
             "id": mid, "from": SYSTEM, "kind": "message",
-            "body": _idle_docket_reminder_body(items), "at": stamp,
+            "body": events.render_agent(ev), "at": stamp,
             "model_only": True,
             "relationship": (
                 "the orgtree engine reminding an idle agent of the unfinished "
                 "docket items whose next action is its own, after 20 minutes "
                 "without a wake"),
         }
+        entry["ev"] = events.encode_row_ev(ev, entry)
         box = org.d.setdefault("mail", {})
         box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
         log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
