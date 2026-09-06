@@ -966,12 +966,12 @@ export const isSystemNotice = (m: MailRow): boolean =>
  *  in the record, `user_inbox` membership still means unread (D-173), and
  *  collapsing at write time would destroy what happened for the sake of how
  *  it looks. */
-export const pileNotices = (rows: MailRow[]): MailRow[][] => {
+export const pileNotices = (rows: MailRow[], compatible: (a: MailRow, b: MailRow) => boolean = () => true): MailRow[][] => {
   const out: MailRow[][] = []
   for (const m of rows) {
     const run = out[out.length - 1]
     const foldable = isSystemNotice(m) && !m._wait
-    if (run && foldable && isSystemNotice(run[0]!) && !run[0]!._wait) run.push(m)
+    if (run && foldable && isSystemNotice(run[0]!) && !run[0]!._wait && compatible(run[0]!, m)) run.push(m)
     else out.push([m])
   }
   return out

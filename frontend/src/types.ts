@@ -162,6 +162,11 @@ export interface MailAttachment {
 
 // schema.py MailEntry (№11/№17)
 export interface MailEntry {
+  /** Raw wire data is decoded against the generated operator/public schema. */
+  ev?: unknown
+  ev_public?: unknown
+  ev_raw?: unknown
+  ev_error?: unknown
   id: string
   from: string
   kind: string

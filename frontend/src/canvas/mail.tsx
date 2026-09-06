@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import type { InboxPayload, OrgEvent, OrgInboxEntry, ToastFn, TreePayload } from '../types'
 import {
-  audienceAction, fileBase, fileUrl, getMailById, getNodeInbox, getOrgInbox, orgInboxRead,
+  BASE, audienceAction, fileBase, fileUrl, getMailById, getNodeInbox, getOrgInbox, orgInboxRead,
   orgInboxSend, orgInboxUpload,
 } from '../api'
 import { AttachThumb, isImg } from './img'
@@ -18,7 +18,7 @@ import {
   MailIcon, PublicIcon,
 } from '../icons'
 import {
-  EXTERN, fmtCredits, isSystemNotice, jumpKey, md, pileNotices, providerOf, USER,
+  EXTERN, fmtCredits, isSystemNotice, jumpKey, md, pileNotices, providerOf, SYSTEM, USER,
   usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
@@ -28,6 +28,10 @@ import type { RefWorld, ResolvedRef } from './reflinks'
 import { isMobile } from '../mobile'
 import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import { fmtFull, fmtShort } from '../timefmt'
+import { decodeEventRow } from '../events/decode'
+import { projectEvent } from '../events/project'
+import type { EventView } from '../events/project'
+import { EventCard } from '../events/card'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
@@ -35,6 +39,7 @@ import { fmtFull, fmtShort } from '../timefmt'
 // selected message opened in the reading pane on the right. Unread mail is
 // HIGHLIGHTED but never moved.
 export interface MailListProps {
+  org?: string
   pending?: MailRow[]
   delivered?: MailRow[]
   waitLabel?: ReactNode
@@ -115,7 +120,7 @@ export interface MailListProps {
 
 const MAIL_WINDOW = 40
 
-export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
+export function MailList({ org, pending = [], delivered = [], waitLabel, sender, rowSender,
   outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, onFound,
   askState, onAskRetry, fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
@@ -138,6 +143,24 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // `pending` and `delivered` still arrive as separate lists because they are
   // different server-side facts (undelivered vs delivered); `_wait` carries
   // that distinction into the row's styling, which is now all it drives.
+  const profile = BASE ? 'public' : 'operator'
+  const views = new WeakMap<MailRow, EventView | null>()
+  const typedView = (m: MailRow) => {
+    if (views.has(m)) return views.get(m)!
+    const result = decodeEventRow(m, profile)
+    const view = result.kind === 'known' ? projectEvent(result.event) : null
+    views.set(m, view)
+    return view
+  }
+  const messageContent = (m: MailRow) => {
+    const decoded = decodeEventRow(m, profile)
+    return decoded.kind === 'legacy'
+      ? <RefMdBody className="mailer-body md" html={md(m.body, mdBase?.(m) || undefined)}
+          world={refs?.world} onOpen={refs?.onOpen} />
+      : <div className="mailer-body"><EventCard row={m} profile={profile}
+          org={org ?? refs?.world.org ?? ''} imgBase={mdBase?.(m) || undefined}
+          world={refs?.world} onOpen={refs?.onOpen} actor={id => S(id, m)} /></div>
+  }
   const newestFirst = (a: MailRow, b: MailRow) =>
     (a.at ?? '') < (b.at ?? '') ? 1 : (a.at ?? '') > (b.at ?? '') ? -1 : 0
   const all = [
@@ -225,7 +248,13 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // belong on the sender in the LIST as well as in the reading pane — the row
   // is the surface you read a mailbox from, and it was the bare name.
   const R: (id: string, m: MailRow) => ReactNode = rowSender ?? S
+  // Routing still uses the stored sender/recipient. Canonical authorship is a
+  // display fact: engine-authored rows may be routed from USER.
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
+  const displayParty = (m: MailRow) => {
+    const actor = !outgoing && typedView(m)?.event.actor
+    return actor ? actor.kind === 'user' ? USER : actor.kind === 'system' ? SYSTEM : actor.id : partyOf(m)
+  }
   const qn = q.trim().toLowerCase()
   const shown = qn
     ? all.filter((m) => String(partyOf(m) ?? '').toLowerCase().includes(qn)
@@ -236,7 +265,13 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // to "@system" should show you the pile, not a run broken by rows the
   // filter removed. Before the window, so `vis` pages entries and not
   // members — otherwise a 40-notice run would spend a whole page on one row.
-  const piles = pileNotices(shown)
+  const piles = pileNotices(shown, (a, b) => {
+    const left = typedView(a), right = typedView(b)
+    if (!left || !right) return decodeEventRow(a, profile).kind === 'legacy'
+      && decodeEventRow(b, profile).kind === 'legacy'
+    return left.event.variant === right.event.variant
+      && left.event.object?.kind === right.event.object?.kind
+  })
   // selection is still BY ROW IDENTITY, but it resolves through the pile: a
   // notice selected on its own stays selected when a newer one arrives and
   // folds it into a run (the key would otherwise address a row that no
@@ -389,6 +424,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
           // that is the newest, and the row keeps its place in the ordering
           const m = g[0]!
           const pile = g.length > 1
+          const view = typedView(m)
           return (
           <div key={keyOf(m)}
             ref={(el) => {
@@ -400,7 +436,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                 el.scrollIntoView({ block: 'center' })
               }
             }}
-            className={'mailrow' + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')
+            className={'mailrow' + (view ? ' event-row event-' + view.family : '') + (m === cur ? ' on' : '') + (m._wait ? ' unread' : '')
               /* request mails wear the askcard's accent family in the list
                  (user spec 2026-08-06); resolved asks keep a quiet edge */
               + (m._ask ? (m._ask.status === 'open' || m._ask.status === 'pending'
@@ -451,8 +487,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                   would also select — or deselect — the mail you clicked from.
                   `AgentName` does that itself; `SenderChip` was made to. */}
               <span className="mfrom">
-                {outgoing ? '→ ' : ''}{R(party(m)!, m)}
+                {outgoing ? '→ ' : ''}{R(displayParty(m)!, m)}
               </span>
+              {!m._ask && view && <span className="event-row-kind">{view.title}</span>}
               {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
               {/* the count rides the chip that already said `notice`, so the
                   folded row is the same row with a number in it: "@system ·
@@ -486,7 +523,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                 ever see. The body is still one click away in the reading
                 pane, and the `l1` header keeps the row identifiable. */}
             {!isSystemNotice(m)
-              && <div className="l2">{brief(m.body)}</div>}
+              && <div className="l2">{brief(view?.fields.filter(f => f.placement === 'body' && typeof f.value === 'string').map(f => f.value).join('\n') ?? m.body)}</div>}
           </div>
           )
         })}
@@ -500,10 +537,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
           <>
             <div className="mailer-head">
               {outgoing && !customS && <span className="dim">to</span>}
-              {S(party(cur)!, cur)}
+              {(outgoing || !typedView(cur)) && S(displayParty(cur)!, cur)}
               <span className="dim">
                 {curPile && curPile.length > 1
-                  ? `${curPile.length} notices` : cur.kind}</span>
+                  ? `${curPile.length} notices` : typedView(cur) ? null : cur.kind}</span>
               {cur.urgent && <span className="urgentkind">urgent</span>}
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
               <span className="dim">{fmtFull(cur.at)}</span>
@@ -538,16 +575,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                         <span className="notepile-at">{when(n.at)}</span>
                         {/* a folded notice is a body like any other — a
                             reference written in one is followed the same way */}
-                        <RefMdBody key={keyOf(n)} el="span"
-                          className="notepile-text md"
-                          html={md(n.body, mdBase?.(n) || undefined)}
-                          world={refs?.world} onOpen={refs?.onOpen} />
+                        {messageContent(n)}
                       </div>
                     ))}
                   </div>
-                : <RefMdBody className="mailer-body md"
-                    html={md(cur.body, mdBase?.(cur) || undefined)}
-                    world={refs?.world} onOpen={refs?.onOpen} />}
+                : messageContent(cur)}
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
                 {/* extern-shaped attachments may lack `path` — a download
@@ -833,7 +865,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
         {box == null
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
-            ? <MailList pending={pending} delivered={box.delivered}
+            ? <MailList org={slug} pending={pending} delivered={box.delivered}
                 tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 waitLabel="awaiting next turn" jumpTo={jumpTo} jumpSeq={jumpSeq}
                 lookup={nodeLookup}
@@ -859,7 +891,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
                — the panel above asks, and opens the folder that holds it. It
                hands down the OUTCOME of that question (`askState`) so this
                list does not read an unfinished or failed one as an absence. */
-            : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
+            : <MailList org={slug} delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 askState={jumpAsk}
                 onAskRetry={() => setAskAgain((n) => n + 1)}
@@ -1182,7 +1214,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
             )}
             <div className="mailpane">
               {folder === 'inbox'
-                ? <MailList pending={inn.filter((r) => r._wait0)}
+                ? <MailList org={slug} pending={inn.filter((r) => r._wait0)}
                     delivered={inn.filter((r) => !r._wait0)}
                     waitLabel="unread" onRead={markRead} jumpTo={jumpTo}
                     jumpSeq={jumpSeq} refs={refs} lookup={orgLookup}
@@ -1197,7 +1229,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
                        `_by` is recorded locally as the agent that sent, so it
                        stays eligible.) */
                     sender={(id) => <b>{id}</b>} />
-                : <MailList delivered={out} outgoing jumpTo={jumpTo}
+                : <MailList org={slug} delivered={out} outgoing jumpTo={jumpTo}
                     jumpSeq={jumpSeq} refs={refs} lookup={orgLookup}
                     rowMark={glyph}
                     /* the list row names the RECIPIENT only — the pane's

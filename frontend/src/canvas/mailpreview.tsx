@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { RefMdBody } from './refmd'
 
@@ -34,8 +35,8 @@ function fiveLineHeight(body: HTMLElement): { limit: number | null; lines: numbe
 
 /** Only received-mail transcript bodies use this preview. Headers and
  * attachments stay outside it; the existing markdown/link DOM stays mounted. */
-export function ReceivedMailBody({ html, world, onOpen }: {
-  html: { __html: string }; world?: RefWorld | null
+export function ReceivedMailBody({ html, world, onOpen, children }: {
+  html?: { __html: string }; children?: ReactNode; world?: RefWorld | null
   onOpen?: (r: ResolvedRef) => void
 }) {
   const content = useRef<HTMLDivElement>(null)
@@ -51,7 +52,7 @@ export function ReceivedMailBody({ html, world, onOpen }: {
     observer?.observe(body)
     window.addEventListener('resize', measure)
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure) }
-  }, [html.__html])
+  }, [html?.__html, children])
   const long = limit !== null
   const folded = long && !expanded
   const toggle = () => setExpanded(value => !value)
@@ -69,7 +70,7 @@ export function ReceivedMailBody({ html, world, onOpen }: {
         if (folded && (e.currentTarget.scrollTop > 0
           || e.target.getBoundingClientRect().bottom > e.currentTarget.getBoundingClientRect().bottom + 1)) setExpanded(true)
       }}>
-      <RefMdBody className="turn-mail-body md" html={html} world={world} onOpen={onOpen} />
+      {children ?? (html && <RefMdBody className="turn-mail-body md" html={html} world={world} onOpen={onOpen} />)}
     </div>
     {long && <button type="button" className="turn-mail-toggle"
       aria-expanded={expanded} aria-controls={id}

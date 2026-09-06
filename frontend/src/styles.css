@@ -5674,3 +5674,44 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
     height: auto; max-height: 88dvh !important; align-self: center;
   }
 }
+
+/* Typed message families share layout, but their identity is always explicit. */
+.event-card { --event-color: var(--dim); border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--event-color); border-radius: 5px; margin: 6px 0;
+  min-width: 0; overflow-wrap: anywhere; background: var(--bg); }
+.event-linked_reply { --event-color: var(--work); }
+.event-assignment { --event-color: var(--accent); }
+.event-review { --event-color: var(--review); }
+.event-status { --event-color: var(--ok); }
+.event-answer_decision { --event-color: var(--backlog); }
+.event-access_resources { --event-color: var(--warn); }
+.event-lifecycle { --event-color: var(--sandbox); }
+.event-monitor { --event-color: var(--kiosk); }
+.event-runtime_recovery { --event-color: var(--bad); }
+.event-reminder { --event-color: var(--warn); }
+.event-context_change { --event-color: var(--dim); }
+.event-head { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px;
+  padding: 7px 9px; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
+.event-family { color: var(--event-color); font-family: var(--mono);
+  border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; }
+.event-head strong { color: var(--ink-strong); }
+.event-head-field { display: inline-flex; align-items: baseline; gap: 3px; }
+.event-actor { color: var(--ink); }
+.event-body { padding: 8px 10px; min-width: 0; }
+.event-prose > :first-child { margin-top: 0; }
+.event-prose > :last-child { margin-bottom: 0; }
+.event-field + .event-field { margin-top: 8px; }
+.event-field-label { display: block; font-size: 11px; font-weight: 600; color: var(--dim); margin-bottom: 3px; }
+.event-context { padding: 5px 10px 8px; font-size: 12px; }
+.event-context > summary { cursor: pointer; color: var(--dim); margin-bottom: 5px; }
+.event-record { margin: 3px 0; }
+.event-record > div { display: flex; flex-wrap: wrap; gap: 3px 8px; margin: 3px 0; }
+.event-record dt { color: var(--dim); min-width: 80px; }
+.event-record dd { margin: 0; min-width: 0; flex: 1 1 120px; }
+.event-values { margin: 3px 0; padding-left: 20px; }
+.event-values > li + li { margin-top: 5px; }
+.event-unsupported { display: block; color: var(--dim); font-size: 11px; }
+.event-fallback { overflow-wrap: anywhere; }
+.event-card .turn-mail-preview { margin: 0; }
+
+.mailrow .event-row-kind { font-size: 10px; color: var(--accent); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
