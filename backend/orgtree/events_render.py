@@ -971,7 +971,8 @@ def _build_lines(ev: _R) -> str:
     dirty = " [DIRTY - uncommitted changes present at boot]" if o["dirty"] else ""
     prev = ev.get("prev_pid")
     pid = f"{o['pid']}" + (f" (was: {prev})" if prev is not None and prev != o["pid"] else "")
-    branch = f"\n- Branch: {ev['branch']}" if ev.get("branch") else ""
+    # the branch rides on the Started-at line, exactly as restart_wake.py wrote it
+    branch = f", branch: {ev['branch']}" if ev.get("branch") else ""
     return (f"Running build:\n- Commit: {o['commit']} (short: {o['short']}){dirty}\n"
             f"- Backend PID: {pid}\n- Started at: {ev['started_at']}{branch}")
 
@@ -1008,7 +1009,9 @@ def _r_storage(ev: _R) -> str:
         return (f"Heads-up: the org disk is at {used:.0f} of {total:.0f} MB (past 80%). "
                 f"Clean up or curb file growth — at 90% new turns pause; at 100% "
                 f"writes fail with ENOSPC.")
-    lim = f"{cap:g}" if cap is not None else "∞"
+    # the cap was an int (`storage_limit_mb`) in the old text: print it as one
+    lim = ("∞" if cap is None else
+           str(int(cap)) if float(cap).is_integer() else f"{float(cap):g}")
     if lvl == "over":
         return (f"⚠ The org is OVER its storage limit ({used:.1f} / {lim} MB — "
                 f"workspace + scratch + uploads together). File creation and writes in "
