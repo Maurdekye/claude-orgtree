@@ -948,19 +948,35 @@ class Hub:
 
     def __init__(self) -> None:
         self.rooms: dict[str, set[WebSocket]] = {}
+        # sockets that joined through the PublicGateway (kiosk visitors): a live
+        # payload carrying typed segments is projected for them (design §6) —
+        # the room is shared, the projection is not
+        self.public: set[WebSocket] = set()
 
-    async def join(self, slug: str, ws: WebSocket) -> None:
+    async def join(self, slug: str, ws: WebSocket, *, public: bool = False) -> None:
         await ws.accept()
         self.rooms.setdefault(slug, set()).add(ws)
+        if public:
+            self.public.add(ws)
 
     def leave(self, slug: str, ws: WebSocket) -> None:
         self.rooms.get(slug, set()).discard(ws)
+        self.public.discard(ws)
 
     async def _send(self, slug: str, payload: dict[str, Any]) -> None:
         dead: list[WebSocket] = []
+        raw_segments = payload.get("segments_raw")
+        admin_payload = payload
+        public_payload = payload
+        if raw_segments is not None:
+            # journal-form segments never leave the process: each socket gets its
+            # profile's wire projection (operator: full events; visitor: PublicEvent)
+            base = {k: v for k, v in payload.items() if k != "segments_raw"}
+            admin_payload = {**base, "segments": events.wire_segments(raw_segments, public=False)}
+            public_payload = {**base, "segments": events.wire_segments(raw_segments, public=True)}
         for ws in self.rooms.get(slug, set()):
             try:
-                await ws.send_json(payload)
+                await ws.send_json(public_payload if ws in self.public else admin_payload)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -8473,6 +8489,9 @@ def node_chat(slug: str, nid: str, request: Request = cast(Request, None),
         if isinstance(msg, dict) and msg.get("segments") is not None:
             msg["segments"] = events.wire_segments(msg["segments"], public=_pub)
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
+                            "kind": m.get("kind") or "message",
+                            **({"relationship": m["relationship"]}
+                               if m.get("relationship") else {}),
                             "body": m["body"][:body_cap], "at": m["at"],
                             **{k: v for k, v in _row_out(m, public=_pub).items()
                                if k in ("ev", "ev_public", "ev_raw", "ev_error")},
@@ -9074,7 +9093,9 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
 
 @app.websocket("/api/orgs/{slug}/ws")
 async def org_ws(ws: WebSocket, slug: str) -> None:
-    await hub.join(slug, ws)
+    # a socket that arrived through the PublicGateway carries the kiosk slug in its
+    # scope state — that is what marks it a visitor for live-payload projection
+    await hub.join(slug, ws, public=bool((ws.scope.get("state") or {}).get("public_slug")))
     try:
         while True:
             await ws.receive_text()   # client pings keep it alive; content ignored
