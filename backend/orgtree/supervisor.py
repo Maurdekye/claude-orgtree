@@ -23415,8 +23415,28 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
     for raw in out:
         body = str(raw)
         stream(slug, nid, {"kind": "steered", "text": body[:2000],
-                           **({"truncated": True} if len(body) > 2000 else {})})
+                           **({"truncated": True} if len(body) > 2000 else {}),
+                           **_live_segments(slug, nid, raw)})
     return out
+
+
+def _live_segments(slug: str, nid: str, carrier: Any) -> dict[str, Any]:
+    """The typed composition of a steered carrier for its LIVE row (design §6): the
+    journal batches the carrier's `toks` name hold the segments, in journal form;
+    the hub projects them per socket (`segments_raw` → `segments`). A bare-string
+    carrier (an empty box, no journal) carries nothing typed."""
+    toks = list(carrier.get("toks") or []) if isinstance(carrier, dict) else []
+    if not toks:
+        return {}
+    try:
+        org = store.load_org(slug)
+    except Exception:                                        # noqa: BLE001
+        return {}
+    segs: list[dict[str, Any]] = []
+    for b in (org.d.get("delivering") or {}).get(nid, []):
+        if b.get("tok") in toks and isinstance(b.get("segments"), list):
+            segs.extend(b["segments"])
+    return {"segments_raw": segs} if segs else {}
 
 
 def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
