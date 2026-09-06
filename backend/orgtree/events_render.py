@@ -112,15 +112,20 @@ def _r_review_changes(ev: _R) -> str:
     return (_docket_head("REVIEW", ev)
             + f"CHANGES REQUESTED by {_user_or(str(ev['reviewer']))} — the item is "
               "back with you as in_progress and the next action is yours."
-            + (f"\nWhat the reviewer asked for: {str(note)[:500]}" if note else "")
+            + (f"\nWhat the reviewer asked for: {str(note)[:500]}" if note else
+               "\nThe reviewer left no note; ask them what they want changed rather "
+               "than guessing.")
             + _relay_suffix(ev))
 
 
 @renderer("docket.review_approved")
 def _r_review_approved(ev: _R) -> str:
+    note = ev.get("note")
     return (_docket_head("REVIEW", ev)
             + f"REVIEW PASSED — {_user_or(str(ev['reviewer']))} approved this item and "
-              "it is now DONE. Nothing further is needed on it." + _relay_suffix(ev))
+              "it is now DONE. Nothing further is needed on it."
+            + (f"\nReviewer's note: {str(note)[:500]}" if note else "")
+            + _relay_suffix(ev))
 
 
 @renderer("docket.participant_added")

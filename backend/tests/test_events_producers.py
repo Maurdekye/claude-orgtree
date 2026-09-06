@@ -918,6 +918,304 @@ check("late steer · sender's notice == old text; runtime.delivery_unread on the
       _late_steer)
 
 
+# ================================================================== §S family status
+print("\n§S · status — orgtree_status done/blocked report to the superior")
+
+from fastapi.testclient import TestClient                        # noqa: E402
+from orgtree import api                                          # noqa: E402
+
+_client = TestClient(api.app)
+
+
+def _status_report():
+    slug = rig2()
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "done",
+                                                      "summary": "shipped the thing"}})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res.get("reported_to") == "boss" and res.get("id"), res
+    row = box_last(slug, "boss")
+    assert row["id"] == res["id"]
+    assert row["body"] == "[DONE] shipped the thing", row["body"]    # the old f-string
+    assert row["kind"] == "status" and row["from"] == "kid"
+    ev = decoded(row)
+    assert ev["variant"] == "status.report" and ev["state"] == "done"
+    assert ev["summary"] == "shipped the thing"
+    assert ev["actor"] == {"kind": "agent", "id": "kid"}
+    assert ev["object"]["kind"] == "node" and ev["object"]["id"] == "kid"
+    assert row["body"] == events.render_agent(ev)
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "blocked", "summary": "need X"}})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "boss")
+    assert row["body"] == "[BLOCKED] need X" and decoded(row)["state"] == "blocked"
+    # working/idle: no mail (unchanged)
+    before = len(store.load_org(slug).d["mail"]["boss"])
+    with Quiet():
+        r = _client.post("/api/agent", json={"org": slug, "node": "kid", "tool": "orgtree_status",
+                                             "args": {"status": "working", "summary": "…"}})
+    assert r.status_code == 200 and len(store.load_org(slug).d["mail"]["boss"]) == before
+
+
+check("status · done/blocked reports mint status.report ('[DONE] summary' byte-identical); "
+      "working/idle send no mail", _status_report)
+
+
+# ============================================================ §D docket producers
+print("\n§D · docket — assignment, review request, review decisions, participation, "
+      "attention dismissed")
+
+# ⚠ VERBATIM copies of the pre-typed producers (ledger.py / api.py @ efb8d48).
+def old_assign(actor, it, own, prev):
+    return (
+        f"[DOCKET ASSIGNMENT · {it['slug']} \"{str(it.get('title') or '')[:80]}\"] "
+        f"You are now the ASSIGNMENT on this docket item — that is "
+        f"OWNERSHIP: you hold its management rights, the user's replies on "
+        f"it come to you, and you are who the docket names as responsible."
+        f"\nAssigned by {'the user' if actor == USER else actor}"
+        f"{f' (previously {prev})' if prev and prev != own else ''}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nLatest status — done so far: "
+        f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}"
+        f"\nWorking on / next: "
+        f"{'; '.join(it.get('working_on_next') or []) or '(nothing recorded)'}"
+        f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
+        f"`update` it at the next meaningful boundary — your update is what "
+        f"the user reads.")
+
+
+def old_review_req(actor, it, owner_node):
+    return (
+        f"[DOCKET REVIEW REQUEST · {it['slug']} "
+        f"\"{str(it.get('title') or '')[:80]}\"] "
+        f"You are named as the REVIEWER of this docket item. THIS IS NOT "
+        f"OWNERSHIP: {owner_node or 'its owner'} "
+        f"keeps the work and the responsibility for delivering it. You "
+        f"hold exactly three things — read it, add `evidence`, and record "
+        f"ONE decision with orgtree_work action='review': `approve` (the "
+        f"check passed — that COMPLETES the item) or `changes` (it goes "
+        f"back to the owner as in_progress, and your note is what they act "
+        f"on). Until you decide, the next action on this item is yours."
+        f"\nRequested by {'the user' if actor == USER else actor}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nWhat the owner says is done: "
+        f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}")
+
+
+def old_participation(actor, it, owner):
+    return (
+        f"[DOCKET PARTICIPATION · {it['slug']} "
+        f"\"{str(it.get('title') or '')[:80]}\"] You are now a "
+        f"PARTICIPANT on this docket item — not its assignment. "
+        f"The item is owned by {owner or 'nobody (unassigned)'}; "
+        f"you may read it, update it, add evidence and attach "
+        f"questions, and the user's replies addressed to you on "
+        f"it arrive as item-linked mail. Added by "
+        f"{'the user' if actor == USER else actor}."
+        f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+        f"\nRead it with orgtree_work get slug={it['slug']} when "
+        f"your work touches it; no reply is expected to this "
+        f"notice.")
+
+
+def old_review_head(it):
+    return (f"[DOCKET REVIEW · {it['slug']} "
+            f"\"{str(it.get('title') or '')[:80]}\"] ")
+
+
+def old_approved(actor, note):
+    return (f"REVIEW PASSED — {'the user' if actor == USER else actor} "
+            f"approved this item and it is now DONE. Nothing further is "
+            f"needed on it."
+            + (f"\nReviewer's note: {str(note)[:500]}" if note else ""))
+
+
+def old_changes(actor, note):
+    return (f"CHANGES REQUESTED by "
+            f"{'the user' if actor == USER else actor} — the item is "
+            f"back with you as in_progress and the next action is "
+            f"yours."
+            + (f"\nWhat the reviewer asked for: {str(note)[:500]}"
+               if note else
+               "\nThe reviewer left no note; ask them what they want "
+               "changed rather than guessing."))
+
+
+def old_relay(actor):
+    return (f"\n(This notice comes from the docket itself: "
+            f"{actor} is the item's reviewer but cannot address you "
+            f"directly under the mail rules. Reply to your own superior "
+            f"if you need to reach them.)")
+
+
+def old_dismiss(wid, reason, pending):
+    return (f"[DOCKET · {wid}] The user DISMISSED your "
+            f"attention flag (\"{str(reason or '')[:200]}\") "
+            f"— the item is now BLOCKED. Do not re-raise the "
+            f"same reason without material new information; "
+            f"{pending} question(s) on "
+            f"the item are still pending.")
+
+
+def rig3():
+    """boss → kid, kid2 (siblings under boss)."""
+    slug = rig2()
+    o = store.load_org(slug)
+    o.hire("boss", "boss", "haiku", 5, "kid2", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="docket fixture")
+    store.save_org(o)
+    return slug
+
+
+def _assignment():
+    slug = rig3()
+    o = store.load_org(slug)
+    r = o.work_create("boss", "Ship the widget", "widgets are missing; ship one",
+                      owner="boss", done_so_far=["a", "b"], working_on_next=["c"])
+    wid = r["created"]
+    o.work_assign("boss", wid, "kid")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "kid")
+    assert row["body"] == old_assign("boss", it, "kid", "boss"), row["body"]
+    assert row["kind"] == "request"
+    ev = decoded(row)
+    assert ev["variant"] == "docket.assigned" and ev["owner"] == "kid"
+    assert ev["previous_owner"] == "boss" and ev["assigner"] == "boss"
+    assert ev["object"] == {"kind": "work_item", "org": slug, "slug": wid,
+                            "title": "Ship the widget"}
+    assert ev["done_so_far"] == ["a", "b"] and ev["working_on_next"] == ["c"]
+    assert ev["status"] == it["status"]
+    assert row["body"] == events.render_agent(ev)
+    # the user assigning: 'the user', no previous when unowned
+    o = store.load_org(slug)
+    r2 = o.work_create(USER, "Unowned thing", "nobody owns it; assign it")
+    o.work_assign(USER, r2["created"], "kid2")
+    store.save_org(o)
+    it2 = dict(store.load_org(slug)._work_find(r2["created"])[0])
+    row = box_last(slug, "kid2")
+    assert row["body"] == old_assign(USER, it2, "kid2", None), row["body"]
+    ev = decoded(row)
+    assert ev["previous_owner"] is None and ev["actor"] == {"kind": "user", "id": "@user"}
+    assert ev["done_so_far"] == [] and "(nothing recorded)" in row["body"]
+
+
+check("assignment · agent- and user-assigned bodies == old text; docket.assigned with "
+      "WorkItemRef, previous_owner null when unowned", _assignment)
+
+
+def _review_flow():
+    slug = rig3()
+    o = store.load_org(slug)
+    wid = o.work_create("kid", "Review me", "needs a check; review it",
+                        done_so_far=["did x"])["created"]
+    o.work_update("kid", wid, ["did x", "did y"], [], status="review", reviewer="boss")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "boss")
+    assert row["body"] == old_review_req("kid", it, "kid"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_requested" and ev["reviewer"] == "boss"
+    assert ev["requested_by"] == "kid" and ev["owner"] == "kid"
+    assert ev["done_so_far"] == ["did x", "did y"]
+    assert row["body"] == events.render_agent(ev)
+    # changes, no note
+    o = store.load_org(slug)
+    o.work_review_decide("boss", wid, "changes")
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    assert row["body"] == old_review_head(it) + old_changes("boss", None), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_changes" and ev["note"] is None
+    assert ev["relayed"] is False and ev["reviewer"] == "boss" and ev["owner"] == "kid"
+    # back to review, then approve with a note
+    o = store.load_org(slug)
+    o.work_update("kid", wid, ["did x", "did y", "fixed"], [], status="review", reviewer="boss")
+    o.work_review_decide("boss", wid, "approve", note="nice work")
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    assert row["body"] == old_review_head(it) + old_approved("boss", "nice work"), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "docket.review_approved" and ev["note"] == "nice work"
+    assert row["body"] == events.render_agent(ev)
+
+
+check("review · request, changes (no note) and approval (with note) == old text; "
+      "review_requested / review_changes / review_approved events", _review_flow)
+
+
+def _review_relayed():
+    """A reviewer that cannot address the owner: the docket's own voice, SAYING SO."""
+    slug = rig3()
+    o = store.load_org(slug)
+    # grandkid (under kid2) owns; kid — its uncle — is named reviewer by boss. An
+    # uncle is neither superior nor peer of the owner, so it cannot address it.
+    o.hire("kid2", "kid2", "haiku", 2, "grandkid", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="relay fixture")
+    wid = o.work_create("grandkid", "Uncle review", "an uncle cannot mail; relay it")["created"]
+    o.work_update("boss", wid, ["draft"], [], status="review", reviewer="kid", owner="grandkid")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    o = store.load_org(slug)
+    o.work_review_decide("kid", wid, "changes", note="please rename")
+    store.save_org(o)
+    row = box_last(slug, "grandkid")
+    assert row["from"] == USER, row["from"]
+    assert row["body"] == old_review_head(it) + old_changes("kid", "please rename") \
+        + old_relay("kid"), row["body"]
+    ev = decoded(row)
+    assert ev["relayed"] is True and ev["reviewer"] == "kid"
+    assert ev["actor"] == {"kind": "agent", "id": "kid"}, "the reviewer authored it, whoever carried it"
+    assert row["body"] == events.render_agent(ev)
+
+
+check("review · relayed decision (reviewer cannot address owner) == old text incl. the "
+      "docket-voice suffix; relayed=True, actor stays the reviewer", _review_relayed)
+
+
+def _participation_and_dismiss():
+    slug = rig3()
+    o = store.load_org(slug)
+    wid = o.work_create("boss", "Shared item", "two hands needed; share it", owner="boss")["created"]
+    o.work_participants("boss", wid, add=["kid"])
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    row = box_last(slug, "kid")
+    assert row["body"] == old_participation("boss", it, "boss"), row["body"]
+    assert row["kind"] == "notice"
+    ev = decoded(row)
+    assert ev["variant"] == "docket.participant_added" and ev["owner"] == "boss"
+    assert ev["added_by"] == "boss" and row["body"] == events.render_agent(ev)
+    # attention flag raised by kid, dismissed by the user through the route
+    o = store.load_org(slug)
+    o.work_update("kid", wid, ["x"], [], attention=True, attention_reason="please look")
+    store.save_org(o)
+    it = dict(store.load_org(slug)._work_find(wid)[0])
+    rev = int(it["manual_attention_rev"])
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention",
+                         json={"set_rev": rev})
+    assert r.status_code == 200, r.text
+    row = box_last(slug, "kid")
+    assert row["body"] == old_dismiss(wid, "please look", 0), row["body"]
+    assert row["kind"] == "status" and row["from"] == USER
+    ev = decoded(row)
+    assert ev["variant"] == "decision.attention_dismissed"
+    assert ev["reason"] == "please look" and ev["pending_questions"] == 0
+    assert ev["object"]["slug"] == wid
+    assert row["body"] == events.render_agent(ev)
+    assert "dismissed_by" not in events.public_event(ev)
+
+
+check("participation notice and attention-dismissed status == old text; "
+      "participant_added / attention_dismissed events", _participation_and_dismiss)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:

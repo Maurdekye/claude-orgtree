@@ -6927,6 +6927,20 @@ class Org:
         age = (datetime.now(timezone.utc) - spent).total_seconds()
         return age < 0 or age > self.WATCHDOG_TOMB_TTL_S
 
+    # ---- canonical Refs (design §2) — the ONE place each Ref shape is built
+    def node_ref(self, nid: str) -> dict[str, Any]:
+        n = self.nodes.get(nid) or {}
+        return {"kind": "node", "org": str(self.d.get("slug") or ""), "id": nid,
+                "name": str(n.get("name") or nid),
+                "generation": int(n.get("generation") or 0)}
+
+    def work_item_ref(self, it: Mapping[str, Any]) -> dict[str, Any]:
+        return {"kind": "work_item", "org": str(self.d.get("slug") or ""),
+                "slug": str(it.get("slug") or ""), "title": str(it.get("title") or "")}
+
+    def org_ref(self) -> dict[str, Any]:
+        return {"kind": "org", "org": str(self.d.get("slug") or "")}
+
     def _watchdog_ref(self, w: Mapping[str, Any]) -> dict[str, Any]:
         """The canonical WatchdogRef of a dog as the monitor family mints it."""
         return {"kind": "watchdog", "org": str(self.d.get("slug") or ""),
@@ -11232,22 +11246,16 @@ class Org:
         an item, `orgtree_staff`). Written as an instruction the recipient can
         act on without a second lookup: what it now holds, who handed it over,
         what the item is for, and where the status stands."""
+        # typed (family assignment): docket.assigned — the body is its frozen
+        # rendering, byte for byte the former f-string (test_events_producers §D)
         return self.post_mail(
-            actor, own,
-            f"[DOCKET ASSIGNMENT · {it['slug']} \"{str(it.get('title') or '')[:80]}\"] "
-            f"You are now the ASSIGNMENT on this docket item — that is "
-            f"OWNERSHIP: you hold its management rights, the user's replies on "
-            f"it come to you, and you are who the docket names as responsible."
-            f"\nAssigned by {'the user' if actor == USER else actor}"
-            f"{f' (previously {prev})' if prev and prev != own else ''}."
-            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-            f"\nLatest status — done so far: "
-            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}"
-            f"\nWorking on / next: "
-            f"{'; '.join(it.get('working_on_next') or []) or '(nothing recorded)'}"
-            f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
-            f"`update` it at the next meaningful boundary — your update is what "
-            f"the user reads.", "request")
+            actor, own, "", "request",
+            ev=_mint("docket.assigned", actor_of(actor), self.work_item_ref(it),
+                     owner=own, previous_owner=(str(prev) if prev else None),
+                     assigner=actor, status=str(it.get("status") or "open"),
+                     objective=str(it.get("objective") or ""),
+                     done_so_far=[str(x) for x in (it.get("done_so_far") or [])],
+                     working_on_next=[str(x) for x in (it.get("working_on_next") or [])]))
 
     def _work_name_reviewer(self, actor: str, it: WorkItem,
                             reviewer: str | None, status: str | None,
@@ -11326,23 +11334,14 @@ class Org:
         self._work_hist(it, actor, "reviewer", {"from": prev, "to": it["reviewer"]})
         if want == actor:
             return None                 # naming yourself mails nobody
+        # typed (family review): docket.review_requested (test_events_producers §D)
         self.post_mail(
-            actor, want,
-            f"[DOCKET REVIEW REQUEST · {it['slug']} "
-            f"\"{str(it.get('title') or '')[:80]}\"] "
-            f"You are named as the REVIEWER of this docket item. THIS IS NOT "
-            f"OWNERSHIP: {self._work_actor_node(it.get('owner')) or 'its owner'} "
-            f"keeps the work and the responsibility for delivering it. You "
-            f"hold exactly three things — read it, add `evidence`, and record "
-            f"ONE decision with orgtree_work action='review': `approve` (the "
-            f"check passed — that COMPLETES the item) or `changes` (it goes "
-            f"back to the owner as in_progress, and your note is what they act "
-            f"on). Until you decide, the next action on this item is yours."
-            f"\nRequested by {'the user' if actor == USER else actor}."
-            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-            f"\nWhat the owner says is done: "
-            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}",
-            "request")
+            actor, want, "", "request",
+            ev=_mint("docket.review_requested", actor_of(actor), self.work_item_ref(it),
+                     reviewer=want, requested_by=actor,
+                     owner=str(self._work_actor_node(it.get("owner")) or ""),
+                     objective=str(it.get("objective") or ""),
+                     done_so_far=[str(x) for x in (it.get("done_so_far") or [])]))
         return want
 
     def work_assign(self, actor: str, wid: str, owner: str,
@@ -11419,25 +11418,17 @@ class Org:
             if pid == actor:
                 continue
             try:
+                # typed (family context_change): docket.participant_added
                 m = self.post_mail(
-                    actor, pid,
-                    f"[DOCKET PARTICIPATION · {it['slug']} "
-                    f"\"{str(it.get('title') or '')[:80]}\"] You are now a "
-                    f"PARTICIPANT on this docket item — not its assignment. "
-                    f"The item is owned by {owner or 'nobody (unassigned)'}; "
-                    f"you may read it, update it, add evidence and attach "
-                    f"questions, and the user's replies addressed to you on "
-                    f"it arrive as item-linked mail. Added by "
-                    f"{'the user' if actor == USER else actor}."
-                    f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
-                    f"\nRead it with orgtree_work get slug={it['slug']} when "
-                    f"your work touches it; no reply is expected to this "
-                    f"notice.",
-                    "notice",
+                    actor, pid, "", "notice",
                     # KEEP EXISTING PERMISSIONS (user 2026-09-06): this notice
                     # is automatic, so it must not mint the §7.3 reply
                     # audience an explicit message to a deep descendant would
-                    grant_reply_audience=False)
+                    grant_reply_audience=False,
+                    ev=_mint("docket.participant_added", actor_of(actor),
+                             self.work_item_ref(it), added_by=actor,
+                             owner=str(owner or ""),
+                             objective=str(it.get("objective") or "")))
             except LedgerError as e:
                 refused.append({"node": pid, "reason": str(e)})
                 continue
@@ -11668,11 +11659,8 @@ class Org:
             out = self._work_accept_core(actor, it, note, "review_approve")
             out["decision"] = "approve"
             out["notified"] = self._work_tell_owner(
-                actor, it, own,
-                f"REVIEW PASSED — {'the user' if actor == USER else actor} "
-                f"approved this item and it is now DONE. Nothing further is "
-                f"needed on it."
-                + (f"\nReviewer's note: {str(note)[:500]}" if note else ""))
+                actor, it, own, "docket.review_approved",
+                note=(str(note) if note else None))
             return out
         frm = it.get("status")
         it["status"] = "in_progress"
@@ -11699,19 +11687,14 @@ class Org:
         return {"reviewed": wid, "decision": "changes", "rev": it["rev"],
                 "status": it["status"],
                 "notified": self._work_tell_owner(
-                    actor, it, own,
-                    f"CHANGES REQUESTED by "
-                    f"{'the user' if actor == USER else actor} — the item is "
-                    f"back with you as in_progress and the next action is "
-                    f"yours."
-                    + (f"\nWhat the reviewer asked for: {str(note)[:500]}"
-                       if note else
-                       "\nThe reviewer left no note; ask them what they want "
-                       "changed rather than guessing."))}
+                    actor, it, own, "docket.review_changes",
+                    note=(str(note) if note else None))}
 
     def _work_tell_owner(self, actor: str, it: WorkItem, own: str | None,
-                         what: str) -> str | None:
-        """Tell the OWNER what a review decided. Returns the node mailed.
+                         variant: str, **fields: Any) -> str | None:
+        """Tell the OWNER what a review decided — a typed `docket.review_*`
+        event (family review); `relayed` on the event says which voice carried
+        it. Returns the node mailed.
 
         ⚠ IT FALLS BACK TO THE DOCKET'S OWN VOICE RATHER THAN GOING UNSENT.
         A reviewer is named from the NAMER's reach, so it can legitimately end
@@ -11724,18 +11707,21 @@ class Org:
         misrepresented as the reviewer."""
         if not own or own == actor or own == USER:
             return None
-        head = (f"[DOCKET REVIEW · {it['slug']} "
-                f"\"{str(it.get('title') or '')[:80]}\"] ")
+
+        def _ev(relayed: bool) -> dict[str, Any]:
+            # ⚠ a literal per branch: the coverage scan (test_events_ledger §7)
+            # wants every mint( site to name its variant as a string literal
+            if variant == "docket.review_approved":
+                return _mint("docket.review_approved", actor_of(actor),
+                             self.work_item_ref(it), reviewer=actor, owner=own,
+                             relayed=relayed, **fields)
+            return _mint("docket.review_changes", actor_of(actor),
+                         self.work_item_ref(it), reviewer=actor, owner=own,
+                         relayed=relayed, **fields)
         try:
-            self.post_mail(actor, own, head + what, "request")
+            self.post_mail(actor, own, "", "request", ev=_ev(False))
         except LedgerError:
-            self.post_mail(
-                USER, own,
-                head + what
-                + f"\n(This notice comes from the docket itself: "
-                  f"{actor} is the item's reviewer but cannot address you "
-                  f"directly under the mail rules. Reply to your own superior "
-                  f"if you need to reach them.)", "request")
+            self.post_mail(USER, own, "", "request", ev=_ev(True))
         return own
 
     def work_archive_now(self, actor: str, wid: str) -> dict[str, Any]:
