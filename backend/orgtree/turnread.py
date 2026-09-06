@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any, Mapping
 
 
@@ -51,7 +52,9 @@ PERMISSION_MODES = frozenset({"default", "acceptEdits", "bypassPermissions",
                               "plan", "dontAsk"})
 RESULT_SUBTYPES = frozenset({"success", "error_during_execution",
                              "error_max_turns", "error"})
-# the CLI's typed API-error vocabulary (failfix.CODE_WORDS, the same list)
+# the CLI's typed `api_retry` error codes: the TEN machine tags of
+# failfix.CODE_WORDS' fourteen (its other four are provider prose tags a
+# retry event never carries)
 API_CODES = frozenset({"authentication_failed", "oauth_org_not_allowed",
                        "account_on_hold", "billing_error", "rate_limit",
                        "model_not_found", "invalid_request", "server_error",
@@ -61,6 +64,10 @@ OWNERS = frozenset({"unrecoverable", "filter", "account_switch",
                     "limit_freeze", "net_retry", "net_exhausted", "terminal",
                     "provider_limit"})
 FREEZE_KINDS = frozenset({"limit", "connection"})
+# FrozenInfo.reset_src (schema.py): "usage:<lane>" collapses to "usage"
+RESET_SRCS = frozenset({"text", "usage", "probe", "capped", "inherited",
+                        "provider", "auth"})
+PARKED = frozenset({"untrusted", "auth", "balance"})
 SCHEDULES = frozenset({"observed-deadline", "probe", "backoff"})
 DOORS = frozenset({"pre_model", "ran_then_failed", "killed"})
 DISCARDS = frozenset({"limit-frozen", "turn-timeout", "stdin-closed",
@@ -120,8 +127,13 @@ FIELDS: dict[str, dict[str, FieldSpec]] = {
                  "started": B, "boundary": B, "or_lane": B},
     "owner": {"branch": S(OWNERS), "handled": B},
     "freeze": {"freeze_kind": S(FREEZE_KINDS), "run": I, "delay_s": I,
-               "schedule": S(SCHEDULES), "reset_known": B},
-    "abandon": {"door": S(DOORS), "hard_fail_run": I},
+               "schedule": S(SCHEDULES), "reset_known": B,
+               "reset_src": S(RESET_SRCS), "untrusted": B,
+               "parked": S(PARKED)},
+    # TWO counters, named apart: hard_fail_run is the terminal/killed doors'
+    # `_bump_hard_fail` result; net_fail_run is the exhausted door's
+    # connection-retry counter. A door emits the one it observed.
+    "abandon": {"door": S(DOORS), "hard_fail_run": I, "net_fail_run": I},
     "fixture": {"written": B},
     "fold_back": {"undelivered_n": I, "uncertain_n": I},
     "teardown": {"parked": B, "discard": S(DISCARDS), "exited": B},
@@ -153,20 +165,28 @@ HEADER_FIELDS: dict[str, FieldSpec] = {
     "resumed": B, "cmd": B, "ping": B, "toks": I, "text_len": I,
     "images_n": I, "view_len": I, "warm": B,
 }
+# ⚠ fullmatch, never `$`: `$` admits a trailing newline
 _FIXTURE_RE = re.compile(
-    r"^\d{13}-\d{4}-(admission|stream|result-error|teardown|unknown)-"
-    r"(filtered|limit|net|none)\.json$")
-_RECORD_RE = re.compile(r"^\d{13}-\d{4}-[a-z]+-[a-z]+\.json$")
-_STUB_RE = re.compile(r"^\d{13}-\d{4}\.partial\.json$")
+    r"\d{13}-\d{4}-(admission|stream|result-error|teardown|unknown)-"
+    r"(filtered|limit|net|none)\.json")
+_RECORD_RE = re.compile(r"\d{13}-\d{4}-[a-z]+-[a-z]+\.json")
+_STUB_RE = re.compile(r"\d{13}-\d{4}\.partial\.json")
 
 
 # ------------------------------------------------------------------ coercion
 
 
 def _int(v: Any) -> int | None:
-    """A typed count/duration: an int (not a bool) within INT_MAX, else None —
-    no string coercion. A float that is whole is NOT accepted either."""
-    if isinstance(v, bool) or not isinstance(v, int):
+    """A typed count/duration: an int (not a bool), or a float that is WHOLE
+    (JSON from a wire may carry `3.0` for a count), within INT_MAX; else
+    None — never a string, never a fraction."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")) or not v.is_integer():
+            return None
+        v = int(v)
+    if not isinstance(v, int):
         return None
     return v if -INT_MAX <= v <= INT_MAX else None
 
@@ -337,11 +357,42 @@ def result_shape(ev: Any, *, boundary: bool) -> dict[str, Any]:
         return out
 
 
+def freeze_shape(fz: Any, *, parked: Any = None) -> dict[str, Any]:
+    """The typed shape of a limit freeze AS WRITTEN (FrozenInfo fields read
+    back from the record the branch saved): the schedule kind, whether a
+    reset instant is known and how far off it is, where the number came
+    from, whether the freeze is untrusted, and whether the node was parked
+    (untrusted / auth / balance). Nothing here recomputes policy; an absent
+    record gives absent fields. Never raises."""
+    out: dict[str, Any] = {}
+    try:
+        if not isinstance(fz, Mapping):
+            return out
+        uts = fz.get("until_ts")
+        known = isinstance(uts, (int, float)) and not isinstance(uts, bool)
+        out["reset_known"] = known
+        if known:
+            out["delay_s"] = max(0, int(float(uts) - time.time()))  # pyright: ignore[reportArgumentType]
+        sk = fz.get("schedule_kind")
+        if sk is not None:
+            out["schedule"] = sk
+        src = fz.get("reset_src")
+        if isinstance(src, str) and src:
+            out["reset_src"] = "usage" if src.startswith("usage:") else src
+        if fz.get("untrusted") is not None:
+            out["untrusted"] = fz.get("untrusted") is True
+        if parked:
+            out["parked"] = parked
+        return out
+    except Exception:                                        # noqa: BLE001
+        return out
+
+
 def is_fixture_name(name: Any) -> bool:
     """STRICT: a generated failfix basename and nothing else — no separators,
     no parent references, no other shape. This is what a RECORD's `fixture`
     field is checked against before any resolution."""
-    return isinstance(name, str) and bool(_FIXTURE_RE.match(name))
+    return isinstance(name, str) and bool(_FIXTURE_RE.fullmatch(name))
 
 
 def fixture_name(path: Any) -> str | None:
@@ -351,7 +402,7 @@ def fixture_name(path: Any) -> str | None:
     if not path:
         return None
     base = os.path.basename(str(path))
-    return base if _FIXTURE_RE.match(base) else None
+    return base if _FIXTURE_RE.fullmatch(base) else None
 
 
 def record_dir(root: str, org: str, node: str) -> str:
@@ -364,8 +415,14 @@ def record_dir(root: str, org: str, node: str) -> str:
 def load(path: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         rec = json.load(f)
-    if not isinstance(rec, dict) or int(rec.get("schema") or 0) != SCHEMA:   # pyright: ignore[reportUnknownArgumentType]
-        raise ValueError(f"turn record schema {rec.get('schema') if isinstance(rec, dict) else None!r}, expected {SCHEMA}")   # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+    if not isinstance(rec, dict):
+        raise ValueError("turn record is not an object")
+    sch = rec.get("schema")  # pyright: ignore[reportUnknownMemberType]
+    if isinstance(sch, bool) or not isinstance(sch, int) or sch != SCHEMA:
+        raise ValueError(f"turn record schema {sch!r}, expected the integer {SCHEMA}")
+    evs = rec.get("events")  # pyright: ignore[reportUnknownMemberType]
+    if evs is not None and not isinstance(evs, list):
+        raise ValueError("turn record events is not a list")
     return rec                                                # pyright: ignore[reportUnknownVariableType]
 
 
@@ -373,7 +430,7 @@ def list_records(root: str, org: str, node: str) -> list[str]:
     d = record_dir(root, org, node)
     try:
         return sorted(os.path.join(d, n) for n in os.listdir(d)
-                      if _RECORD_RE.match(n) or _STUB_RE.match(n))
+                      if _RECORD_RE.fullmatch(n) or _STUB_RE.fullmatch(n))
     except OSError:
         return []
 
@@ -456,6 +513,7 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
         # status is the freeze; an owner branch names the class it claimed
         last: str | None = None
         killed = False
+        sticky: str | None = None       # unrecoverable, once seen, stays
         for e in events:
             k = e.get("kind")  # pyright: ignore[reportUnknownMemberType]
             if k == "watchdog":
@@ -467,7 +525,7 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
             elif k == "owner":
                 br = e.get("branch")  # pyright: ignore[reportUnknownMemberType]
                 if br == "unrecoverable":
-                    last = "unrecoverable"
+                    sticky = last = "unrecoverable"
                 elif br == "terminal" and e.get("handled") is not True:  # pyright: ignore[reportUnknownMemberType]
                     last = "failed"
                 elif br == "account_switch":
@@ -484,7 +542,7 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
                     last = "failed"
         if last is None and boundary is not None and not boundary.get("is_error"):  # pyright: ignore[reportUnknownMemberType]
             last = "completed"
-        implied = last or "unknown"
+        implied = sticky or last or "unknown"
     t_first = first_out.get("t_ms") if first_out else None  # pyright: ignore[reportUnknownMemberType]
     t_bound = boundary.get("t_ms") if boundary else None  # pyright: ignore[reportUnknownMemberType]
     seqs = [int(e.get("seq") or 0) for e in events]  # pyright: ignore[reportUnknownMemberType]

@@ -209,8 +209,10 @@ def sec_schema() -> None:
     def _coerce() -> None:
         c = turnlog.coerce
         assert c(turnlog.I, 401) == 401 and c(turnlog.I, "401") is None
-        assert c(turnlog.I, True) is None and c(turnlog.I, 401.0) is None
-        assert c(turnlog.I, 10 ** 16) is None
+        assert c(turnlog.I, True) is None and c(turnlog.I, 401.0) == 401
+        assert c(turnlog.I, 4.5) is None and c(turnlog.I, float("nan")) is None
+        assert c(turnlog.I, float("inf")) is None
+        assert c(turnlog.I, 10 ** 16) is None and c(turnlog.I, 1e16) is None
         assert c(turnlog.B, 1) is False and c(turnlog.B, True) is True
         assert c(turnlog.F, 0.25) == 0.25 and c(turnlog.F, "0.25") is None
         assert c(turnlog.F, float("nan")) is None
@@ -222,8 +224,8 @@ def sec_schema() -> None:
             ["Bash", "other", "other"]
         assert len(c(L, ["Bash"] * 40)) == turnlog.LIST_MAX
         assert c(L, "Bash") == []
-    check("coercion · strict ints (no bool, no str, no float, bounded), "
-          "vocab or other, lists capped, unknown tool names → other",
+    check("coercion · typed ints (no bool, no str, whole floats only, "
+          "bounded), vocab or other, lists capped, unknown tool names → other",
           _coerce)
 
     def _canaries() -> None:
@@ -360,6 +362,18 @@ def sec_recorder() -> None:
         assert r.emit("interrupt") is False
         assert r.close() is None
         assert turnlog.load(p) == rec
+        # HEAD/TAIL RETENTION, with the expected values: one thread emits
+        # 300 numbered events; the first HEAD and the last TAIL survive with
+        # their own numbers, the middle is gone and counted
+        r3 = turnlog.Recorder(root, "o", "n3")
+        for i in range(300):
+            r3.emit("assistant", text_n=i)
+        got = r3._events()
+        assert [e["seq"] for e in got[:turnlog.HEAD]] == list(range(1, turnlog.HEAD + 1))
+        assert [e["text_n"] for e in got[:turnlog.HEAD]] == list(range(turnlog.HEAD))
+        assert [e["text_n"] for e in got[turnlog.HEAD:]] == list(range(300 - turnlog.TAIL, 300))
+        assert r3._dropped == 300 - turnlog.MAX_EVENTS
+        assert r3._dropped_kinds == {"assistant": 300 - turnlog.MAX_EVENTS}
         # THE STAMP IS TAKEN UNDER THE LOCK — the property the ordering rests
         # on, probed directly: every clock read an emit makes happens while
         # the recorder's lock is held. (The ordering assertions above are
@@ -384,6 +398,107 @@ def sec_recorder() -> None:
           "dropped_kinds account for the rest; the stub is replaced; a closed "
           "recorder refuses emit and close; the stamp is read under the lock",
           _threads)
+
+    def _close_race() -> None:
+        root = _tmp_root("race")
+        # NEGATIVE CONTROL (the defect): an emit that arrives while close is
+        # writing — after the flag, after the snapshot — must be refused and
+        # must not appear in the finalized record. The writer is replaced by
+        # one that performs the late emit itself, so the timing is exact.
+        r = turnlog.start(root, "o", "n")
+        r.emit("start")
+        r.emit("result", boundary=True, is_error=False)
+        late: list = []
+        real_write = turnlog._write
+
+        def write_then_emit(path, rec):
+            late.append(r.emit("watchdog", why="idle", elapsed_ms=1))
+            late.append(r.closed)
+            real_write(path, rec)
+        turnlog._write = write_then_emit
+        try:
+            p = r.close(outcome="completed")
+        finally:
+            turnlog._write = real_write
+        assert late == [False, True], late
+        rec = turnlog.load(p)
+        assert "watchdog" not in _kinds(rec) and rec["events"][-1]["kind"] == "end"
+        assert turnlog.summarize(rec)["implied"] == "completed" and turnlog.drift(rec) == []
+        # POSITIVE CONTROL: the same emit BEFORE close is kept
+        r2 = turnlog.start(root, "o", "n")
+        r2.emit("start")
+        assert r2.emit("watchdog", why="idle", elapsed_ms=1) is True
+        assert "watchdog" in _kinds(turnlog.load(r2.close()))
+        # CONCURRENT CLOSE: two closers, exactly one record; the writer blocks
+        # the first until the second has been refused
+        r3 = turnlog.start(root, "o", "n")
+        r3.emit("start")
+        first_in = threading.Event()
+        second_done = threading.Event()
+        results: list = []
+
+        def slow_write(path, rec):
+            first_in.set()
+            assert second_done.wait(5), "the second closer never returned"
+            real_write(path, rec)
+
+        def other_close() -> None:
+            first_in.wait(5)
+            results.append(("second", r3.close(outcome="killed")))
+            second_done.set()
+        turnlog._write = slow_write
+        try:
+            t = threading.Thread(target=other_close, daemon=True)
+            t.start()
+            results.append(("first", r3.close(outcome="completed")))
+            t.join(5)
+        finally:
+            turnlog._write = real_write
+        d = dict(results)
+        assert d["second"] is None and d["first"] and d["first"].endswith("-completed.json"), d
+        # THE `end` WINDOW: an emit that races close's own `end` append. The
+        # clock probe fires inside close's critical section (the `end` stamp)
+        # and signals a second thread to emit; that thread must block on the
+        # lock and then be refused — a close that lowered the flag or let go
+        # of the lock around `end` would accept it into the finalized record.
+        r4 = turnlog.start(root, "o", "n4")
+        r4.emit("start")
+        r4.emit("result", boundary=True, is_error=False)
+        closing = threading.Event()
+        go = threading.Event()
+        late4: list = []
+
+        def racer() -> None:
+            go.wait(5)
+            late4.append(r4.emit("watchdog", why="idle", elapsed_ms=1))
+        th = threading.Thread(target=racer, daemon=True)
+        th.start()
+        real_mono = turnlog.time.monotonic
+
+        def probe4() -> float:
+            if closing.is_set() and not go.is_set():
+                go.set()
+                time.sleep(0.05)          # let the racer reach the lock
+            return real_mono()
+        turnlog.time.monotonic = probe4
+        try:
+            closing.set()
+            p4 = r4.close(outcome="completed")
+        finally:
+            turnlog.time.monotonic = real_mono
+        th.join(5)
+        assert late4 == [False], late4
+        rec4 = turnlog.load(p4)
+        assert "watchdog" not in _kinds(rec4) and rec4["events"][-1]["kind"] == "end"
+        assert turnlog.summarize(rec4)["implied"] == "completed" and turnlog.drift(rec4) == []
+        names = os.listdir(os.path.dirname(d["first"]))
+        assert not [n for n in names if n.endswith("-killed.json")], names
+        assert len([n for n in names if n.endswith("-completed.json")]) == 2, names
+        assert not [n for n in names if n.endswith(".partial.json")], names
+    check("close race · an emit during the write is refused and absent from "
+          "the record (negative control), the same emit before close is kept "
+          "(positive control); two concurrent closes yield one record",
+          _close_race)
 
     def _unknown_cost() -> None:
         root = _tmp_root("cost")
@@ -532,6 +647,30 @@ def sec_summary() -> None:
     check("precedence · kill then abandon stays killed; terminal then "
           "abandon is abandoned; a watchdog followed by a freeze is frozen "
           "(a watchdog event is not the outcome by itself)", _kill_precedence)
+
+    def _unrecoverable_sticky() -> None:
+        r = _rec([{"kind": "start"}, {"kind": "exit", "code": 1},
+                  {"kind": "classify"},
+                  {"kind": "owner", "branch": "unrecoverable", "handled": False},
+                  {"kind": "owner", "branch": "terminal", "handled": False},
+                  {"kind": "abandon", "door": "ran_then_failed", "hard_fail_run": 1}],
+                 outcome="unrecoverable")
+        s = turnlog.summarize(r)
+        assert s["implied"] == "unrecoverable" and turnlog.drift(r) == [], s
+        # NON-CIRCULAR: the recorded outcome edited → drift; and the same
+        # events WITHOUT the unrecoverable owner imply abandoned
+        r2 = copy.deepcopy(r)
+        r2["outcome"] = "abandoned"
+        assert turnlog.drift(r2) == ["outcome"]
+        r3 = copy.deepcopy(r)
+        del r3["events"][3]
+        for i, e in enumerate(r3["events"]):
+            e["seq"] = i + 1
+        assert turnlog.summarize(r3)["implied"] == "abandoned"
+        assert turnlog.drift(r3) == ["outcome"]
+    check("unrecoverable · sticky over the terminal owner and the abandon "
+          "that follow; an edited outcome drifts; without the owner event "
+          "the same tail is abandoned", _unrecoverable_sticky)
 
     def _phases() -> None:
         adm = _rec([{"kind": "start"},
@@ -806,6 +945,119 @@ def sec_claude() -> dict:
     rig.set_mode("plain")
     supervisor.state(slug6, nid6)["interrupted"] = True
     rig.run_turn(slug6, nid6, "sixth")
+
+    # THE UNRECOVERABLE PATH, for real: the CLI answers is_error with the
+    # "No conversation found" sentence; mark_unrecoverable runs and control
+    # falls through to the terminal door exactly as before
+    slug7, nid7 = rig.probe_org()
+    rig.set_mode("iserror", limit_text="No conversation found with session ID "
+                 + IDENT_CANARIES[2])
+    rig.run_turn(slug7, nid7, "seventh")
+
+    def _unrecoverable() -> None:
+        n = rig.node(slug7, nid7)
+        fixture(n.get("state") == "unrecoverable",
+                f"the branch did not mark the node: state={n.get('state')!r}")
+        rec = _last(slug7, nid7)
+        _ordered(rec)
+        # the OLD behaviour, unchanged: the terminal door still ran, the hard
+        # fail counter still bumped, the superior was still driven
+        assert n.get("hard_fail_run") == 1, n.get("hard_fail_run")
+        rows = (store.load_org(slug7).d.get("turn_error_log") or {}).get(nid7) or []
+        assert rows and rows[-1]["text"].startswith("turn failed"), rows
+        owners = [(e["branch"], e["handled"]) for e in rec["events"] if e["kind"] == "owner"]
+        assert owners == [("unrecoverable", False), ("terminal", False)], owners
+        assert _ev(rec, "abandon")["door"] == "ran_then_failed"
+        disposes = [e["outcome"] for e in rec["events"] if e["kind"] == "dispose"]
+        assert disposes == ["unrecoverable", "failed", "abandoned"], disposes
+        # …and the record's outcome and FILENAME name the diagnostic that matters
+        assert rec["outcome"] == "unrecoverable", rec["outcome"]
+        assert _records(slug7, nid7)[-1].endswith("-claude-unrecoverable.json")
+        s = turnlog.summarize(rec)
+        assert s["implied"] == "unrecoverable" and turnlog.drift(rec) == [], s
+        # non-circular: the summary follows the events, not the header
+        bad = copy.deepcopy(rec)
+        bad["outcome"] = "abandoned"
+        assert turnlog.drift(bad) == ["outcome"]
+        _assert_no_canary(rec, ("seventh",))
+    check("unrecoverable · the node is marked and the terminal door still "
+          "bumps, logs and abandons (events in order); the outcome and "
+          "filename say unrecoverable; the summary agrees and is not a copy",
+          _unrecoverable)
+
+    def _doors_name_their_counter() -> None:
+        # the terminal door: hard_fail_run from _bump_hard_fail, no net counter
+        ab = _ev(out["e401"], "abandon")
+        assert ab["hard_fail_run"] == 1 and "net_fail_run" not in ab, ab
+        assert rig.node(slug3, nid3).get("hard_fail_run") == 1
+    check("abandon counters · the terminal door carries hard_fail_run (the "
+          "node's own) and no net counter", _doors_name_their_counter)
+
+    # the EXHAUSTED door: a node already at NET_RETRY_MAX connection retries
+    # dies in flight once more — the retry counter goes to MAX+1, the node is
+    # left unfrozen, the superior is driven, and hard_fail_run is untouched
+    slug8, nid8 = rig.probe_org()
+    with store.DOC_LOCK:
+        o8 = store.load_org(slug8)
+        o8.node(nid8)["net_fail_run"] = supervisor.NET_RETRY_MAX
+        store.save_org(o8)
+    rig.set_mode("died-in-flight")
+    rig.run_turn(slug8, nid8, "eighth")
+
+    def _exhausted() -> None:
+        n = rig.node(slug8, nid8)
+        fixture(n.get("net_fail_run") == supervisor.NET_RETRY_MAX + 1,
+                f"the exhausted door did not run: net_fail_run={n.get('net_fail_run')!r}")
+        assert not n.get("frozen"), "beyond the retry cap the node is not frozen"
+        assert n.get("hard_fail_run") is None, n.get("hard_fail_run")
+        rec = _last(slug8, nid8)
+        _ordered(rec)
+        assert rec["run"] == supervisor.NET_RETRY_MAX     # the counter as the attempt began
+        owners = [e["branch"] for e in rec["events"] if e["kind"] == "owner"]
+        assert owners == ["net_exhausted"], owners
+        ab = _ev(rec, "abandon")
+        assert ab["net_fail_run"] == supervisor.NET_RETRY_MAX + 1 and \
+            "hard_fail_run" not in ab, ab
+        assert rec["outcome"] == "abandoned" and rec["fixture"]
+        fx = failfix.load(turnlog.fixture_path(_records(slug8, nid8)[-1], rec["fixture"]))
+        assert fx["site"] == "exhausted" and fx["observed"]["exhausted"] is True
+        assert turnlog.summarize(rec)["implied"] == "abandoned"
+        assert turnlog.drift(rec) == []
+    check("exhausted door · owner net_exhausted, abandon carries net_fail_run "
+          "= MAX+1 and NO hard_fail_run (the node's stays unset); outcome "
+          "abandoned; the exhausted-site fixture resolves", _exhausted)
+
+    # a LIMIT freeze on the claude lane: the freeze event carries the facts
+    # the branch wrote (schedule, reset provenance, reset known and how far)
+    slug9, nid9 = rig.probe_org()
+    rig.set_mode("iserror")           # the rig's real limit sentence
+    rig.run_turn(slug9, nid9, "ninth")
+
+    def _limit_freeze() -> None:
+        n = rig.node(slug9, nid9)
+        fz = n.get("frozen") or {}
+        fixture(fz.get("limit") is True, f"the limit did not freeze: {fz!r}")
+        rec = _last(slug9, nid9)
+        _ordered(rec)
+        owners = [e["branch"] for e in rec["events"] if e["kind"] == "owner"]
+        assert owners == ["limit_freeze", "terminal"], owners
+        ev = _ev(rec, "freeze")
+        assert ev["freeze_kind"] == "limit"
+        assert ev["schedule"] == fz.get("schedule_kind"), (ev, fz.get("schedule_kind"))
+        assert ev["reset_known"] is (fz.get("until_ts") is not None)
+        assert ev["reset_src"] == fz.get("reset_src"), (ev, fz.get("reset_src"))
+        # the field is present exactly when the record carries one
+        assert ("untrusted" in ev) is ("untrusted" in fz), (ev, fz.keys())
+        if "untrusted" in fz:
+            assert ev["untrusted"] is bool(fz.get("untrusted"))
+        if fz.get("until_ts"):
+            assert isinstance(ev["delay_s"], int) and ev["delay_s"] >= 0
+        assert "run" not in ev and "parked" not in ev, ev
+        assert rec["outcome"] == "frozen"
+        assert turnlog.summarize(rec)["implied"] == "frozen" and turnlog.drift(rec) == []
+    check("limit freeze · the freeze event carries the written record's "
+          "schedule, reset provenance, reset_known/delay and untrusted flag "
+          "(no counter, not parked); outcome frozen", _limit_freeze)
 
     def _interrupt() -> None:
         rec = _last(slug6, nid6)
@@ -1133,7 +1385,9 @@ def sec_failopen(control: dict) -> None:
         assert _node_shape(slug_b, nid_b) == want, (_node_shape(slug_b, nid_b), want)
         rec = _last(slug_b, nid_b)
         assert rec["recorder_errors"] > 0 and rec["outcome"] == "frozen", rec
-        assert rec["events"] == [], _kinds(rec)
+        # the public emit is dead; close's own `end` (its private locked
+        # append) is the only event that can land
+        assert _kinds(rec) == ["end"], _kinds(rec)
         assert rec["fixture"], "the fixture correlation survives a dead emit"
         assert turnlog.summarize(rec)["evidence"] == "insufficient"
         assert turnlog.drift(rec) == []
@@ -1254,6 +1508,35 @@ def sec_tool(control: dict) -> None:
     check("drifts · an edited outcome exits 1 with drift ['outcome']; an "
           "unresolved fixture name is reported not read; a stub renders as "
           "PARTIAL/insufficient and passes --assert", _drifts)
+
+    def _malformed() -> None:
+        d = tempfile.mkdtemp(prefix="tl-bad-", dir=rig._TMP)
+        cases = {
+            "seq-none": {"schema": 1, "events": [{"seq": None, "t_ms": 1, "kind": "start"}]},
+            "kind-int": {"schema": 1, "events": [{"seq": 1, "t_ms": 1, "kind": 5}]},
+            "events-str": {"schema": 1, "events": "junk"},
+            "schema-str": {"schema": "1", "events": []},
+            "schema-bool": {"schema": True, "events": []},
+            "not-object": [1, 2],
+        }
+        for name, body in cases.items():
+            bp = os.path.join(d, f"{name}.json")
+            with open(bp, "w", encoding="utf-8") as f:
+                json.dump(body, f)
+            r = _run_tool([bp])
+            assert r.returncode == 2 and "malformed record" in r.stderr and \
+                "Traceback" not in r.stderr, (name, r.returncode, r.stderr[-300:])
+        bp = os.path.join(d, "not-json.json")
+        with open(bp, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        r = _run_tool([bp])
+        assert r.returncode == 2 and "Traceback" not in r.stderr, r.stderr[-300:]
+        # VALID CONTROL: a real record still renders with exit 0
+        r = _run_tool([paths[-1]])
+        assert r.returncode == 0 and "summary:" in r.stdout
+    check("malformed · seven bad records each yield one diagnostic line and "
+          "exit 2, never a traceback; the real record still renders",
+          _malformed)
 
     def _hook_bites() -> None:
         r = _run_tool([paths[-1]], prelude="\nimport orgtree.store\n")

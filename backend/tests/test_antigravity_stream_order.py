@@ -297,7 +297,12 @@ def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
         _visible_live_row=lambda payload: None,
         _flush_draft=flush_draft or (lambda: None),
         _queue_delta=lambda body: None,
-        _commit_text=commit_text or (lambda *a: None))
+        _commit_text=commit_text or (lambda *a: None),
+        # the turn record (turnlog, 2026-09-06): the leg's bodies emit
+        # through the module and the attempt's handle; here the handle is
+        # None so every emit is a no-op and these tests stay about the
+        # protocol. test_turn_events §7 drives the real leg with a recorder.
+        turnlog=supervisor.turnlog, trec=None)
     exec(compile(ast.Module(body=fns, type_ignores=[]),
                  "<antigravity-leg-bodies>", "exec"), env)
     env["_logged"] = logged

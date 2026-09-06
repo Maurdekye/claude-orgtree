@@ -24,13 +24,14 @@ import json
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from .turnread import (  # noqa: F401  (re-exported for the sites and the suite)
     B, CAP_BYTES, ERROR_CLASSES, F, FIELDS, HEAD, HEADER_FIELDS, I, KINDS,
     LIST_MAX, MAX_EVENTS, OUTCOMES, RING, SCHEMA, TAIL, TIERS, TOOLS,
     FieldSpec, L, S, _int, _vocab, assistant_shape, coerce, drift,
-    fixture_name, fixture_path, init_shape, is_fixture_name, list_records,
+    fixture_name, fixture_path, freeze_shape, init_shape, is_fixture_name,
+    list_records,
     load, record_dir, result_shape, seconds_of, summarize, tool_result_shape,
     window_of, _RECORD_RE, _STUB_RE)
 
@@ -98,37 +99,52 @@ class Recorder:
             with self._lock:
                 if self._closed or spec is None:
                     return False
-                ev: dict[str, Any] = {
-                    "seq": self._seq + 1,
-                    "t_ms": int((time.monotonic() - self._t0) * 1000),
-                    "kind": kind}
-                for k, fspec in spec.items():
-                    # a field can never shadow seq/t_ms/kind: the schema
-                    # names none of them, and the suite asserts that
-                    if k in fields:
-                        ev[k] = coerce(fspec, fields[k])
-                self._seq += 1
-                if len(self._head) < HEAD:
-                    self._head.append(ev)
-                    return True
-                if len(self._tail) == TAIL:
-                    old = self._tail[0]
-                    self._dropped += 1
-                    ok = str(old.get("kind"))
-                    self._dropped_kinds[ok] = self._dropped_kinds.get(ok, 0) + 1
-                self._tail.append(ev)
-                return True
+                return self._append_locked(kind, spec, fields)
         except Exception:                                    # noqa: BLE001
             self._errors += 1
             return False
 
+    def _append_locked(self, kind: str, spec: dict[str, FieldSpec],
+                       fields: Mapping[str, Any]) -> bool:
+        """Stamp and append ONE event. Caller holds the lock: seq and t_ms
+        are taken together here, so no thread can interleave between them,
+        and `close` uses the same step for its `end` event without ever
+        reopening the recorder to the public `emit`."""
+        ev: dict[str, Any] = {
+            "seq": self._seq + 1,
+            "t_ms": int((time.monotonic() - self._t0) * 1000),
+            "kind": kind}
+        for k, fspec in spec.items():
+            # a field can never shadow seq/t_ms/kind: the schema names none
+            # of them, and the module asserts that at import
+            if k in fields:
+                ev[k] = coerce(fspec, fields[k])
+        self._seq += 1
+        if len(self._head) < HEAD:
+            self._head.append(ev)
+            return True
+        if len(self._tail) == TAIL:
+            old = self._tail[0]
+            self._dropped += 1
+            ok = str(old.get("kind"))
+            self._dropped_kinds[ok] = self._dropped_kinds.get(ok, 0) + 1
+        self._tail.append(ev)
+        return True
+
     def dispose(self, outcome: str) -> None:
-        """The FINAL disposition as the exit path knows it; the LAST call
-        before close wins. Also an event, so the record shows every claim."""
+        """The FINAL disposition as the exit path knows it: the LAST call
+        before close wins — except `unrecoverable`, which is STICKY. The
+        unrecoverable branch marks the document and then falls through to
+        the terminal door, which still bumps the hard-fail counter, drives
+        the superior and disposes failed/abandoned (all of that is kept, as
+        events); the record's outcome and filename name the diagnostic that
+        matters. Recorder-side precedence only: nothing in the supervisor
+        changes. `turnread.summarize` applies the same rule. Every call is
+        also a `dispose` event, so the record shows each claim in order."""
         try:
             o = outcome if outcome in OUTCOMES else "unknown"
             with self._lock:
-                if not self._closed:
+                if not self._closed and self._disposition != "unrecoverable":
                     self._disposition = o
             self.emit("dispose", outcome=o)
         except Exception:                                    # noqa: BLE001
@@ -228,33 +244,41 @@ class Recorder:
         close is a no-op. Synchronous — takes its write time on the caller."""
         try:
             with self._lock:
+                # ONE critical section: the closed flag, the disposition,
+                # the `end` event and the SNAPSHOT of the events — so no
+                # emit from another thread can land between them (the
+                # 2026-09-06 review measured a late emit flipping a
+                # completed turn's implied outcome to killed when `end` was
+                # appended through the public emit with the flag lowered).
+                # A second concurrent close sees the flag and returns None.
                 if self._closed:
                     return None
-                o = ((outcome if outcome in OUTCOMES else None)
-                     or self._disposition or "unknown")
+                self._closed = True
+                if outcome in OUTCOMES and self._disposition != "unrecoverable":
+                    self._disposition = outcome
+                o = self._disposition or "unknown"
                 ms = int((time.monotonic() - self._t0) * 1000)
-                self._closed = True
-            ec: str | None = self._error_class
-            if error is not None:
-                ec = _vocab(type(error).__name__, ERROR_CLASSES)
-            cost = coerce(F, cost_usd) if cost_usd is not None else self._cost
-            if paid_booked is None:
-                paid_booked = self._paid_booked
-            # `end` rides the events list too, so a reader that only has the
-            # tail still sees the disposition — but summarize() never reads
-            # it. In its own guard: a failing emit must not cost the record.
-            try:
-                self._closed = False
-                self.emit("end", outcome=o, outcome_ms=ms)
-            except Exception:                                # noqa: BLE001
-                self._errors += 1
-            finally:
-                self._closed = True
-            rec = self._record(partial=False, outcome=o, outcome_ms=ms,
-                               error_class=ec,
-                               paid_booked=(paid_booked is True
-                                            if paid_booked is not None else None),
-                               cost_usd=cost)
+                try:
+                    # `end` rides the events list so a tail-only reader
+                    # still sees the disposition — summarize() never reads
+                    # it. Its own guard: a failing append must not cost
+                    # the record.
+                    self._append_locked("end", FIELDS["end"],
+                                        {"outcome": o, "outcome_ms": ms})
+                except Exception:                            # noqa: BLE001
+                    self._errors += 1
+                ec: str | None = self._error_class
+                if error is not None:
+                    ec = _vocab(type(error).__name__, ERROR_CLASSES)
+                cost = coerce(F, cost_usd) if cost_usd is not None else self._cost
+                if paid_booked is None:
+                    paid_booked = self._paid_booked
+                rec = self._record(partial=False, outcome=o, outcome_ms=ms,
+                                   error_class=ec,
+                                   paid_booked=(paid_booked is True
+                                                if paid_booked is not None
+                                                else None),
+                                   cost_usd=cost)
             blob = json.dumps(rec, ensure_ascii=False, indent=1)
             while len(blob.encode("utf-8")) > CAP_BYTES and len(rec["events"]) > 2:
                 # cut from the MIDDLE, keeping the start and the end

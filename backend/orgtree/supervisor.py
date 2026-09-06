@@ -15995,6 +15995,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     # not be able to disagree again — see `subscription_lane`.
                     _sub_lane = False
                     _frozen_at: str | None = None
+                    _tl_fz: dict[str, Any] = {}   # the freeze as WRITTEN (turnlog)
                     # WHY this freeze can never wake itself, if it cannot —
                     # set under the lock by whichever branch strips the reset
                     # time, announced OFF it (see below). `None` = it has a
@@ -16437,6 +16438,12 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
                             _frozen_at = str(fz.get("at") or "") or None
+                            # RECORDING ONLY: the record's own fields, read
+                            # back after the save — never recomputed policy
+                            _tl_fz = {"until_ts": fz.get("until_ts"),
+                                      "schedule_kind": fz.get("schedule_kind"),
+                                      "reset_src": fz.get("reset_src"),
+                                      "untrusted": fz.get("untrusted")}
                     # The old process/account identity is runtime attribution,
                     # not org configuration.  Keep it in memory until the
                     # freeze is resumed; the limit journal row above remains
@@ -16498,7 +16505,8 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     handled = True      # frozen — ▶ / auto-resume owns it now
                     turnlog.emit(_trec, "owner", branch="limit_freeze",
                                  handled=True)
-                    turnlog.emit(_trec, "freeze", freeze_kind="limit")
+                    turnlog.emit(_trec, "freeze", freeze_kind="limit",
+                                 **turnlog.freeze_shape(_tl_fz, parked=_parked))
                     if _trec is not None:
                         _trec.dispose("frozen")
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
@@ -16688,8 +16696,10 @@ def _run_one_turn_recorded(slug: str, nid: str,
                             # below, which reaches a screen and nobody's
                             # inbox. See rule 2 on `_for_the_record`.
                             _retry_exhausted(slug, nid, run, err_blob, kind_txt)
+                            # the CONNECTION-RETRY counter, named as such:
+                            # this door never bumps hard_fail_run
                             turnlog.emit(_trec, "abandon", door="ran_then_failed",
-                                         hard_fail_run=run)
+                                         net_fail_run=run)
                             if _trec is not None:
                                 _trec.dispose("abandoned")
                         elif _trec is not None:

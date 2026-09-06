@@ -13,7 +13,9 @@ and it sits in the sibling `failfix/<org>/<node>/` directory (resolved by
 `turnlog.fixture_path`, never from an arbitrary path), the fixture is
 re-decided through `tools/replay_failure.py`'s predicates and that drift is
 printed too. `--json` prints one JSON object per record instead; `--assert`
-exits 1 on any drift.
+exits 1 on any drift. A record the reader cannot parse (wrong schema, events
+not a list, an event without integer seq/t_ms or a string kind) is reported
+as one `malformed record …` line on stderr and exit 2 — never a traceback.
 
 WHAT THIS IS NOT: nothing is re-executed. No provider, CLI or supervisor
 runs; no branch the supervisor WOULD take is computed (that reads the retry
@@ -46,8 +48,22 @@ HEADER_KEYS = ("schema", "at", "attempt", "lane", "tier", "run",
                "dropped_kinds", "truncated", "recorder_errors")
 
 
+class Malformed(Exception):
+    """A record the reader cannot make sense of — reported as a diagnostic
+    line and a nonzero exit, never a traceback."""
+
+
 def inspect(path: str) -> dict:
-    rec = turnlog.load(path)
+    try:
+        rec = turnlog.load(path)
+        evs = rec.get("events") or []
+        for i, e in enumerate(evs):
+            if not isinstance(e, dict) or not isinstance(e.get("kind"), str)                     or isinstance(e.get("seq"), bool)                     or not isinstance(e.get("seq"), int)                     or isinstance(e.get("t_ms"), bool)                     or not isinstance(e.get("t_ms"), int):
+                raise Malformed(f"event {i} is not {{seq:int, t_ms:int, kind:str, ...}}")
+    except Malformed:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+        raise Malformed(f"{type(e).__name__}: {e}") from None
     out: dict = {"record": os.path.basename(path),
                  "header": {k: rec.get(k) for k in HEADER_KEYS},
                  "events": rec.get("events") or [],
@@ -84,8 +100,8 @@ def render(o: dict) -> str:
                      f"{h.get('truncated')} - the gap may hide the deciding event")
     for e in o["events"]:
         rest = {k: v for k, v in e.items() if k not in ("seq", "t_ms", "kind")}
-        lines.append(f"   {e.get('seq'):>4}  {e.get('t_ms'):>8}  "
-                     f"{e.get('kind'):<16} "
+        lines.append(f"   {str(e.get('seq')):>4}  {str(e.get('t_ms')):>8}  "
+                     f"{str(e.get('kind')):<16} "
                      + "  ".join(f"{k}={v!r}" for k, v in rest.items()))
     s = o["summary"]
     lines.append(f"   summary: evidence={s['evidence']} phase={s['phase']} "
@@ -116,9 +132,14 @@ def main(argv: list[str]) -> int:
         return 2
     rc = 0
     for p in paths:
-        o = inspect(p)
+        try:
+            o = inspect(p)
+        except Malformed as m:
+            print(f"malformed record {os.path.basename(p)}: {m}", file=sys.stderr)
+            rc = 2
+            continue
         print(json.dumps(o, ensure_ascii=False) if as_json else render(o))
-        if strict and o["drift"]:
+        if strict and o["drift"] and rc == 0:
             rc = 1
     return rc
 

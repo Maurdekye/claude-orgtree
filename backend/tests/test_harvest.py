@@ -318,9 +318,17 @@ def s2_separation() -> None:
     def _ordering():
         # Handlers on _run_one_turn's outermost try block run only after the
         # turn body raises, so classifiers there cannot precede assembly.
+        # the turn BODY: `_run_one_turn` became a thin recorder wrapper
+        # (turnlog, 2026-09-06) around `_run_one_turn_recorded`, which holds
+        # the try whose handlers this argument is about — find the function
+        # by that property, not by a name that may wrap again
         run_fn = next(n for n in _SUP_AST.body
-                      if isinstance(n, ast.FunctionDef) and n.name == "_run_one_turn")
-        outer_try = next(n for n in run_fn.body if isinstance(n, ast.Try))
+                      if isinstance(n, ast.FunctionDef)
+                      and n.name in ("_run_one_turn_recorded", "_run_one_turn")
+                      and any(isinstance(x, ast.Try) and x.handlers
+                              for x in n.body))
+        outer_try = next(n for n in run_fn.body
+                         if isinstance(n, ast.Try) and n.handlers)
         post_turn_calls = {c for h in outer_try.handlers for c in ast.walk(h)}
 
         pred_calls = [c for p in
