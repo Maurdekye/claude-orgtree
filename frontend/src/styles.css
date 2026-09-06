@@ -2578,6 +2578,8 @@ button.cc-name:hover {
   padding: 3px 8px; color: var(--ink); opacity: 0; pointer-events: none;
   transition: opacity .12s; box-shadow: var(--shadow);
 }
+/* credit hover overlay takes visual precedence over left coworker hire cards (z 3) */
+.cbar:hover, .cbar.dragging { z-index: 4; }
 .cbar:hover .cbar-tip, .cbar.dragging .cbar-tip { opacity: 1; }
 /* numbers wear the color of the bar section they measure: bright fill cyan
    for grant/alloc/circulation, the seat block's darker blue, the empty
