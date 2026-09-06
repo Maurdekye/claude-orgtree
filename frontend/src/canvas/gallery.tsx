@@ -23,8 +23,9 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DocRow } from '../api'
-import { BASE, fileBase, getDocuments, mockupUrl, sendMessage } from '../api'
-import { addPending } from '../convo'
+import { BASE, fileBase, getDocuments, mockupUrl } from '../api'
+import { sendLinkedReply } from '../events/reply'
+import type { ReplyTarget } from '../generated/events'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, MockupBadge, MockupOpen, useDoc } from './docs'
@@ -75,7 +76,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
   toast: ToastFn
   close: () => void
   onFocusAgent?: (agentId: string) => void
-  onReply?: (node: string, text: string) => Promise<unknown> | void
+  onReply?: (node: string, text: string, target: ReplyTarget) => Promise<unknown> | void
   /** canonical references written inside a document, and where they go. A
    *  presented plan names items, agents and the mail it answers; this panel
    *  can open none of those itself, so the shell supplies the routes and
@@ -241,7 +242,7 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply,
   onDismissed: () => void
   close: () => void
   onFocusAgent?: (agentId: string) => void
-  onReply?: (node: string, text: string) => Promise<unknown> | void
+  onReply?: (node: string, text: string, target: ReplyTarget) => Promise<unknown> | void
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   // an evicted row has no body to fetch — say so instead of spending a
@@ -298,12 +299,12 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply,
             {replyable && (
               <MailReplyBox target={row.node}
                 onSend={(text) => {
-                  if (onReply) return onReply(row.node, text)
-                  addPending(slug, row.node, text)
-                  return sendMessage(slug, row.node, text, undefined, {
-                    id: row.id, from: row.node, at: row.at,
-                    gist: row.title || '(untitled)',
-                  }).catch((e: Error) => toast([`error: ${e.message}`]))
+                  const target: ReplyTarget = { kind: 'document', org: slug, id: row.id }
+                  if (onReply) return onReply(row.node, text, target)
+                  return sendLinkedReply(slug, row.node, text, target).catch((e: Error) => {
+                    toast([`error: ${e.message}`])
+                    throw e
+                  })
                 }} />
             )}
           </>

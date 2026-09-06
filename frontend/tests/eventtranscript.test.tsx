@@ -41,3 +41,28 @@ test('public transcript uses permitted typed fields, retains allowed content and
   assert.match(v.el.querySelector('.event-linked_reply')!.textContent!,/Allowed C in public transcript/)
   assert.equal(isSegments([{kind:'mail',rows:[mail('reply.document')]}],'public'),false)
 })
+
+
+test('machine-only segments leave no empty card and preserve mixed readable composition in both profiles',async t=>{
+  const hidden=['context.org_state','context.provider_usage','context.cache_continuity','context.org_charter',
+    'context.drive_mail_pointer','context.drive_restart_interrupted','context.drive_restart_wake']
+  for(const profile of ['operator','public'] as const) {
+    const eventKey=profile==='operator'?'event':'event_public', rowKey=profile==='operator'?'ev':'ev_public'
+    const fixtureKey=profile==='operator'?'private':'public'
+    const segments=[{kind:'text',text:'Readable first'},
+      ...hidden.map(variant=>({kind:'state',text:'HIDDEN MACHINE FALLBACK',[eventKey]:f(variant)[fixtureKey]})),
+      {kind:'mail',rows:[{from:'alpha',kind:'status',at:'now',body:'compatibility',[rowKey]:{...f('status.report')[fixtureKey],summary:'Exact done summary C'}}]},
+      {kind:'state',text:'compatibility',[eventKey]:{...f('context.command')[fixtureKey],text:'Readable command C'}},
+      {kind:'notices',rows:[{at:'now',text:'compatibility',[rowKey]:{...f('docket.participant_added')[fixtureKey],objective:'Readable participation C'}}]},
+      {kind:'drive',text:'Untyped drive retained'}, {kind:'text',text:'Readable last'}]
+    assert.ok(isSegments(segments,profile),'all tested hidden variants really decode')
+    const view=await mountView(<SegmentList segments={segments} profile={profile} slug="org" nid="worker"/>,h=>h)
+    t.after(()=>view.unmount())
+    const cards=[...view.el.querySelectorAll('[data-event-variant]')].map(el=>el.getAttribute('data-event-variant'))
+    assert.deepEqual(cards,['status.report','context.command','docket.participant_added'])
+    assert.doesNotMatch(view.el.textContent!,/HIDDEN MACHINE FALLBACK/)
+    const text=view.el.textContent!, expected=['Readable first','Exact done summary C','Readable command C','Readable participation C','Untyped drive retained','Readable last']
+    expected.forEach((part,i)=>{assert.ok(text.includes(part),part);if(i)assert.ok(text.indexOf(expected[i-1])<text.indexOf(part))})
+    assert.equal(view.el.querySelectorAll('.event-segment-state').length,1,'no empty wrappers for hidden state')
+  }
+})

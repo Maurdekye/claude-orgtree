@@ -1,5 +1,6 @@
+import { HUMAN_HIDDEN_VARIANTS } from '../generated/events'
 import type { ReactNode } from 'react'
-import type { Segment, PublicSegment } from '../generated/events'
+import type { Event, PublicEvent, Segment, PublicSegment } from '../generated/events'
 import { decodeEventRow, isAuthoredUser, record } from './decode'
 import type { EventProfile } from './decode'
 import { EventCard } from './card'
@@ -12,6 +13,12 @@ import { AttachThumb, fmtBytes, isImg } from '../canvas/img'
 import { DownloadIcon } from '../icons'
 import { fmtFull } from '../timefmt'
 
+/** Approved machine-only composition is retained for agents and storage,
+ * but contributes no empty heading to the human transcript. */
+const hiddenSegments = new Set<string>(HUMAN_HIDDEN_VARIANTS)
+export function humanSegmentEvent(event: Event | PublicEvent): boolean {
+  return !hiddenSegments.has(event.variant)
+}
 type AnySegment = Segment | PublicSegment
 export { isSegments } from './wire'
 import { isSegments } from './wire'
@@ -55,6 +62,8 @@ export function SegmentList({ segments, profile, slug, nid, world, onOpen, actor
         const row = 'event' in segment ? { ev: segment.event, text: segment.text }
           : 'event_public' in segment ? { ev_public: segment.event_public, text: segment.text }
           : { text: segment.text, ...(segment.ev_error ? { ev_error: segment.ev_error } : {}) }
+        const decoded = decodeEventRow(row, profile)
+        if (decoded.kind === 'known' && !humanSegmentEvent(decoded.event)) return null
         return <div key={i} className={'event-segment-' + segment.kind}>{card(row, false)}</div>
       }
       case 'notices': return <div key={i} className="event-notices">{segment.rows.map((row, j) => <div key={j}>

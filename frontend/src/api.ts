@@ -1,3 +1,4 @@
+import type { ReplyTarget } from './generated/events'
 // kiosk v2: when the SPA is served from a preauthenticated public URL
 // (/k/<token>/…), every API call and the WS must carry the token prefix —
 // the public listener serves nothing outside it.
@@ -536,6 +537,12 @@ export const sendMessage = (
       ...(attachments?.length ? { attachments } : {}),
       // FR-05: an inline mailbox reply carries a snapshot of what it answers
       ...(replyTo ? { reply_to: replyTo } : {}) }),
+  })
+/** Object identity only; the server resolves authoritative reply context. */
+export const replyMessage = (slug: string, nid: string, text: string, target: ReplyTarget): Promise<SendMessageResult> =>
+  req(`/api/orgs/${slug}/nodes/${nid}/message`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, target }),
   })
 export const saveSettings = (slug: string, opts: SettingsRequest = {}): Promise<SettingsResult> =>
   req(`/api/orgs/${slug}/settings`, {

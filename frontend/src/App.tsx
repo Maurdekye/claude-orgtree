@@ -1,3 +1,4 @@
+import { sendLinkedReply } from './events/reply'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -10,8 +11,7 @@ import {
   getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
-  resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
-  sweepLegacy,
+  resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sweepLegacy,
 } from './api'
 import { fmtClock, fmtFull, localizeFreezeUntil } from './timefmt'
 import { bumpLive } from './livebus'
@@ -40,7 +40,7 @@ import {
   useVisitedTabs,
 } from './canvas/settingskit'
 import type { SettingsTab } from './canvas/settingskit'
-import { addPending, bindPendingMail, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
+import { ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
@@ -2193,25 +2193,11 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })
                     .catch(() => {})}
                   onReply={(m: MailEntry, text: string) => {
-                    // the desk composer's optimistic ghost, which this
-                    // composer never had (D-54): a reply sent from the inbox
-                    // is an ordinary message to that node, and its desk —
-                    // open behind this modal, or opened a second later —
-                    // showed nothing at all until the server copy landed.
-                    // Same store, same graduation-on-evidence rule.
-                    const ghostId = addPending(slug, m.from, text)
-                    // FR-05: the reply is attributed to the mail it answers —
-                    // the agent's [MAIL] block quotes the snapshot, so a
-                    // two-word reply is unambiguous
-                    return sendMessage(slug, m.from, text, undefined, {
-                      id: m.id, from: m.from, at: m.at,
-                      gist: (m.body ?? '').trim().replace(/\s+/g, ' ')
-                        .slice(0, 200),
-                    })
-                      .then(r => { bindPendingMail(slug, m.from, ghostId, r); toast([`sent to ${m.from}`]) })
+                    return sendLinkedReply(slug, m.from, text, { kind: 'mail', org: slug, box: 'user', id: m.id })
+                      .then(() => { toast([`sent to ${m.from}`]) })
                       .catch((e: Error) => {
-                        dropPending(slug, m.from, text)
                         toast([`error: ${e.message}`])
+                        throw e
                       })
                   }}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}

@@ -1,3 +1,4 @@
+import type { TypedReplyReceipt } from './generated/events'
 // API payload types — the frontend's half of the seam (typing wave, docs/typing-plan.md).
 //
 // Derived from the BACKEND source, which is the ground truth:
@@ -1812,7 +1813,7 @@ export interface KioskSaveResult {
 
 // POST .../nodes/{nid}/message — several branches (api.py node_message):
 // mail accept, /compact start, immediate command, or send_message's result
-export interface SendMessageResult {
+export interface SendMessageResult extends Partial<TypedReplyReceipt> {
   accepted?: boolean
   deferred?: boolean | string
   queued?: number
@@ -2008,7 +2009,7 @@ export interface DismissAttentionResult { item: WorkItem }
 // POST /api/orgs/{slug}/work-items/{id}/reply — failures are explicit HTTP
 // errors (422 nothing to reply to, 404 recipient gone), never a reroute;
 // req() throws those as Error(detail)
-export interface WorkItemReplyResult {
+export interface WorkItemReplyResult extends Partial<TypedReplyReceipt> {
   accepted: true
   role?: 'owner' | 'participant'
   to: string

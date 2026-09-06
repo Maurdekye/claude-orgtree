@@ -352,10 +352,10 @@ uiTest('§10b agent name link still functions for a retired agent',
 
 uiTest('§11 reply box is present below document for live owner and sends message',
   async (mount) => {
-    let replied: { node: string; text: string } | null = null
+    let replied: { node: string; text: string; target: unknown } | null = null
     mockDocs([row({ id: 'd1', title: 'the plan', node: 'agent-live', node_state: 'live' })], { d1: 'body markdown' })
     const { el } = await mount(gallery({
-      onReply: (node, text) => { replied = { node, text } },
+      onReply: (node, text, target) => { replied = { node, text, target } },
     }))
     await flush()
     await inAct(() => { (rows(el)[0] as HTMLElement).click() })
@@ -376,7 +376,7 @@ uiTest('§11 reply box is present below document for live owner and sends messag
     assert.ok(!sendBtn.disabled, 'reply button enabled once text is entered')
     await inAct(() => sendBtn.click())
     await flush()
-    assert.deepEqual(replied, { node: 'agent-live', text: 'Looks good, proceed!' })
+    assert.deepEqual(replied, { node: 'agent-live', text: 'Looks good, proceed!', target: {kind:'document',org:'org1',id:'d1'} })
   })
 
 uiTest('§12 reply box is ABSENT when the owning agent is retired or document is evicted',
