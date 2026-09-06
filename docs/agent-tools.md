@@ -70,6 +70,8 @@ External resources, network requests, form submissions, and navigation to other 
 blocked; include images and fonts as data URLs. The same protection applies
 when opening the document URL directly. This initial preview is operator-only;
 kiosk visitors see an unavailable message and the preview endpoint refuses access.
+The HTML file remains downloadable to visitors through existing outbox links;
+operator-only preview access is not a promise that the content is private.
 
 ## Operations
 

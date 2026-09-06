@@ -551,6 +551,14 @@ def _errors():
                       ).status_code == 404
     did = present(slug, title="T",
                   path=plant(scratch(slug), "m.html"))[1]["presented"]
+    snapshot = os.path.join(scratch(slug), "outbox", "m.html")
+    # A valid presentation can grow after publication; fail instead of
+    # serving the read limit as a silently truncated, executable page.
+    assert client.get(f"/api/orgs/{slug}/documents/{did}/mockup").status_code == 200
+    with open(snapshot, "wb") as fh:
+        fh.write(b"x" * (api._MOCKUP_MAX + 1))
+    r = client.get(f"/api/orgs/{slug}/documents/{did}/mockup")
+    assert r.status_code == 422 and "grew past" in r.text, (r.status_code, r.text[:200])
     os.remove(os.path.join(scratch(slug), "outbox", "m.html"))
     r = client.get(f"/api/orgs/{slug}/documents/{did}/mockup")
     assert r.status_code == 410, (r.status_code, r.text)

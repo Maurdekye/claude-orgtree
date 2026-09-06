@@ -649,7 +649,8 @@ TOOLS: list[dict[str, Any]] = [
             "inline CSS/JS work, but there is NO network — external "
             "scripts, stylesheets, fonts and images will not load (inline "
             "them, e.g. data: URLs), and it cannot reach the orgtree app or "
-            "its API. Operator-only: kiosk visitors cannot open it."),
+            "its API. The preview is operator-only; the HTML file remains "
+            "downloadable to kiosk visitors like any outbox artifact."),
         "inputSchema": {
             "type": "object",
             "properties": {

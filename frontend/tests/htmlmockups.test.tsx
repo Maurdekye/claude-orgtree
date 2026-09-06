@@ -59,7 +59,7 @@ test('gallery mockup cards open a new tab and retain a dismissible metadata pane
     if (init?.method === 'DELETE') dismissed = true
     const doc = { ...htmlDoc, node: 'agent', node_state: 'live', evicted: false }
     return { ok: true, status: 200, headers: new Headers(), json: async () =>
-      String(url).endsWith('/documents') ? { documents: dismissed ? [] : [doc] }
+      String(url).endsWith('/documents') ? { documents: dismissed ? [] : [doc, { ...doc, id: 'evicted1', evicted: true }] }
         : { ...doc, body: maliciousBody },
     } as Response
   }) as typeof fetch
@@ -70,6 +70,10 @@ test('gallery mockup cards open a new tab and retain a dismissible metadata pane
   assert.ok(card)
   assert.equal(card.target, '_blank')
   assert.equal(card.getAttribute('href'), '/api/orgs/org/documents/mock1/mockup')
+  const evicted = view.el.querySelector('.doc-gallery-row.evicted')!
+  assert.ok(evicted, 'positive control: evicted HTML row is actually rendered')
+  assert.equal(evicted.tagName, 'DIV')
+  assert.equal(evicted.getAttribute('href'), null, 'evicted mockup cannot open a dead URL')
   // Prevent jsdom navigation; production activation is verified in Chromium.
   card.addEventListener('click', (e) => e.preventDefault())
   await inAct(() => card.click()); await flush()
