@@ -87,10 +87,13 @@ export interface EventCardProps extends ContentProps {
  *  Envelope time, delivery badges, attachments and existing actions stay with callers. */
 export function EventCard({ row, profile, org, preview = false, actor, ...content }: EventCardProps) {
   const decoded = decodeEventRow(row, profile)
-  if (decoded.kind !== 'known') return <div className="event-fallback">
-    {decoded.kind === 'unsupported' && <span className="event-unsupported">Unsupported message format</span>}
-    <Text text={decoded.fallback} {...content} />
-  </div>
+  if (decoded.kind !== 'known') {
+    const text = <Text text={decoded.fallback} {...content} />
+    return <div className="event-fallback">
+      {decoded.kind === 'unsupported' && <span className="event-unsupported">Unsupported message format</span>}
+      {preview ? <ReceivedMailBody>{text}</ReceivedMailBody> : text}
+    </div>
+  }
   const view = projectEvent(decoded.event)
   const event = decoded.event
   const body = view.fields.filter(f => f.placement === 'body')

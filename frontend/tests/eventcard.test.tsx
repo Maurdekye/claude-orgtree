@@ -102,3 +102,17 @@ test('compact object headings retain permitted build and reference facts in cont
     assert.equal(reference.el.querySelectorAll('.event-object-details [data-event-field="org"]').length,0)
   }
 })
+
+
+test('explicit received-mail fallback keeps the preview without classifying its prose',async t=>{
+  const body='[DOCKET ASSIGNMENT] This is authored text, not typed metadata.'
+  for(const profile of ['operator','public'] as const) for(const unsupported of [false,true]) {
+    const row={body,...(unsupported?{ev_error:{code:'unknown'}}:{})}
+    const view=await mountView(<EventCard org="fixture" profile={profile} row={row} preview/>,h=>h)
+    t.after(()=>view.unmount())
+    assert.equal(view.el.querySelectorAll('.event-fallback .turn-mail-preview').length,1)
+    assert.ok(view.el.textContent!.includes(body))
+    assert.equal(view.el.querySelectorAll('.event-assignment').length,0)
+    assert.equal(view.el.querySelectorAll('.event-unsupported').length,unsupported?1:0)
+  }
+})
