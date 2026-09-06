@@ -212,7 +212,7 @@ print("\n§5  wire_segments projection")
 def _wire_segments():
     slug = fresh()
     ev_a = events.mint("access.scope_requested", actor_of("kid"),
-                       {"kind": "scope_request", "org": slug, "id": "s1", "node": "kid"},
+                       {"kind": "node", "org": slug, "id": "kid", "name": "kid", "generation": 0},
                        items=["x"], reason="r",
                        wanted={"folders": [{"path": "SENTINEL-PATH", "mode": "rw"}],
                                "tools": {"bash": None, "web": None, "edit": None,
@@ -339,7 +339,7 @@ def _hub_projection():
     admin, visitor = FakeWS(), FakeWS()
     slug = fresh()
     ev = events.mint("access.scope_requested", actor_of("kid"),
-                     {"kind": "scope_request", "org": slug, "id": "s1", "node": "kid"},
+                     {"kind": "node", "org": slug, "id": "kid", "name": "kid", "generation": 0},
                      items=["x"], reason="r",
                      wanted={"folders": [{"path": "SENTINEL-LIVE-PATH", "mode": "rw"}],
                              "tools": {"bash": None, "web": None, "edit": None,

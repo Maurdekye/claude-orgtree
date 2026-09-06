@@ -9,10 +9,11 @@
       "id": "access.scope_requested·actor"
     },
     "object": {
-      "kind": "scope_request",
+      "kind": "node",
       "org": "access.scope_requested·object.org",
       "id": "access.scope_requested·object.id",
-      "node": "access.scope_requested·object.node"
+      "name": "access.scope_requested·object.name",
+      "generation": 3
     },
     "engine_authored": false,
     "items": [
@@ -48,9 +49,10 @@
       "id": "access.scope_requested·actor"
     },
     "object": {
-      "kind": "scope_request",
+      "kind": "node",
       "id": "access.scope_requested·object.id",
-      "node": "access.scope_requested·object.node"
+      "name": "access.scope_requested·object.name",
+      "generation": 3
     },
     "items": [
       "access.scope_requested·items[0]"

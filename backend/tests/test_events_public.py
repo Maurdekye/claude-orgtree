@@ -86,7 +86,7 @@ def build_org() -> str:
     org.post_mail(USER, "boss", f"hello {SENT_B} world", "message", typed=True)
     # A: public:false field of a system leaf, mailed to boss
     ev_a = events.mint("access.scope_requested", actor_of("kid"),
-                       {"kind": "scope_request", "org": slug, "id": "sr1", "node": "kid"},
+                       org.node_ref("kid"),
                        items=["folder C:/x (rw)"], reason="need it",
                        wanted={"folders": [{"path": SENT_A, "mode": "rw"}],
                                "tools": {"bash": None, "web": None, "edit": None,
