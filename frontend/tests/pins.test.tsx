@@ -792,8 +792,8 @@ uiTest('rename keeps the pinned window, geometry and draft; deletion still close
   assert.deepEqual(winRect(renamed!), before, 'position and size are preserved')
   assert.equal(readPins('mine')[0]!.z, beforePin.z, 'stacking order is preserved')
   assert.equal(renamed!.querySelector('.pinwin-name')?.textContent, 'renamed')
-  assert.equal(localStorage.getItem('orgtree-draft-mine-renamed'), 'keep this unsent draft')
-  assert.equal(localStorage.getItem('orgtree-draft-mine-cto'), null)
+  assert.equal(localStorage.getItem('orgtree-draft-v2-["mine","renamed",0]'), 'keep this unsent draft')
+  assert.equal(localStorage.getItem('orgtree-draft-v2-["mine","cto",0]'), null)
   const renamedTa = renamed!.querySelector('textarea') as HTMLTextAreaElement | null
   assert.ok(renamedTa, 'the renamed desk still has its real composer')
   assert.equal(renamedTa!.value, 'keep this unsent draft',
@@ -829,7 +829,7 @@ uiTest('rename keeps the pinned window, geometry and draft; deletion still close
   await flush()
   assert.ok(pinWin(el, 'renamed'), 'the original B remains pinned')
   assert.equal(pinWin(el, 'cto'), null, 'a newly hired A gets no old pin')
-  assert.equal(localStorage.getItem('orgtree-draft-mine-cto'), null,
+  assert.equal(localStorage.getItem('orgtree-draft-v2-["mine","cto",0]'), null,
     'a newly hired A gets no old conversation draft')
   await inAct(() => { setTree(tree(['ceo', 'cto'], {}, { cto: 'fresh-cto' })) })
   await flush()

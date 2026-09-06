@@ -1,3 +1,5 @@
+import { preserveRemovedDrafts, renameDrafts } from '../draftstore'
+import { DeskHosts } from './deskhosts'
 // canvas/OrgCanvas.tsx — the canvas core: the OrgCanvas component itself —
 // camera (pan/zoom/springs/follow), tree layout orchestration, wires and
 // mail sparks, node dragging and re-parenting, the retired/crowd piles, the
@@ -528,6 +530,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     renamePin(slug, from, to)
     renameConvo(slug, from, to)
     migrateClientNodeState(slug, from, to)
+    renameDrafts(slug, from, to)
+    window.dispatchEvent(new window.CustomEvent('orgtree:desk-rename', { detail: { slug, from, to } }))
     setConfigId((v) => v === from ? to : v)
     setLineageId((v) => v === from ? to : v)
     setInboxId((v) => v === from ? to : v)
@@ -814,6 +818,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     // node set — nearly everything. Only sweep when the two agree.
     if (tree.slug !== slug) return
     try {
+      preserveRemovedDrafts(slug, map)
       const pre = `orgtree-draft-${slug}-`
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i)
@@ -2174,7 +2179,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   }, [tree])
 
   return (
-    <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
+    <DeskHosts map={map} slug={slug} treeSlug={tree.slug}><div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
       + (tree.headless ? ' headless' : '')
       // api_fallback (user feature 2026-08-19): the office border goes red
       // while the org's own API key is the lane being billed. Whole-canvas,
@@ -2932,7 +2937,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
             }} />
         </MaybePortal>
       )}
-    </div>
+    </div></DeskHosts>
   )
 }
 

@@ -1,3 +1,4 @@
+import { useSurfaceDocument } from '../popout'
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { RefMdBody } from './refmd'
@@ -9,8 +10,8 @@ function fiveLineHeight(body: HTMLElement): { limit: number | null; lines: numbe
   const box = body.getBoundingClientRect()
   if (!box.width || !body.offsetWidth) return { limit: null, lines: 0 }
   const fragments: DOMRect[] = []
-  const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
-  const range = document.createRange()
+  const walk = body.ownerDocument.createTreeWalker(body, 4)
+  const range = body.ownerDocument.createRange()
   for (let node = walk.nextNode(); node; node = walk.nextNode()) {
     if (!node.textContent?.trim()) continue
     range.selectNodeContents(node)
@@ -38,6 +39,7 @@ export function ReceivedMailBody({ html, world, onOpen }: {
   html: { __html: string }; world?: RefWorld | null
   onOpen?: (r: ResolvedRef) => void
 }) {
+  const ownerDocument = useSurfaceDocument()
   const content = useRef<HTMLDivElement>(null)
   const id = useId()
   const [{ limit, lines }, setMeasure] = useState({ limit: null as number | null, lines: 0 })
@@ -49,15 +51,16 @@ export function ReceivedMailBody({ html, world, onOpen }: {
     measure()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     observer?.observe(body)
-    window.addEventListener('resize', measure)
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure) }
-  }, [html.__html])
+    const ownerWindow = ownerDocument.defaultView
+    ownerWindow?.addEventListener('resize', measure)
+    return () => { observer?.disconnect(); ownerWindow?.removeEventListener('resize', measure) }
+  }, [html.__html, ownerDocument])
   const long = limit !== null
   const folded = long && !expanded
   const toggle = () => setExpanded(value => !value)
   return <div className={'turn-mail-preview' + (long ? ' expandable' : '') + (folded ? ' folded' : '')}
     onClick={e => {
-      if (!long || e.defaultPrevented || !window.getSelection()?.isCollapsed) return
+      if (!long || e.defaultPrevented || !ownerDocument.defaultView?.getSelection()?.isCollapsed) return
       if ((e.target as Element).closest('a,button,input,textarea,select,summary,[role="button"],[contenteditable],img,video,audio')) return
       toggle()
     }}>

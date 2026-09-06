@@ -1,3 +1,4 @@
+import { useSurfaceDocument } from '../popout'
 // canvas/shared.ts — the split Canvas's leaf module: the canvas view types,
 // world-space geometry constants and helpers (layout/flatten/springs math),
 // the chat-markdown pipeline (md), and the small shared hooks. Helpers and
@@ -1744,7 +1745,7 @@ const wrapCodeBlocks = (html: string, imgBase?: string) => {
 // one delegated listener for every panel (content is innerHTML, so per-element
 // React handlers don't exist). Streaming re-renders replace the button node,
 // which simply drops the transient ✓ state — harmless.
-if (typeof document !== 'undefined') document.addEventListener('click', e => {
+export function copyCodeFromEvent(e: { target: EventTarget | null }) {
   // no `instanceof HTMLButtonElement` here — that global doesn't exist in the
   // node+jsdom test scope and the check threw on every unrelated click
   const btn = (e.target as Element | null)?.closest?.('button.code-copy')
@@ -1753,7 +1754,7 @@ if (typeof document !== 'undefined') document.addEventListener('click', e => {
   // innerText, not textContent — the diff pre renders each line as a <div>,
   // whose textContent concatenates with NO newlines
   const text = (pre?.innerText ?? '').replace(/\n$/, '')
-  navigator.clipboard?.writeText(text).then(() => {
+  btn.ownerDocument.defaultView?.navigator.clipboard?.writeText(text).then(() => {
     btn.innerHTML = CheckIcon
     btn.classList.add('copied')
     setTimeout(() => {
@@ -1762,7 +1763,8 @@ if (typeof document !== 'undefined') document.addEventListener('click', e => {
       btn.classList.remove('copied')
     }, 1200)
   }).catch(() => {})
-})
+}
+if (typeof document !== 'undefined') document.addEventListener('click', copyCodeFromEvent)
 /** `imgBase` (optional): the node-scoped /file URL prefix relative image
  *  srcs resolve against — pass `fileBase(slug, nid)` where the author's
  *  files are known; the cache keys on it (NUL joins the halves — it never
@@ -1854,12 +1856,25 @@ export const segPoint = (s: Seg, t: number): Pt => {
 }
 
 // Escape closes any overlay panel (they had no keyboard exit at all)
-export function useEsc(close: () => void) {
+const escapeStacks = new WeakMap<Document, { current: () => void }[]>()
+export function useEsc(close: () => void, enabled = true) {
+  const ownerDocument = useSurfaceDocument()
+  const latest = useRef(close); latest.current = close
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [close])
+    if (!enabled) return
+    const stack = escapeStacks.get(ownerDocument) ?? []
+    escapeStacks.set(ownerDocument, stack)
+    const entry = { current: () => latest.current() }; stack.push(entry)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && stack[stack.length - 1] === entry
+        && !ownerDocument.querySelector('.lb-overlay, .picker-overlay')) {
+        e.preventDefault(); entry.current()
+      }
+    }
+    const w = ownerDocument.defaultView ?? window
+    w.addEventListener('keydown', onKey, true)
+    return () => { const i = stack.indexOf(entry); if (i >= 0) stack.splice(i, 1); w.removeEventListener('keydown', onKey, true) }
+  }, [ownerDocument, enabled])
 }
 
 /** G5 — the panel heartbeat.

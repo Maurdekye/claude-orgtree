@@ -1,3 +1,4 @@
+import { CurrentOrg, RestartNotice, WindowMirrors, useOrgTransition } from './popout'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -15,7 +16,7 @@ import {
 } from './api'
 import { fmtClock, fmtFull, localizeFreezeUntil } from './timefmt'
 import { bumpLive } from './livebus'
-import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
+import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold } from './Canvas'
 import { KillSwitch } from './KillSwitch'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import { GitWorkspace } from './GitWorkspace'
@@ -220,8 +221,9 @@ export default function App() {
   // apply the stored desk text size before anything renders a desk
   useEffect(() => { setDeskDpi(deskDpi()) }, [])
   const [orgs, setOrgs] = useState<OrgListEntry[]>([])
-  const [slug, setSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
+  const [slug, commitSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
   const [tree, setTree] = useState<TreePayload | null>(null)
+  const { request: setSlug, prompt: orgTransitionPrompt } = useOrgTransition(slug, commitSlug, BASE)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [error, setError] = useState<string | null>(null)
   // G4: `pulses` used to live here — a per-node record of the last turn event,
@@ -684,7 +686,9 @@ export default function App() {
   )
 
   return (
-    <div className="app">
+    <CurrentOrg.Provider value={slug}><div className="app">
+      <RestartNotice />
+      {orgTransitionPrompt}
       {/* no active org: the org list IS the screen */}
       {!slug && (
         <div className="welcome">
@@ -1169,9 +1173,26 @@ export default function App() {
           </div>
         ))}
       </div>
+      <WindowMirrors>
+      <div className="toasts">
+        {toasts.map((t) => (
+          <div key={t.id} className="toast" onClick={() =>
+            setToasts((x) => x.filter((y) => y.id !== t.id))}>
+            {t.lines.map((l, i) => <div key={i}>{l}</div>)}
+            {t.undo && (
+              <button className="toast-undo" onClick={(e) => {
+                e.stopPropagation()
+                setToasts((x) => x.filter((y) => y.id !== t.id))
+                ;(typeof t.undo === 'function' ? t.undo : t.undo!.fn)()
+              }}>{typeof t.undo === 'function' ? 'undo' : t.undo.label}</button>
+            )}
+          </div>
+        ))}
+      </div>
+      </WindowMirrors>
       {/* the in-app folder picker: LAST so it stacks above every modal */}
       <FolderPickerHost />
-    </div>
+    </div></CurrentOrg.Provider>
   )
 }
 
@@ -1183,7 +1204,7 @@ export default function App() {
  *  change what cannot change after birth. No save button of its own: the
  *  create form submits, and the settings panel keeps its ONE bottom save
  *  (three save surfaces was a user-reported failure once already). */
-function AdvancedOrgModal({ title, close, children, tabs }: {
+export function AdvancedOrgModal({ title, close, children, tabs }: {
   title: string
   close: () => void
   children?: ReactNode
@@ -1191,12 +1212,10 @@ function AdvancedOrgModal({ title, close, children, tabs }: {
    *  presentation only; both callers keep their own save flow */
   tabs?: { label: string; content: ReactNode }[]
 }) {
-  useEsc(close)
   const [tab, setTab] = useState(0)
   return (
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
+    <PinFrame kind="advanced-org" title={`${title} advanced`} panel="settings" close={close} pinnable={false}>
+      <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
         {tabs && (
           <div className="adv-tabs">
             {tabs.map((t, i) => (
@@ -1210,8 +1229,7 @@ function AdvancedOrgModal({ title, close, children, tabs }: {
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 

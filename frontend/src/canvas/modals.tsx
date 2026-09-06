@@ -1,3 +1,4 @@
+import { useSurfaceDocument } from '../popout'
 // canvas/modals.tsx — the config modals: the in-page ConfirmModal, the org
 // agent-hire defaults panel (UserConfig), the pre-hire permissions modal
 // (DraftScopeModal), the per-node ⚙ config (NodeConfig) with the shared MCP
@@ -6,7 +7,6 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import type {
   ChatInit, DirGrant, ProviderInfo, ToastFn, ToolGrant, TreePayload, Watchdog,
 } from '../types'
@@ -65,6 +65,7 @@ function tabbablesIn(root: HTMLElement): HTMLElement[] {
 // reset, compaction), so Enter must not fire it by accident.
 export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
   altLabel, onAlt }: ConfirmModalProps) {
+  const ownerDocument = useSurfaceDocument()
   useEsc(close)
   const boxRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -76,10 +77,10 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
     // whoever had focus when we opened is the opener — remembered by
     // identity, so a re-render that replaces it is a stale opener, not a
     // focus target
-    const opener = document.activeElement instanceof HTMLElement
-      ? document.activeElement : null
+    const opener = ownerDocument.activeElement instanceof (ownerDocument.defaultView!.HTMLElement)
+      ? ownerDocument.activeElement : null
     ;(cancelRef.current ?? box).focus()
-    if (!box.contains(document.activeElement)) box.focus()
+    if (!box.contains(ownerDocument.activeElement)) box.focus()
     // Tab containment lives on the DOCUMENT rather than the box so that a
     // Tab pressed while focus is on <body> (the opener was removed, or a
     // control the focus sat on vanished) still lands in the dialog instead
@@ -89,7 +90,7 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
     const onTab = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || e.defaultPrevented) return
       const items = tabbablesIn(box)
-      const i = items.indexOf(document.activeElement as HTMLElement)
+      const i = items.indexOf(ownerDocument.activeElement as HTMLElement)
       e.preventDefault()
       if (!items.length) { box.focus(); return }
       const step = e.shiftKey ? -1 : 1
@@ -98,20 +99,20 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
         : items[(i + step + items.length) % items.length]
       next?.focus()
     }
-    document.addEventListener('keydown', onTab)
+    ownerDocument.addEventListener('keydown', onTab, true)
     return () => {
-      document.removeEventListener('keydown', onTab)
+      ownerDocument.removeEventListener('keydown', onTab, true)
       // Return focus to the opener only when nothing else claimed it: the
       // confirmed action may have moved focus itself (a hire walks you to
       // the new desk's composer), and that choice wins. An opener that is
       // gone (its card was deleted, its panel closed with us) is not
       // focused — that would throw focus at a detached node.
-      const active = document.activeElement
-      const focusLeft = active && active !== document.body && !box.contains(active)
+      const active = ownerDocument.activeElement
+      const focusLeft = active && active !== ownerDocument.body && !box.contains(active)
       if (!focusLeft && opener && opener.isConnected
-        && opener !== document.body) opener.focus()
+        && opener !== ownerDocument.body) opener.focus()
     }
-  }, [])
+  }, [ownerDocument])
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings content-height confirm-box" ref={boxRef} tabIndex={-1}
@@ -456,7 +457,6 @@ export function PreferReserveRow({ checked, onChange, onUseAppDefault }: {
 }
 
 export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: DraftScopeModalProps) {
-  useEsc(close)
   const parent = draft.parent ? map.get(draft.parent) : null
   const inherited = (): DraftScope => ({
     add_dirs: (parent ? parent.scope?.add_dirs : tree.dirs) ?? [],
@@ -498,10 +498,8 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
   const allMcp = tools.mcp.includes('*')
   // portal to <body>: the draft card lives inside the world transform, where
   // position:fixed would resolve against the SCALED ancestor (giant modal)
-  return createPortal(
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+  return (
+    <ModalOverPins><PinFrame kind="draft-scope" title="Draft permissions" panel="settings" close={close} pinnable={false}>
         <h3><SettingsIcon fontSize="inherit" /> permissions <span className="dim">
           · applied with the hire</span></h3>
         <div className="field-label">folder access</div>
@@ -585,9 +583,7 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
                 ? { prefer_reserve: preferReserve } : {}) })}>apply</button>
           <button onClick={close}>cancel</button>
         </div>
-      </div>
-    </div>,
-    document.body
+    </PinFrame></ModalOverPins>
   )
 }
 // ------------------------------------------------------------ node ⚙ config

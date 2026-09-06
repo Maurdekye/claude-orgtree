@@ -1,3 +1,6 @@
+import { readAttachments, recoverableDrafts, storeAttachments } from '../draftstore'
+import { DeskSlot } from './deskhosts'
+import { PopoutButton, useSurface, useSurfaceDocument } from '../popout'
 // canvas/desk.tsx — the desk: DeskChat (the zoomed-in per-agent chat window,
 // styled as a miniature Claude Code session) with its transcript renderers
 // (Msg, ToolChip, ThoughtLine, SysLine), the composer's effort controls and
@@ -1076,12 +1079,14 @@ export function Activity({ act, dotOnly, tier }: { act?: ActivityInfo; dotOnly?:
 // animation frame, and each open desk re-parsed its full transcript each
 // time. The comparator checks the DATA props only; the callback props close
 // over stable setters, so their per-render identities are ignorable.
-export const DeskChat = memo(DeskChatInner, (p, n) =>
+export const DeskChat = DeskSlot
+export const OwnedDeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
-  && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
+  && p.staleIdentity === n.staleIdentity && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt && p.maxTop === n.maxTop && p.pxc === n.pxc)
 
-interface DeskChatProps {
+export interface DeskChatProps {
+  staleIdentity?: boolean
   node: CanvasNode
   map: Map<string, CanvasNode>
   op: OpFn
@@ -1216,7 +1221,7 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin }: DeskChatProps) {
+  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin, staleIdentity = false }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -1224,6 +1229,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // "the switchboard desk going out of sync with the individual agent desks").
   // What stays local below is only what is genuinely per-VIEW: this desk's
   // scroll position, its open tab, its composer draft.
+  const surface = useSurface()
+  const surfaceDocument = useSurfaceDocument()
   const convo = useConvo(slug, node.id)
   const providerClass = node.tier && CODEX_TIERS.includes(node.tier)
     ? ' prov-openai' : node.tier && ANTIGRAVITY_TIERS.includes(node.tier)
@@ -1236,7 +1243,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     thinking: convo.thinking, thinkSecs: convo.thinkSecs, pending: convo.pending }
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
-  const draftKey = `orgtree-draft-${slug}-${node.id}`
+  const draftKey = `orgtree-draft-v2-${JSON.stringify([slug, node.id, node.generation])}`
   const [text, setTextRaw] = useState(() => {
     try { return localStorage.getItem(draftKey) || '' } catch { return '' }
   })
@@ -1248,6 +1255,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     } catch { /* private mode */ }
     return next
   }), [draftKey])
+  const recoveryDrafts = recoverableDrafts(slug, node.id, node.generation)
+  const [legacyDraft, setLegacyDraft] = useState(() => {
+    try { return localStorage.getItem(`orgtree-draft-${slug}-${node.id}`) || '' } catch { return '' }
+  })
   // №11: which door the last send went through. It is a RECEIPT, not a state —
   // it answers "where did that message just go", and that answer goes stale the
   // moment the queue drains. It had no clear at all (user bug 2026-08-02: the
@@ -1585,7 +1596,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
 
   // an archived agent still RECEIVES mail (user ruling) — it queues in its
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse
-  const canMail = live || node.state === 'archived'
+  const canMail = !staleIdentity && (live || node.state === 'archived')
   const send = () => {
     let t = text.trim()
     if ((!t && !attached.length) || !canMail) return
@@ -1653,11 +1664,22 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // focus moves. Tracked rather than read from `document.activeElement` so the
   // render stays a pure function of state.
   const [composerFocused, setComposerFocused] = useState(false)
-  const [attached, setAttached] = useState<{ name: string; path: string; bytes: number }[]>([])
+  const [attached, setAttachedRaw] = useState(() => readAttachments(draftKey))
+  const setAttached = useCallback((next: { name: string; path: string; bytes: number }[] | ((previous: { name: string; path: string; bytes: number }[]) => { name: string; path: string; bytes: number }[])) => {
+    setAttachedRaw((previous) => {
+      const value = typeof next === 'function' ? next(previous) : next
+      storeAttachments(draftKey, value)
+      return value
+    })
+  }, [draftKey])
+  const uploadIdentity = useRef({ draftKey, staleIdentity }); uploadIdentity.current = { draftKey, staleIdentity }
   const attach = (file: File) => {
+    if (staleIdentity) return
     uploadFile(slug, node.id, file)
-      .then((r) => setAttached((a) =>
-        [...a, { name: file.name, path: r.path, bytes: r.bytes }]))
+      .then((r) => {
+        if (uploadIdentity.current.staleIdentity || uploadIdentity.current.draftKey !== draftKey) return
+        setAttached((a) => [...a, { name: file.name, path: r.path, bytes: r.bytes }])
+      })
       .catch((e: Error) => toast([`upload error: ${e.message}`]))
   }
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
@@ -1900,7 +1922,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             ))}
           </span>
           {/* FR-3: pin this desk to screenspace as a draggable window */}
-          {onPin &&
+          <PopoutButton />
+          {onPin && !surface?.detached &&
             <button className="cc-icon cc-pin" aria-label={`pin ${node.id}'s desk as a window`}
               title="pin as a window — it stays put while the canvas moves"
               onClick={onPin}>
@@ -2433,6 +2456,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
+      {legacyDraft && !staleIdentity && <div className="popout-error">
+        An older saved draft is available. Its generation was not recorded.
+        <button onClick={() => {
+          setText((previous) => previous ? previous + '\n' + legacyDraft : legacyDraft)
+          try { localStorage.removeItem(`orgtree-draft-${slug}-${node.id}`) } catch { /* unavailable */ }
+          setLegacyDraft('')
+        }}>Restore draft</button>
+      </div>}
+      {!staleIdentity && recoveryDrafts.length > 0 && <details className="popout-draft-recovery">
+        <summary>Older unsent drafts ({recoveryDrafts.length})</summary>
+        {recoveryDrafts.map(d => <div key={d.key}>
+          <p>Generation {d.generation} draft</p><pre>{d.text}</pre>
+          {d.attachments.map(a => <p key={a.path}>{a.name} ({a.bytes} bytes) {a.path}</p>)}
+        </div>)}
+      </details>}
       {/* staged attachments ride the NEXT message as mail attachments */}
       {attached.length > 0 && (
         <div className="attach-row">
@@ -2526,10 +2564,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
   // no overlay wrapper, no second scale (that would double-scale), no
   // recenter-on-click
-  if (bare) return <div className={'desk-body eye-chat' + providerClass + processClass}
-    {...dropProps}>{content}</div>
   return (
-    <div className="desk-over" onWheel={(e) => e.stopPropagation()}
+    <fieldset disabled={staleIdentity} className="desk-control-scope"><div className={bare || surface?.detached ? "desk-bare" : "desk-over"} onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => {
         // ROOT CAUSE (user bug 2026-09-03: "after the first drag finishes,
         // all subsequent drags immediately fail" / "focusing a node allows
@@ -2559,11 +2595,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         // it (user ruling) — but never steal clicks meant for controls, and
         // never fight an in-progress text selection
         if ((e.target as Element).closest('button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
-        if (window.getSelection()?.toString()) return
+        if (bare || surface?.detached || surfaceDocument.defaultView?.getSelection()?.toString()) return
         onRecenter?.()
       }}>
-      <div className={'desk-inner desk-body' + providerClass + processClass}>{content}</div>
-    </div>
+      <div className={(bare || surface?.detached ? 'desk-body eye-chat' : 'desk-inner desk-body') + providerClass + processClass}>{content}</div>
+    </div></fieldset>
   )
 }
 function HistoryView({ slug, nid }: { slug: string; nid: string }) {
@@ -3429,8 +3465,9 @@ function EffortButton({ value, effective, onSet }:
     const away = (e: PointerEvent) => {
       if (!wrapRef.current?.contains(e.target as Node | null)) setOpen(false)
     }
-    window.addEventListener('pointerdown', away, true)
-    return () => window.removeEventListener('pointerdown', away, true)
+    const owner = wrapRef.current?.ownerDocument.defaultView ?? window
+    owner.addEventListener('pointerdown', away, true)
+    return () => owner.removeEventListener('pointerdown', away, true)
   }, [open])
   return (
     <span className="eff-wrap" ref={wrapRef}>
