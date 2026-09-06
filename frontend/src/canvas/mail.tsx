@@ -616,16 +616,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
 /** №11: inline mail reply box — textarea + reply button.
  *  Shared between the mailbox reader (mail.tsx) and the presented
  *  documents viewer (gallery.tsx). */
-export function MailReplyBox({ target, onSend, placeholder }: {
+export function MailReplyBox({ target, onSend, placeholder, sendDisabled = false }: {
   target?: string
   onSend: (text: string) => void | Promise<unknown>
   placeholder?: string
+  /** Keep the draft editable while its selected recipient is unavailable. */
+  sendDisabled?: boolean
 }) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const send = () => {
     const t = draft.trim()
-    if (!t || busy) return
+    if (!t || busy || sendDisabled) return
     const res = onSend(t)
     if (res && typeof (res as Promise<unknown>).then === 'function') {
       setBusy(true)
@@ -644,12 +646,12 @@ export function MailReplyBox({ target, onSend, placeholder }: {
         onChange={(e) => setDraft(e.target.value)}
         disabled={busy}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile && !busy) {
+          if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile && !busy && !sendDisabled) {
             e.preventDefault()
             send()
           }
         }} />
-      <button disabled={!draft.trim() || busy} onClick={send}>
+      <button disabled={!draft.trim() || busy || sendDisabled} onClick={send}>
         reply
       </button>
     </div>

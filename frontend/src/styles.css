@@ -5573,3 +5573,11 @@ html.mobile .modalpin-win > .doc-reader-head > .doc-reader-meta
 html.mobile .modalpin-win.gallery-modal > .gallery-head {
   justify-content: space-between;
 }
+
+/* Ticket collaborators and the recipient of one reply. */
+.docket-participants { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 12px; font-size: 12px; }
+.docket-participant { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.docket-participant .docket-actor { min-width: 0; }
+.docket-reply-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.docket-reply-picker select { min-width: 0; max-width: 100%; }
+.docket-reply-note { font-size: 12px; margin-bottom: 6px; }

@@ -228,14 +228,18 @@ const FIT_WHY: Record<ActorFit, string | null> = {
 /** An agent identity as it appears everywhere in this panel: the model chip
  *  only when we can honestly attribute it, the name truncating with a real
  *  ellipsis, and a jump to its desk. */
-function ActorName({ actor, facts, onFocusAgent, close }: {
+function ActorName({ actor, facts, onFocusAgent, close, availability }: {
   actor: WorkActor | null | undefined
   facts: Map<string, NodeFacts>
   onFocusAgent?: (agentId: string) => void
   close?: () => void
+  availability?: 'live' | 'retired' | 'missing'
 }) {
   if (!actor?.node) return null
-  const { fit, tier } = actorFit(actor, facts)
+  const identity = actorFit(actor, facts)
+  const tier = identity.tier
+  const fit = availability === 'live' ? 'current'
+    : availability === 'missing' ? 'gone' : availability ?? identity.fit
   const why = FIT_WHY[fit]
   // ⚠ `why` STAYS ON THE WRAPPER, and `tier` is passed through EXACTLY as
   // actorFit returned it. A live node gets the model it wears now, even when
@@ -1270,15 +1274,27 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   const attention = item.effective_attention
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   const canDismiss = item.attention_sources.includes('manual')
-  // a stable local so narrowing survives into the reply closure below
-  // (TS does not narrow a property access across a nested arrow function).
-  //
-  // ⚠ THE ASSIGNMENT, NOT THE LAST UPDATER. The backend routes the reply to
-  // the item's owner and to nobody else (ledger.work_reply_target), so this
-  // is the same fact read from the same field — a pane that offered to reply
-  // to the last updater while the mail went to the owner would be a label
-  // contradicting its own button.
   const assignee = item.owner
+  // The server includes archived predecessors which are absent from tree roots.
+  // An older server can still display participants, but cannot route to them.
+  const recipients = item.reply_recipients ?? [
+    ...(assignee ? [{ node: assignee.node, role: 'owner' as const,
+      state: item.owner_state === 'missing' ? 'missing' as const
+        : item.owner_state === 'retired' ? 'retired' as const : 'live' as const }] : []),
+    ...item.participants.filter((node) => node !== assignee?.node).map((node) => ({
+      node, role: 'participant' as const, state: 'missing' as const,
+    })),
+  ]
+  const participants = recipients.filter((r) => r.role === 'participant')
+  // This pane is keyed by ticket slug. Polling must never redirect a draft.
+  const [replyTo, setReplyTo] = useState(assignee?.node ?? '')
+  const [replyBusy, setReplyBusy] = useState(false)
+  const currentOwner = useRef(assignee?.node ?? '')
+  currentOwner.current = assignee?.node ?? ''
+  const recipient = recipients.find((r) => r.node === replyTo)
+  const unavailable = !recipient || recipient.state === 'missing'
+  const showRecipientPicker = participants.length > 0 || !replyTo
+    || (!!replyTo && replyTo !== assignee?.node)
   const manualAttn = item.manual_attention
   // the state's own information, chosen BY THE CURRENT STATUS rather than by
   // whichever field happens to be populated: a stale value must never be
@@ -1338,6 +1354,20 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           </>
         )}
       </div>
+      {participants.length > 0 && (
+        <div className="docket-participants">
+          <span className="dim">Participants</span>
+          {participants.map((r) => (
+            <span className="docket-participant" key={r.node}>
+              <ActorName actor={{ node: r.node, generation: 0 }} facts={facts}
+                availability={r.state} onFocusAgent={onFocusAgent} close={close} />
+              {r.state !== 'live' && <span className="dim">
+                {r.state === 'retired' ? '(retired)' : '(unavailable)'}
+              </span>}
+            </span>
+          ))}
+        </div>
+      )}
       {/* THE DESCRIPTION, first thing in the pane (user 2026-09-05): the
           problem currently faced, then the proposed solution. Mandatory on
           every item created from now on; older items may genuinely have none,
@@ -1420,27 +1450,59 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           </div>
         )
       })}
-      {assignee ? (
+      {assignee || recipients.length > 0 || replyTo ? (
         <>
           <div className="dim docket-reply-label">
-            Reply to{' '}
-            <ActorName actor={assignee} facts={facts}
-              onFocusAgent={onFocusAgent} close={close} />
-            {' · assigned to this item'}
+            {showRecipientPicker ? (
+              <label className="docket-reply-picker">
+                Reply to
+                <select aria-label="Reply to" value={replyTo} disabled={replyBusy}
+                  onChange={(e) => setReplyTo(e.target.value)}>
+                  {!replyTo && <option value="" disabled>Choose a recipient</option>}
+                  {replyTo && !recipient && (
+                    <option value={replyTo} disabled>{replyTo} — unavailable</option>
+                  )}
+                  {recipients.map((r) => (
+                    <option key={r.node} value={r.node} disabled={r.state === 'missing'}>
+                      {r.node}{r.role === 'owner' ? ' (assignee)' : ''}
+                      {r.state === 'retired' ? ' — retired; waits for rehire'
+                        : r.state === 'missing' ? ' — unavailable' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : <>
+              Reply to{' '}
+              <ActorName actor={assignee} facts={facts}
+                onFocusAgent={onFocusAgent} close={close} />
+              {' · assigned to this item'}
+            </>}
           </div>
-          <MailReplyBox target={assignee.node}
-            onSend={(text) => replyWorkItem(slug, item.slug, text)
-              .then((r) => {
-                if (r.deferred) {
-                  toast([`${assignee.node} is archived — the reply waits for rehire`])
-                } else {
-                  toast([`sent to ${assignee.node}`])
-                }
-              })
-              .catch((e: Error) => {
-                toast([`error: ${e.message}`])
-                throw e
-              })} />
+          {unavailable && <div className="dim docket-reply-note" role="status">
+            {replyTo ? `${replyTo} is unavailable. Choose a recipient to send this draft.`
+              : 'Choose a recipient to send this draft.'}
+          </div>}
+          {recipient?.state === 'retired' && <div className="dim docket-reply-note">
+            {recipient.node} is retired — the reply waits for rehire.
+          </div>}
+          <MailReplyBox target={replyTo || undefined} sendDisabled={unavailable}
+            onSend={(text) => {
+              if (unavailable) return Promise.reject(new Error('Recipient unavailable'))
+              setReplyBusy(true)
+              return replyWorkItem(slug, item.slug, text, replyTo)
+                .then((r) => {
+                  const sentTo = r.to ?? replyTo
+                  toast([r.deferred
+                    ? `${sentTo} is archived — the reply waits for rehire`
+                    : `sent to ${sentTo}`])
+                  setReplyTo(currentOwner.current)
+                })
+                .catch((e: Error) => {
+                  toast([`error: ${e.message}`])
+                  throw e
+                })
+                .finally(() => setReplyBusy(false))
+            }} />
         </>
       ) : (
         <div className="dim docket-reply-label">

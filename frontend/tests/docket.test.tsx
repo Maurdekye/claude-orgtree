@@ -647,7 +647,7 @@ uiTest('§13 general reply box targets the ASSIGNMENT and handles deferred (arch
 
   const replyCalls = calls.filter((c) => c.method === 'POST' && c.url.includes('/reply'))
   assert.equal(replyCalls.length, 1)
-  assert.deepEqual(replyCalls[0]!.body, { body: 'Great work!' })
+  assert.deepEqual(replyCalls[0]!.body, { body: 'Great work!', to: 'archived-agent' })
   assert.match(toasted[0] ?? '', /archived-agent is archived — the reply waits for rehire/)
 })
 

@@ -1908,6 +1908,9 @@ export interface WorkItem {
    *  it, because a reviewer nobody chose is not a reviewer. */
   reviewer: WorkActor | null
   participants: string[]
+  /** Server-derived destinations; tree roots omit some archived predecessors. */
+  reply_recipients?: { node: string; role: 'owner' | 'participant';
+    state: 'live' | 'retired' | 'missing' }[]
   created_by: WorkActor | 'user' | '@user'
   at: string
   updated_at: string
@@ -1927,9 +1930,7 @@ export interface WorkItem {
    *  the field existed, from retained history, falling back to creation.
    *  Optional only because an older BACKEND may not send it at all. */
   status_at?: string | null
-  /** author of the latest status update — the docket general-reply
-   *  recipient. Owner changes, attached questions and dismissals never
-   *  replace it. Null before any status update (reply is refused). */
+  /** Author of the latest status update; replies use owner/participants. */
   last_updater: WorkActor | null
   manual_attention: WorkManualAttention | null
   dismissals: WorkDismissal[]
@@ -1989,6 +1990,7 @@ export interface DismissAttentionResult { item: WorkItem }
 // req() throws those as Error(detail)
 export interface WorkItemReplyResult {
   accepted: true
+  role?: 'owner' | 'participant'
   to: string
   /** the recipient is archived — mail waits for rehire; say so in the UI */
   deferred: boolean

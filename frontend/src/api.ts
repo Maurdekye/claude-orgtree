@@ -276,12 +276,12 @@ export const getWorkItems = (slug: string, archived = false,
       : ''))
 export const getWorkItem = (slug: string, id: string): Promise<WorkItemPayload> =>
   req(`/api/orgs/${slug}/work-items/${id}`)
-export const replyWorkItem = (slug: string, id: string, body: string):
+export const replyWorkItem = (slug: string, id: string, body: string, to?: string):
   Promise<WorkItemReplyResult> =>
   req(`/api/orgs/${slug}/work-items/${id}/reply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, ...(to !== undefined ? { to } : {}) }),
   })
 export const dismissWorkItemAttention = (slug: string, id: string, setRev: number):
   Promise<DismissAttentionResult> =>
