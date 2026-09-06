@@ -715,8 +715,9 @@
         "role": {
           "enum": [
             "owner",
-            "participant",
-            "reviewer"
+            "reviewer",
+            "unassigned_review",
+            "stale_reviewer"
           ]
         }
       },
@@ -6047,8 +6048,9 @@
         "role": {
           "enum": [
             "owner",
-            "participant",
-            "reviewer"
+            "reviewer",
+            "unassigned_review",
+            "stale_reviewer"
           ]
         }
       },
