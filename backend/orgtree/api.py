@@ -72,6 +72,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import crashreports
+from . import events
 from . import refs
 from . import deployment
 from . import frozen_install
@@ -579,8 +580,8 @@ class PublicGateway:
         await send({"type": "http.response.body", "body": body})
 
 
-def _public_slug(request: Request) -> str | None:
-    return getattr(request.state, "public_slug", None)
+def _public_slug(request: Request | None) -> str | None:
+    return getattr(request.state, "public_slug", None) if request is not None else None
 
 
 # A free-form `dict[str, Any]` off the wire (max_scope, tools, add_dirs) hits
@@ -4215,8 +4216,42 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     return r
 
 
+def _row_out(row: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
+    """The WIRE projection of one stored mail / notice / user-inbox row (design
+    typed-message-architecture-backend.md v5 §6). The stored `ev` is ROW-ENCODED
+    (an ordinary body is elided on the row); the wire NEVER carries that form and
+    carries no marker for it. The stored decoder runs here, once, and emits:
+      admin  · `ev`        the FULL event   (or `ev_raw` + `ev_error` when the stored
+                           value is unsupported/malformed; nothing on a legacy row)
+      public · `ev_public` the PublicEvent projection (or `ev_error` = {code} only;
+                           `ev`/`ev_raw` NEVER; body/text untouched — root 18:38)
+    Every route that returns a row passes it through here (test_events_public walks
+    the whole route table through the PublicGateway to prove it)."""
+    out = {k: v for k, v in row.items() if k != "ev"}
+    raw = row.get("ev")
+    if raw is None:
+        return out
+    r = events.decode(raw, row)
+    if r["status"] == "ok":
+        if public:
+            out["ev_public"] = events.public_event(r["ev"])
+        else:
+            out["ev"] = events.encode_ev(r["ev"])
+    else:
+        if public:
+            out["ev_error"] = {"code": r["error"]["code"]}
+        else:
+            out["ev_raw"] = raw
+            out["ev_error"] = r["error"]
+    return out
+
+
+def _rows_out(rows: list[Any], *, public: bool) -> list[Any]:
+    return [_row_out(r, public=public) if isinstance(r, dict) else r for r in rows]
+
+
 def _mail_refs(org_slug: str, box: str, rows: list[Any],
-               node: str | None = None) -> list[Any]:
+               node: str | None = None, *, public: bool = False) -> list[Any]:
     """Stamp each mail row with its own reference, so a reader can link to a
     message that already exists rather than only to one it just sent.
 
@@ -4224,6 +4259,7 @@ def _mail_refs(org_slug: str, box: str, rows: list[Any],
     the three box families mint ids independently."""
     delivered = ("user_inbox" if box == "user"
                  else "@org" if box == "org" else str(node or ""))
+    rows = _rows_out(rows, public=public)
     for r in rows:
         if isinstance(r, dict) and r.get("id"):
             ref = refs.mail(org_slug, delivered, str(r["id"]))
@@ -4232,7 +4268,7 @@ def _mail_refs(org_slug: str, box: str, rows: list[Any],
     return rows
 
 
-def _sent_refs(org_slug: str, rows: list[Any]) -> list[Any]:
+def _sent_refs(org_slug: str, rows: list[Any], *, public: bool = False) -> list[Any]:
     """Stamp SENT rows, which are a different question from delivered ones.
 
     ⚠ A SENT ROW IS A COPY OF A MAIL THAT LIVES IN SOMEBODY ELSE'S BOX, so it
@@ -4240,6 +4276,7 @@ def _sent_refs(org_slug: str, rows: list[Any]) -> list[Any]:
     a message that is not there — and on a colliding id, a different one that
     is. A `to` with no local box gets no reference rather than an invented one.
     """
+    rows = _rows_out(rows, public=public)
     for r in rows:
         if isinstance(r, dict) and r.get("id"):
             to = str(r.get("to") or "")
@@ -4594,7 +4631,7 @@ async def node_unstick(slug: str, nid: str) -> dict[str, Any]:
 
 
 @app.get("/api/orgs/{slug}/inbox")
-def user_inbox(slug: str) -> dict[str, Any]:
+def user_inbox(slug: str, request: Request = cast(Request, None)) -> dict[str, Any]:
     """Same shape as a node's inbox (user ruling — the two interfaces function
     identically): unread mail + the read archive + the Sent folder (every user
     message is mail and gets recorded)."""
@@ -4603,10 +4640,11 @@ def user_inbox(slug: str) -> dict[str, Any]:
             slug, ("user_mail_log", "user_outbox")).d
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return {"pending": _mail_refs(slug, "user", d.get("user_inbox", [])),
+    pub = _public_slug(request) is not None
+    return {"pending": _mail_refs(slug, "user", d.get("user_inbox", []), public=pub),
             "delivered": _mail_refs(slug, "user",
-                                    d.get("user_mail_log", [])[-50:]),
-            "sent": _sent_refs(slug, d.get("user_outbox", [])[-50:])}
+                                    d.get("user_mail_log", [])[-50:], public=pub),
+            "sent": _sent_refs(slug, d.get("user_outbox", [])[-50:], public=pub)}
 
 
 class InboxRead(Body):
@@ -4783,7 +4821,7 @@ async def extern_wait(peer: str, org: str | None = None,
 
 
 @app.get("/api/orgs/{slug}/org_inbox")
-def org_inbox_entries(slug: str) -> dict[str, Any]:
+def org_inbox_entries(slug: str, request: Request = cast(Request, None)) -> dict[str, Any]:
     """The org mailbox itself — fetched when the modal OPENS, not on every poll.
 
     The tree payload carries only `ORG_INBOX_PREVIEW` rows (the canvas renders
@@ -4803,12 +4841,15 @@ def org_inbox_entries(slug: str) -> dict[str, Any]:
     log = cast("list[dict[str, Any]]", org.d.get("org_inbox") or [])
     # the rows carry their own references, like every other box: without this
     # the org inbox is the one mailbox whose mail cannot be linked to
-    return {"entries": _mail_refs(slug, "org", log[-100:]), "total": len(log),
+    return {"entries": _mail_refs(slug, "org", log[-100:],
+                                  public=_public_slug(request) is not None),
+            "total": len(log),
             "unread": max(0, len(log) - int(org.d.get("org_inbox_read", 0)))}
 
 
 @app.get("/api/orgs/{slug}/mail/{box}/{mid}")
-def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
+def mail_one(slug: str, box: str, mid: str, request: Request = cast(Request, None),
+             node: str = "") -> dict[str, Any]:
     """ONE message, by id, from the box that actually holds it.
 
     Every mailbox route returns a WINDOW, so "not in the window" is not "not
@@ -4826,14 +4867,15 @@ def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     mid = str(mid or "")
+    pub = _public_slug(request) is not None
     rows: list[Any] = []
     if box == "user":
         rows = (list(org.d.get("user_inbox") or [])
                 + list(org.d.get("user_mail_log") or []))
-        _mail_refs(slug, "user", rows)
+        rows = _mail_refs(slug, "user", rows, public=pub)
     elif box == "org":
         rows = list(org.d.get("org_inbox") or [])
-        _mail_refs(slug, "org", rows)
+        rows = _mail_refs(slug, "org", rows, public=pub)
     elif box == "node":
         nid = str(node or "")
         try:
@@ -4842,7 +4884,7 @@ def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
             raise HTTPException(404, str(e))
         rows = (list((org.d.get("mail") or {}).get(nid, []))
                 + list((org.d.get("mail_log") or {}).get(nid, [])))
-        _mail_refs(slug, "node", rows, nid)
+        rows = _mail_refs(slug, "node", rows, nid, public=pub)
     else:
         raise HTTPException(404, f"no mailbox family named {box!r}")
     for r in rows:
@@ -5143,10 +5185,14 @@ def node_history(slug: str, nid: str, request: Request,
                                      if isinstance(v, (str, int, float, list))},
                           "warnings": [str(w) for w
                                        in cast("list[Any]", ev.get("warnings") or [])]})
+    _pub = _public_slug(request) is not None
     for n in org.d.get("notice_log", []):
         if n["node"] == nid:
+            row = _row_out(n, public=_pub)
             items.append({"at": n["at"], "kind": "notice", "actor": "system",
-                          "detail": {"text": n["text"]}})
+                          "detail": {"text": n["text"]},
+                          **{k: row[k] for k in ("ev", "ev_public", "ev_raw", "ev_error")
+                             if k in row}})
     items.sort(key=lambda x: x["at"])
     # clamped like /chat's `last`: `?last=0` is `items[-0:]`, i.e. the WHOLE
     # log — the one value of `last` that means "no limit"
@@ -8340,7 +8386,8 @@ def sweep_legacy(slug: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")
-def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
+def node_chat(slug: str, nid: str, request: Request = cast(Request, None),
+              last: int = 300) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
         org.node(nid)
@@ -8445,8 +8492,11 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
     n_pending = len(pending)
     body_cap = 2000 if n_pending <= 20 else 800 if n_pending <= 100 else 250
     pending = pending[-800:]
+    _pub = _public_slug(request) is not None
     out["pending_mail"] = [{"id": m.get("id"), "from": m["from"],
                             "body": m["body"][:body_cap], "at": m["at"],
+                            **{k: v for k, v in _row_out(m, public=_pub).items()
+                               if k in ("ev", "ev_public", "ev_raw", "ev_error")},
                             **({"delivering": True} if m.get("delivering")
                                else {}),
                             # the two in-flight carriers read differently to a
@@ -8535,7 +8585,7 @@ def node_tool_image(slug: str, nid: str, tool_use_id: str, idx: int = 0) -> Resp
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/inbox")
-def node_inbox(slug: str, nid: str) -> dict[str, Any]:
+def node_inbox(slug: str, nid: str, request: Request = cast(Request, None)) -> dict[str, Any]:
     """The node's OWN mailbox (user ruling: separate from the events/history
     view): mail still waiting for its next turn, plus recently delivered mail
     with full bodies (the event log keeps only a gist)."""
@@ -8564,9 +8614,10 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
     # the RECIPIENT's box, not this node's — a reference built from `nid` here
     # would name a mail that is not there. Each sent row carries its own `to`,
     # so it addresses its own box.
-    _sent_refs(slug, sent)
-    return {"pending": _mail_refs(slug, "node", waiting, nid),
-            "delivered": _mail_refs(slug, "node", delivered[-50:], nid),
+    pub = _public_slug(request) is not None
+    sent = _sent_refs(slug, sent, public=pub)
+    return {"pending": _mail_refs(slug, "node", waiting, nid, public=pub),
+            "delivered": _mail_refs(slug, "node", delivered[-50:], nid, public=pub),
             "sent": sent[-50:]}
 
 
