@@ -262,22 +262,62 @@ check("emit · Segment / PublicSegment / Delivery / wire row types present", _ts
 print("\n§7  live rows: journal segments attached; the hub projects per socket")
 
 
-def _live_segments():
+def _commit_steer_path():
+    """The REAL path (Astra 20:35): a steer carrier drained by _envelope, delivered
+    through commit_steer — the emitted live frame carries segments_raw snapshotted
+    BEFORE the journal batch is retired, steered_log persists them, and a later
+    node_chat projects them on the steered row (operator full / visitor public)."""
+    from fastapi.testclient import TestClient
+    from orgtree import api
+    from msgvis import Transcript                # the suite's real-transcript helper
     slug = fresh()
     org = store.load_org(slug)
+    # read_chat assembles steered rows only beside a transcript: plant a minimal one
+    tx = Transcript(os.environ["HOME"], org.node("boss")["session_id"])
+    tx.user("earlier turn")
+    tx.assistant("earlier answer")
     org.post_mail(USER, "boss", "steer me", "message", typed=True)
+    org.d["kiosk"] = {"enabled": True, "token": "tok_" + "s" * 24}
     store.save_org(org)
-    _, tok, _ = supervisor._envelope(slug, "boss", "n", via="steer")
-    extra = supervisor._live_segments(slug, "boss", {"toks": [tok], "text": "x"})
-    segs = extra["segments_raw"]
-    assert [sg["kind"] for sg in segs] == ["mail", "text"]
-    assert segs[0]["rows"][0]["ev"]["body"] == "steer me"
-    assert supervisor._live_segments(slug, "boss", "bare string carrier") == {}
-    assert supervisor._live_segments(slug, "boss", {"toks": ["nope"]}) == {}
+    api._token_cache["at"] = 0.0
+    frames: list = []
+    saved = supervisor.stream
+    supervisor.stream = lambda s_, n_, payload: frames.append(payload)
+    try:
+        etext, tok, _ = supervisor._envelope(slug, "boss", "nudge", via="steer")
+        carrier = {"toks": [tok], "text": etext, "view": "hello view"}
+        supervisor.commit_steer(slug, "boss", [carrier])
+    finally:
+        supervisor.stream = saved
+    assert frames and frames[0]["kind"] == "steered"
+    raw = frames[0]["segments_raw"]
+    assert [sg["kind"] for sg in raw] == ["mail", "text"]
+    assert raw[0]["rows"][0]["ev"]["body"] == "steer me", "full event, journal form"
+    org = store.load_org(slug)
+    assert "boss" not in (org.d.get("delivering") or {}), "batch retired after snapshot"
+    log = org.d["steered_log"]["boss"]
+    assert log[-1]["segments"] == raw and log[-1]["text"] == "hello view"
+    chat = api.node_chat(slug, "boss")
+    rows = [m for m in chat["messages"] if m.get("steered")]
+    assert rows and rows[-1]["segments"][0]["rows"][0]["ev"]["body"] == "steer me"
+    pub = TestClient(api.PublicGateway(api.app))
+    r = pub.get(f"/k/tok_{'s' * 24}/api/orgs/{slug}/nodes/boss/chat")
+    assert r.status_code == 200
+    prow = [m for m in r.json()["messages"] if m.get("steered")][-1]
+    seg = prow["segments"][0]["rows"][0]
+    assert "ev" not in seg and seg["ev_public"]["projection"] == "public"
+    # a bare-string carrier (empty box) emits no segments and no error
+    frames.clear()
+    supervisor.stream = lambda s_, n_, payload: frames.append(payload)
+    try:
+        supervisor.commit_steer(slug, "boss", ["plain text steer"])
+    finally:
+        supervisor.stream = saved
+    assert frames and "segments_raw" not in frames[0]
 
 
-check("live · a steered carrier's toks resolve to the journal's segments (journal form)",
-      _live_segments)
+check("commit_steer · live frame carries segments_raw before retirement; steered_log persists "
+      "them; later node_chat projects full (operator) / public (visitor)", _commit_steer_path)
 
 
 def _hub_projection():
