@@ -453,6 +453,8 @@ class NoticeEntry(TypedDict):
     at the node's next turn boundary (Org._notify)."""
     at: str
     text: str
+    # Canonical typed event (events.py); absent on a legacy notice — see MailEntry.ev
+    ev: NotRequired[dict[str, Any]]
 
 
 class NoticeLogEntry(TypedDict):
@@ -460,6 +462,8 @@ class NoticeLogEntry(TypedDict):
     node: str
     at: str
     text: str
+    # Canonical typed event (events.py); absent on a legacy notice — see MailEntry.ev
+    ev: NotRequired[dict[str, Any]]
 
 
 # One entry of the user's inbox (OrgDoc["user_inbox"]). Functional form:
@@ -492,6 +496,13 @@ UserMailEntry = TypedDict("UserMailEntry", {
     # unshown reason would be a pure tax on the sender, while a shown one
     # makes the claim accountable to the person it interrupted.
     "urgent_reason": NotRequired[str],
+    # Canonical typed message (events.py, design typed-message-architecture-backend.md v5):
+    # the discriminated union {v, variant, actor, object, engine_authored, ...fields}.
+    # ABSENT on a legacy row — such a row is rendered as ordinary text in full and is
+    # never classified. Stored via events.encode_row_ev (ordinary/reply bodies elided on
+    # the row, restored by decode_row_ev). Unknown/malformed values are kept and reported
+    # by events.decode as unsupported/malformed; never raised on load.
+    "ev": NotRequired[dict[str, Any]],
 })
 
 
@@ -527,6 +538,13 @@ MailEntry = TypedDict("MailEntry", {
                                       # this replies to ({id, from, at, gist}
                                       # captured at send — quoted by
                                       # _mail_block; no lookup needed)
+    # Canonical typed message (events.py, design typed-message-architecture-backend.md v5):
+    # the discriminated union {v, variant, actor, object, engine_authored, ...fields}.
+    # ABSENT on a legacy row — such a row is rendered as ordinary text in full and is
+    # never classified. Stored via events.encode_row_ev (ordinary/reply bodies elided on
+    # the row, restored by decode_row_ev). Unknown/malformed values are kept and reported
+    # by events.decode as unsupported/malformed; never raised on load.
+    "ev": NotRequired[dict[str, Any]],
 })
 
 

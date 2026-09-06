@@ -1,0 +1,42 @@
+{
+  "variant": "access.audience_requested",
+  "family": "access_resources",
+  "private": {
+    "v": 1,
+    "variant": "access.audience_requested",
+    "actor": {
+      "kind": "agent",
+      "id": "access.audience_requested·actor"
+    },
+    "object": {
+      "kind": "audience_request",
+      "org": "access.audience_requested·object.org",
+      "id": "access.audience_requested·object.id",
+      "node": "access.audience_requested·object.node"
+    },
+    "engine_authored": false,
+    "stage": "initial",
+    "from_node": "access.audience_requested·from_node",
+    "target": "access.audience_requested·target",
+    "reason": "access.audience_requested·reason"
+  },
+  "public": {
+    "v": 1,
+    "variant": "access.audience_requested",
+    "projection": "public",
+    "actor": {
+      "kind": "agent",
+      "id": "access.audience_requested·actor"
+    },
+    "object": {
+      "kind": "audience_request",
+      "id": "access.audience_requested·object.id",
+      "node": "access.audience_requested·object.node"
+    },
+    "stage": "initial",
+    "from_node": "access.audience_requested·from_node",
+    "target": "access.audience_requested·target",
+    "reason": "access.audience_requested·reason"
+  },
+  "body": "AUDIENCE REQUEST: your report \"access.audience_requested·from_node\" asks to speak directly with access.audience_requested·target. Reason: \"access.audience_requested·reason\". You may forward it one hop up (orgtree_audience action=forward), deny it (action=deny), or simply handle the matter yourself and deny."
+}
