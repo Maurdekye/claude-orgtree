@@ -347,6 +347,79 @@ check("a participant is told once, passively, only when actually added",
       new_participants_get_a_passive_notice_only_when_actually_new)
 
 
+def only_final_membership_is_told():
+    """Astra's read (2026-09-06 13:42): add=[X], remove=[X] in ONE call used to
+    tell X it was now a participant while X was not in the final list. The
+    notice keys on the persisted membership, not on the add list."""
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Final list")
+    n_peer, n_driven = len(mailbox(slug, "peer")), len(DRIVEN)
+    js = ok(slug, "boss", "participants", slug=wid, add=["peer"], remove=["peer"])
+    assert js["participants"] == [] and js["noticed"] == [], js
+    assert len(mailbox(slug, "peer")) == n_peer, "told about a membership it does not have"
+    assert len(DRIVEN) == n_driven
+    assert get_item(slug, wid)["participants"] == []
+    # POSITIVE CONTROL: the same add WITHOUT the remove tells peer
+    js = ok(slug, "boss", "participants", slug=wid, add=["peer"])
+    assert js["noticed"] == ["peer"] and len(mailbox(slug, "peer")) == n_peer + 1
+    # and a mixed call tells only the member that actually stays
+    n_str = len(mailbox(slug, "stranger"))
+    js = ok(slug, "boss", "participants", slug=wid, add=["stranger", "mid"], remove=["mid"])
+    assert js["participants"] == ["peer", "stranger"] and js["noticed"] == ["stranger"], js
+    assert len(mailbox(slug, "stranger")) == n_str + 1
+    assert not mailbox(slug, "mid")
+
+
+check("add and remove of the same member in one call tells nobody; only the "
+      "persisted final membership is told",
+      only_final_membership_is_told)
+
+
+def participants_named_at_creation_are_told_the_same_way():
+    """Coordinator ruling 2026-09-06 13:43: create(participants=[...]) tells
+    each effective new member exactly as a later add does — same helper,
+    same passive notice, same exclusions."""
+    slug = fresh_org()
+    n_peer, n_str, n_driven = len(mailbox(slug, "peer")), len(mailbox(slug, "stranger")), len(DRIVEN)
+    st, js = agent(slug, "boss", "orgtree_work", action="create", title="Born with members",
+                   objective="p; s", done_so_far=["a"], working_on_next=["b"],
+                   participants=["peer", "peer", "boss", "stranger", ""])
+    assert st == 200, js
+    wid = js["created"]
+    assert js["noticed"] == ["peer", "stranger"], js
+    assert get_item(slug, wid)["participants"] == ["peer", "stranger"]
+    for n, before in (("peer", n_peer), ("stranger", n_str)):
+        box = mailbox(slug, n)
+        assert len(box) == before + 1 and box[-1]["kind"] == "notice", (n, box)
+        assert box[-1]["body"].startswith(f'[DOCKET PARTICIPATION · {wid} "Born with members"]')
+        assert "owned by boss" in box[-1]["body"] and "Added by boss" in box[-1]["body"]
+    # both nudged wake=False, neither driven
+    new = DRIVEN[n_driven:]
+    assert sorted(d[1] for d in new) == ["peer", "stranger"] and all(d[3] is False for d in new), new
+    assert set(js.get("notice_delivery") or {}) == {"peer", "stranger"}
+    # the owner named at creation gets the ASSIGNMENT mail, not a participation notice
+    n_mid = len(mailbox(slug, "mid"))
+    st, js = agent(slug, "boss", "orgtree_work", action="create", title="Handed over",
+                   objective="x; y", done_so_far=["a"], working_on_next=["b"],
+                   owner="mid", participants=["mid", "peer"])
+    assert st == 200 and js["notified"] == "mid" and js["noticed"] == ["peer"], js
+    box = mailbox(slug, "mid")
+    assert len(box) == n_mid + 1 and "DOCKET ASSIGNMENT" in box[-1]["body"]
+    # a create with no participants carries no notice keys at all
+    st, js = agent(slug, "boss", "orgtree_work", action="create", title="Alone",
+                   objective="x; y", done_so_far=["a"], working_on_next=["b"])
+    assert st == 200 and js["noticed"] == [] and "notice_delivery" not in js, js
+    # the ledger-level create by the user: told, and it says so
+    org = store.load_org(slug)
+    r = org.work_create(USER, "User made", "p; s", participants=["peer"])
+    store.save_org(org)
+    assert r["noticed"] == ["peer"] and "Added by the user" in mailbox(slug, "peer")[-1]["body"]
+
+
+check("participants named at creation are told exactly as a later add tells them",
+      participants_named_at_creation_are_told_the_same_way)
+
+
 def notice_is_best_effort_and_membership_stands():
     slug = fresh_org()
     # an archived member: the notice is stored, deferred, and nothing nudges it

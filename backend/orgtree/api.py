@@ -5997,6 +5997,11 @@ def _staff_call(org: Org, slug: str, actor: str, a: dict[str, Any],
         mail_notify(slug, actor, nid)
         if not w.get("deferred") and nid not in drive:
             drive.append(nid)
+    # participants named on a staffed create were told (passively) by the
+    # ledger; the keys ride out so agent_call nudges them like any notice
+    for k in ("noticed", "noticed_deferred", "notice_refused"):
+        if w.get(k):
+            result[k] = w[k]
     result["started"] = nid in drive
     result["next_step"] = (
         f'"{nid}" holds {item} and is RUNNING — its first turn starts on the '
@@ -7007,15 +7012,6 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # a deferred (archived) recipient reads it on rehire
                     if not result.get("deferred") and _n not in drive:
                         drive.append(_n)
-                # A NEW PARTICIPANT IS TOLD, NOT WOKEN (user 2026-09-06):
-                # membership is not assignment, so the notice rides the
-                # send_notice path below — a running recipient is steered,
-                # an idle one stays idle — and never the drive above.
-                _deferred = set(result.get("noticed_deferred") or [])
-                for _n in [str(x) for x in (result.get("noticed") or []) if x]:
-                    mail_notify(body.org, body.node, _n)
-                    if _n not in noticed_nodes and _n not in _deferred:
-                        noticed_nodes.append(_n)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
             elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):
@@ -7445,6 +7441,19 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             "switch has moved you to a different provider, so that freeze "
             "no longer describes anything and has been cleared. Handle any "
             "mail above and continue.", mail_ping=True)
+    # A NEW PARTICIPANT IS TOLD, NOT WOKEN (user 2026-09-06): whichever tool
+    # added it (orgtree_work create/participants, orgtree_staff create),
+    # the ledger posted a notice and named the member in `noticed`.
+    # Membership is not assignment, so it rides the send_notice path
+    # below — a running recipient is steered, an idle one stays idle —
+    # and never the drive. An archived member (noticed_deferred) is not
+    # nudged at all.
+    if isinstance(result, dict) and result.get("noticed"):
+        _deferred = set(result.get("noticed_deferred") or [])
+        for _n in [str(x) for x in result["noticed"] if x]:
+            mail_notify(body.org, body.node, _n)
+            if _n not in noticed_nodes and _n not in _deferred:
+                noticed_nodes.append(_n)
     if notice_to is not None:
         # wake=False: steer a running recipient so the notice arrives
         # mid-task like any mail would, but an idle one stays idle — the

@@ -10645,9 +10645,13 @@ class Org:
         if own and own != actor and own != USER:
             m = self._work_assign_mail(actor, it, own, None)
             notified = own
+        # participants named AT CREATION are new members too, and are
+        # told the same passive way `participants add` tells them
+        told = self._work_participation_notices(actor, it, parts)
         return {"created": wid, "slug": it["slug"], "rev": 1,
                 "owner": it["owner"], "notified": notified,
                 **({"deferred": bool(m.get("deferred"))} if notified else {}),
+                **told,
                 "status": f"work item {it['slug']} created — that name is "
                           f"its only identity; use it in mail, reports and "
                           f"every later update, question and handoff"}
@@ -11178,27 +11182,38 @@ class Org:
                 parts.remove(pid)
         it["participants"] = parts
         self._work_hist(it, actor, "participants", {"now": parts})
-        # A NEW participant is TOLD, passively (user 2026-09-06). Membership
-        # is not assignment: a participant may read, update, add evidence and
-        # attach questions, and the user's replies ADDRESSED to it arrive as
-        # item-linked mail — but it does not hold the item, so this is a
-        # notice (read at its next turn, never a wake), not the assignment
-        # mail. Only an ACTUAL addition is told: re-adding a member, adding the
-        # owner (a no-op) or the actor itself sends nothing. A removal is
-        # silent, as before.
-        #
-        # ⚠ THE NOTICE IS BEST-EFFORT AND THE MEMBERSHIP IS NOT. Membership
-        # has never been bounded by the §7.2 addressing rules (an owner may
-        # add anyone in the org), but mail is: an actor that cannot address
-        # the new member, or a member that is unrecoverable, would turn a
-        # valid membership change into a refusal. So a notice that cannot be
-        # posted is REPORTED in `notice_refused` (node + the reason) and the
-        # change stands — the caller is told, in its own result, exactly who
-        # was not reached.
+        # only a member of the FINAL list is told: add=[X], remove=[X] in
+        # one call adds nothing, so it tells nobody (Astra, 2026-09-06)
+        return {"participants": parts, "rev": it["rev"],
+                **self._work_participation_notices(
+                    actor, it, [p for p in added if p in parts])}
+
+    def _work_participation_notices(self, actor: str, it: WorkItem,
+                                    pids: list[str]) -> dict[str, Any]:
+        """Tell each of `pids` — members the caller has ALREADY established
+        are new AND in the item's final membership — that it is now a
+        participant (user 2026-09-06). Passively: membership is not
+        assignment. A participant may read, update, add evidence and attach
+        questions, and the user's replies ADDRESSED to it arrive as
+        item-linked mail — but it does not hold the item, so this is a
+        notice (read at its next turn, never a wake), not the assignment
+        mail. Shared by `create` (participants named at creation) and
+        `participants add`, so the two cannot drift. The actor itself is
+        never told.
+
+        ⚠ THE NOTICE IS BEST-EFFORT AND THE MEMBERSHIP IS NOT. Membership
+        has never been bounded by the §7.2 addressing rules (an owner may
+        add anyone in the org), but mail is: an actor that cannot address
+        the new member, or a member that is unrecoverable, would turn a
+        valid membership change into a refusal. So a notice that cannot be
+        posted is REPORTED in `notice_refused` (node + the reason) and the
+        change stands — the caller is told, in its own result, exactly who
+        was not reached. Returns {noticed, noticed_deferred?, notice_refused?}."""
+        owner = self._work_actor_node(it.get("owner"))
         noticed: list[str] = []
         deferred: list[str] = []
         refused: list[dict[str, str]] = []
-        for pid in added:
+        for pid in pids:
             if pid == actor:
                 continue
             try:
@@ -11225,8 +11240,7 @@ class Org:
                 # archived member: the notice sits in its inbox; nothing
                 # nudges it (a notice never starts a turn, rehire or not)
                 deferred.append(pid)
-        out: dict[str, Any] = {"participants": parts, "rev": it["rev"],
-                               "noticed": noticed}
+        out: dict[str, Any] = {"noticed": noticed}
         if deferred:
             out["noticed_deferred"] = deferred
         if refused:
