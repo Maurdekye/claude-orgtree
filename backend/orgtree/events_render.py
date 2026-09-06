@@ -1045,8 +1045,14 @@ _CHECKUP = ("[AUTOMATIC 20-MINUTE WORKING-STATUS CHECK]\n"
             "with orgtree_status: use working only if work is still in progress, done "
             "if it is complete, or blocked if you truly cannot proceed. Do not claim "
             "that work is continuing without verifying it.")
-_IDLE_ROLE = {"owner": "", "reviewer": " — awaiting YOUR review",
-              "participant": " — you are a participant"}
+_IDLE_ROLE = {
+    "owner": "",
+    "reviewer": " — awaiting YOUR review",
+    "unassigned_review": " — NO REVIEWER NAMED: assign one, do not review "
+                         "your own work",
+    "stale_reviewer": " — its named reviewer is no longer live: name another, "
+                      "do not review your own work",
+}
 
 
 @renderer("reminder.working_checkup")
