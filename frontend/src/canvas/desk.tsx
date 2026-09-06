@@ -28,7 +28,8 @@ import {
   PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, usePolled } from './shared'
+import { closeIfCentred, PinFrame } from './modalpin'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dismissPending, dropPending,
@@ -2464,7 +2465,6 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
   // answers from context, so any tier serves), live bearers marked green
-  useEsc(close)
   const [tiers, setTiers] = useState<Record<string, string>>({})       // per-generation tier override
   // №12: READING an archived bearer's transcript is free — rehiring is for
   // asking it questions, not for looking at what it holds
@@ -2483,7 +2483,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   const lineageDir = useMemo<AgentDirectory>(() => ({
     resolve: (id: string) => mapRef.current?.get(id),
     onFocus: canFocus
-      ? (id: string) => { closeRef.current(); focusRef.current?.(id) }
+      ? (id: string) => { closeIfCentred('lineage', closeRef.current); focusRef.current?.(id) }
       : undefined,
   }), [canFocus, lineageFacts])
   // retiring a knowledge bearer asks too (user bug 2026-08-09) — every other
@@ -2547,8 +2547,8 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   const gens = [...(node.lineage ?? [])].sort(
     (a, b) => (b.generation ?? 0) - (a.generation ?? 0))
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings lineage-panel" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="lineage" title={`${node.id} — lineage`}
+      panel="settings lineage-panel" close={close}>
         <h3><LayersIcon fontSize="inherit" /> {node.id} — lineage</h3>
         <div className="dim lin-blurb">
           Every generation is this agent's pre-compaction self, archived in
@@ -2636,7 +2636,9 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
         {!gens.length &&
           <div className="dim pad">no prior generations — this agent has never compacted</div>}
         <div className="row"><button onClick={close}>close</button></div>
-      </div>
+      {/* a CHILD of the frame, so a pinned panel keeps its own confirmation
+          above it — the box is `position: fixed` either way and still fills
+          the screen */}
       {retiring && (
         <ConfirmModal title={`retire generation ${retiring}?`}
           body="It stops being consultable and frees its seat. Its transcript is kept and rehire brings it back — but reading a bearer's transcript is free and needs no rehire at all."
@@ -2645,7 +2647,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
             .then(close).catch(() => {})}
           close={() => setRetiring(null)} />
       )}
-    </div>
+    </PinFrame>
   )
 }
 const splitNotices = (t: string | null | undefined) => {

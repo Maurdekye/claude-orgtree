@@ -5417,3 +5417,83 @@ label.set-row { cursor: pointer; }
   display: block; max-width: 34em; line-height: 1.5;
   color: var(--ink, inherit); font-style: italic;
 }
+
+/* ---- MODALS PINNED TO THE WINDOW (canvas/modalpin.tsx) ------------------
+   User spec 2026-09-06: "most openable modals in the app should be able to be
+   pinned to the window and dragged around, like pinned agent windows."
+   The DOM is unchanged by pinning — same `.overlay`, same `.settings` panel,
+   same children — so everything below is a re-dressing of two boxes that were
+   already there. Window px, not viewport px: `.overlay` is `fixed; inset: 0`,
+   so an absolutely positioned panel inside it is already in window
+   coordinates. z-index comes from modalZIndex() inline, band 21–29: ABOVE the
+   centred overlays (20) so a pinned panel stays usable while another surface
+   opens over it, below the disk browser (55), the picker (60), the lightbox
+   (95) and toasts (100). */
+.overlay.overlay-pinned {
+  /* not a modal any more: no dimming, and every click falls through to what
+     is behind it. The panel takes its own pointer events back below. */
+  background: none; pointer-events: none; display: block;
+}
+.overlay.overlay-pinned > * { pointer-events: auto; }
+.modalpin-win {
+  position: absolute;
+  /* the centred box's caps are for a centred box; a window is sized by its
+     inline rect and its own min floor (PIN_MIN_W/H, shared with agent pins) */
+  max-width: none; max-height: none; min-width: 320px; min-height: 240px;
+  padding: 8px 10px; gap: 10px; border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* a fixed 55vh reading pane inside a 400px-tall window is unusable — the same
+   correction the mobile sheet already makes for the same reason */
+.modalpin-win .mailpane { flex: 1; min-height: 0; height: auto; }
+/* THE BAR IS ALWAYS RENDERED, in both modes, because removing an element
+   would move the children after it and remount the surface. Centred, it is
+   just the pin toggle, pulled up into the panel's own padding so the panel
+   below it does not shift. Pinned, it is the window's title bar. */
+.modalpin-bar {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  margin: -14px -14px -14px auto; font-size: 15px;
+  user-select: none; -webkit-user-select: none;
+}
+.modalpin-bar.on {
+  /* sticky, not fixed-in-flow: `.settings` is the scroll container, and a
+     title bar that scrolled away would take the window's drag handle with it */
+  position: sticky; top: 0; z-index: 6; margin: -8px -10px 0;
+  padding: 0 4px 0 8px; height: 26px; font-size: 13px;
+  background: var(--panel-2, var(--panel));
+  border-bottom: 1px solid var(--line); cursor: grab; touch-action: none;
+}
+.modalpin-bar.on:active { cursor: grabbing; }
+.modalpin-bar .spacer { flex: 1; }
+.modalpin-glyph { font-size: 14px; color: var(--accent); flex: none; }
+.modalpin-name {
+  font-weight: 700; color: var(--ink-strong); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.modalpin-btn {
+  background: none; border: none; padding: 2px; display: inline-flex;
+  color: var(--dim); font-size: 15px; cursor: pointer; border-radius: 3px;
+  flex: none; line-height: 1;
+}
+.modalpin-btn:hover { color: var(--ink-strong); background: var(--panel); }
+.modalpin-bar.on .modalpin-btn[aria-pressed="true"] { color: var(--accent); }
+/* the panel's own font sizing applies to buttons inside `.settings`; these are
+   window chrome and stay chrome-sized */
+.settings .modalpin-btn { font-size: 15px; padding: 2px; border-radius: 3px; }
+.settings .modalpin-bar.on .modalpin-btn { font-size: 14px; }
+/* resize handles: the agent window's eight strips, same geometry */
+.modalpin-rs { position: absolute; z-index: 6; touch-action: none; }
+.modalpin-rs.n, .modalpin-rs.s { left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+.modalpin-rs.e, .modalpin-rs.w { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+.modalpin-rs.n { top: -2px; }  .modalpin-rs.s { bottom: -2px; }
+.modalpin-rs.e { right: -2px; } .modalpin-rs.w { left: -2px; }
+.modalpin-rs.ne, .modalpin-rs.nw, .modalpin-rs.se, .modalpin-rs.sw { width: 12px; height: 12px; }
+.modalpin-rs.ne { top: -2px; right: -2px; cursor: nesw-resize; }
+.modalpin-rs.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
+.modalpin-rs.nw { top: -2px; left: -2px; cursor: nwse-resize; }
+.modalpin-rs.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+/* mobile presents these surfaces as full-screen sheets and has no window to
+   pin to (D-125). The store is not honoured there (modalPinsAvailable), and
+   the control is not offered either. */
+html.mobile .modalpin-bar { display: none; }

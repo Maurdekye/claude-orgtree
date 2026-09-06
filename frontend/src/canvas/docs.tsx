@@ -12,6 +12,7 @@ import { md } from './shared'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { openLightboxIfEligibleImage } from './lightbox'
+import { PinFrame } from './modalpin'
 import { CloseIcon, DocIcon } from '../icons'
 import { fmtFull } from '../timefmt'
 
@@ -97,22 +98,13 @@ export function DocReader({ slug, docId, toast, close, refs }: {
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   const { doc, err } = useDoc(slug, docId)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [close])
   return (
-    <div className="overlay" onClick={close}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings doc-reader" onClick={(e) => {
-        // an eligible image opens directly here rather than relying on the
-        // click bubbling past this stopPropagation, which everything else
-        // in the reader still needs (it keeps `.overlay`'s backdrop-close
-        // from firing for clicks inside).
-        openLightboxIfEligibleImage(e)
-        e.stopPropagation()
-      }}>
+    // an eligible image opens from `onPanelClick`, which the frame runs
+    // BEFORE the stopPropagation every panel has (that one keeps a click
+    // inside the reader from reaching `.overlay`'s backdrop-close).
+    <PinFrame kind="doc" title={doc?.title ?? 'document'}
+      panel="settings doc-reader" close={close}
+      onPanelClick={openLightboxIfEligibleImage}>
         <div className="doc-reader-head">
           <DocIcon fontSize="inherit" />
           <b>{doc?.title ?? '…'}</b>
@@ -133,7 +125,6 @@ export function DocReader({ slug, docId, toast, close, refs }: {
         {doc && <RefMdBody className="doc-reader-body md"
           html={md(doc.body, fileBase(slug, doc.node))}
           world={refs?.world} onOpen={refs?.onOpen} />}
-      </div>
-    </div>
+    </PinFrame>
   )
 }

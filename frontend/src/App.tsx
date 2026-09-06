@@ -32,6 +32,7 @@ import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
+import { closeIfCentred, PinFrame } from './canvas/modalpin'
 import { mailRefTarget, useRefRoutes } from './canvas/reflinks'
 import type { TypedRef } from './canvas/workrefs'
 import {
@@ -1034,23 +1035,33 @@ export default function App() {
                   refresh={() => refreshTree(slug)}
                   jumpTo={inboxJump?.id ?? null} jumpSeq={inboxJump?.seq}
                   onFocusAgent={(id) => {
-                    setShowInbox(false)
-                    setInboxJump(null)
+                    closeIfCentred('inbox', () => {
+                      setShowInbox(false)
+                      setInboxJump(null)
+                    })
                     setFocusAgent(id)
                   }}
                   onOpenItem={(item) => {
                     // every destination is somewhere else, so each of these
                     // closes the inbox first: the panels they open are the
                     // same `.overlay` layer and would otherwise open BEHIND
-                    // the mail the reader clicked from.
-                    setShowInbox(false); setInboxJump(null)
+                    // the mail the reader clicked from. A PINNED inbox is
+                    // beside them rather than over them, so it stays.
+                    closeIfCentred('inbox', () => {
+                      setShowInbox(false); setInboxJump(null)
+                    })
                     setDocketJump(jumpTo(item)); setShowDocket(true)
                   }}
                   onOpenDoc={(id) => {
-                    setShowInbox(false); setInboxJump(null); setDocJump(id)
+                    closeIfCentred('inbox', () => {
+                      setShowInbox(false); setInboxJump(null)
+                    })
+                    setDocJump(id)
                   }}
                   onOpenMail={(r) => {
-                    setShowInbox(false); setInboxJump(null)
+                    closeIfCentred('inbox', () => {
+                      setShowInbox(false); setInboxJump(null)
+                    })
                     setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq })
                   }}
                   close={() => {
@@ -1079,7 +1090,7 @@ export default function App() {
       {showGallery && slug && (
         <DocGalleryModal slug={slug} toast={toast}
           onFocusAgent={(id) => {
-            setShowGallery(false)
+            closeIfCentred('gallery', () => setShowGallery(false))
             setFocusAgent(id)
           }}
           refs={galleryRefs}
@@ -1090,16 +1101,18 @@ export default function App() {
           jumpTo={docketJump?.id ?? null} jumpSeq={docketJump?.seq}
           onJumpHandled={() => setDocketJump(null)}
           onFocusAgent={(id) => {
-            setShowDocket(false)
+            closeIfCentred('docket', () => setShowDocket(false))
             setFocusAgent(id)
           }}
           onOpenMail={(r) => {
             // the mailbox opens BEHIND where the docket is, so the docket
             // closes with it — the same move the agent link above makes, for
             // the same reason: leaving it up would cover what the user just
-            // asked to read.
-            setShowDocket(false)
-            setDocketJump(null)
+            // asked to read. A PINNED docket covers nothing, so it stays put.
+            closeIfCentred('docket', () => {
+              setShowDocket(false)
+              setDocketJump(null)
+            })
             setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq })
           }}
           close={() => { setDocketJump(null); setShowDocket(false) }} />
@@ -1335,7 +1348,6 @@ export function AntigravityEstimateNote(
 }
 
 export function UsageModal({ close }: { close: () => void }) {
-  useEsc(close)
   // ⚠ EVERY registered account, primary first then fallbacks in priority
   // order (user ruling 2026-08-25) — one section of bars per account. The
   // bar markup itself lives in UsageBars (canvas/accounts.tsx) so this modal
@@ -1361,8 +1373,8 @@ export function UsageModal({ close }: { close: () => void }) {
   // machine the whole block is now absent instead.
   const shown = presenceOfPayload(usePolled(getProviders, [], 60000))
   return (
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
-      <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="usage" title="usage limits" panel="settings usage-modal"
+      close={close}>
         <h3><DataUsageIcon fontSize="inherit" /> usage limits</h3>
         {/* the codex half only counts toward "still loading" while it is a
             half this machine has — otherwise a Codex-less box would skip the
@@ -1409,8 +1421,7 @@ export function UsageModal({ close }: { close: () => void }) {
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 
@@ -1977,7 +1988,6 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
   onOpenDoc?: (docId: string) => void
   onOpenMail?: (ref: TypedRef) => void
 }) {
-  useEsc(close)
   const [folder, setFolder] = useState('inbox')
   // ⚠ A REFERENCE MUST OPEN THE FOLDER THE MESSAGE IS IN. The user's own sends
   // are a separate folder, so a token naming one arriving with the panel on
@@ -2124,8 +2134,8 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
     )
   }
   return (
-    <div className="overlay" onClick={close}>
-      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="inbox" title="your inbox" panel="settings wide"
+      close={close}>
         <h3><MailIcon fontSize="inherit" /> your inbox</h3>
         {userReqs.length > 0 && (
           <>
@@ -2237,8 +2247,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
               .catch((e: Error) => toast([`error: ${e.message}`]))}>mark all read</button>}
           <button className="primary" onClick={close}>close</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 
@@ -2246,7 +2255,6 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
 // org is born with these values — the same knobs as a single org's settings
 // panel, saved once in <data>/defaults.json.
 export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) {
-  useEsc(close)
   // Partial: the error fallback seeds {} and every read has its own default
   const [d, setD] = useState<Partial<DefaultsPayload> | null>(null)
   useEffect(() => { getDefaults().then(setD).catch(() => setD({})) }, [])
@@ -2256,15 +2264,16 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
     [provPayload, d?.fable_filter_model])
   if (d == null) {
     return (
-      <div className="overlay" onClick={close}>
-        <div className="settings"><div className="dim pad">loading…</div></div>
-      </div>
+      <PinFrame kind="defaults" title="default org settings"
+        panel="settings" close={close}>
+        <div className="dim pad">loading…</div>
+      </PinFrame>
     )
   }
   const set = (k: string, v: unknown) => setD({ ...d, [k]: v })
   return (
-    <div className="overlay" onClick={close}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="defaults" title="default org settings"
+      panel="settings" close={close}>
         <h3><SettingsIcon fontSize="inherit" /> default org settings
           <span className="dim"> · applied to every NEW organization</span></h3>
         <div className="field-label">top-level grant cap</div>
@@ -2376,8 +2385,7 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
               .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 
@@ -2492,7 +2500,6 @@ export function SettingsPanel({ tree, toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
-  useEsc(close)
   // P3 — every field below used to be its own useState SEEDED FROM `tree`.
   // useState(x) snapshots x once at mount and never looks again, so this panel
   // held seventeen private copies of server values that could each go stale
@@ -2639,8 +2646,8 @@ export function SettingsPanel({ tree, toast, close }: {
     return () => { current = false }
   }, [tree.slug, orgMdRetry])
   return (
-    <div className="overlay" onClick={close}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="org-settings" title={`${tree.name} — settings`}
+      panel="settings" close={close}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
         <SettingsTabs tabs={orgTabs} tab={tab} setTab={setTab}
           idBase="org-settings" label="Organization settings sections" />
@@ -3084,7 +3091,6 @@ export function SettingsPanel({ tree, toast, close }: {
           }}>save</button>
           <button onClick={close}>cancel</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }

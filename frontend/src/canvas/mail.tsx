@@ -19,13 +19,14 @@ import {
 } from '../icons'
 import {
   EXTERN, fmtCredits, isSystemNotice, jumpKey, md, pileNotices, providerOf, USER,
-  useEsc, usePolled,
+  usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { AgentName } from './identity'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { isMobile } from '../mobile'
+import { closeIfCentred, PinFrame } from './modalpin'
 import { fmtFull, fmtShort } from '../timefmt'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
@@ -949,10 +950,9 @@ interface NodeInboxModalProps {
 
 export function NodeInboxModal({ node, slug, close, jumpTo, jumpSeq, onFocusAgent,
   tierOf, hasAgent, refs }: NodeInboxModalProps) {
-  useEsc(close)
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="node-inbox" title={`${node.id} · inbox`} panel="settings wide"
+      close={close}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
         {/* ⚠ A REFERENCE CLOSES THIS MODAL ON THE WAY OUT, as the name beside
             it does. Everything a token can open is UNDER this overlay, so
@@ -964,14 +964,16 @@ export function NodeInboxModal({ node, slug, close, jumpTo, jumpSeq, onFocusAgen
           tierOf={tierOf} hasAgent={hasAgent}
           refs={refs && {
             world: refs.world,
-            onOpen: refs.onOpen && ((r: ResolvedRef) => { close(); refs.onOpen!(r) }),
+            onOpen: refs.onOpen && ((r: ResolvedRef) => {
+              closeIfCentred('node-inbox', close); refs.onOpen!(r) }),
           }}
-          onFocusAgent={onFocusAgent ? (id) => { close(); onFocusAgent(id) } : undefined} />
+          onFocusAgent={onFocusAgent
+            ? (id) => { closeIfCentred('node-inbox', close); onFocusAgent(id) }
+            : undefined} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 // the ORG INBOX viewer (user spec): the org's correspondence with the outside
@@ -996,7 +998,6 @@ interface OrgInboxModalProps {
 
 export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
   jumpSeq, refs, onFocusAgent }: OrgInboxModalProps) {
-  useEsc(close)
   // reworked (user spec 2026-08-05): no blurb, mailservers on their own TAB,
   // compose in its own modal, holders as bare chips with a drag-to-grant tip
   const [tab, setTab] = useState<'mail' | 'servers'>('mail')
@@ -1117,8 +1118,8 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
     </span>
   )
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings wide" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="org-inbox" title="The org inbox" panel="settings wide"
+      close={close}>
         <h3><PublicIcon fontSize="inherit" /> The org inbox</h3>
         {hubsVisible && (
           <div className="adv-tabs">
@@ -1213,7 +1214,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
                               <AgentName id={m!._by!} prefix="@"
                                 tier={map.get(m!._by!)?.tier}
                                 onFocus={onFocusAgent
-                                  ? (id) => { close(); onFocusAgent(id) }
+                                  ? (id) => { closeIfCentred('org-inbox', close); onFocusAgent(id) }
                                   : undefined} />
                             ) : (
                               // not an agent of this org — the sigil and the
@@ -1245,8 +1246,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
           <ComposeModal slug={slug} net={net} entries={entries} toast={toast}
             close={() => setComposing(false)} />
         )}
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 

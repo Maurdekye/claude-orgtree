@@ -32,9 +32,10 @@ import {
 import { CloseIcon, DocketIcon } from '../icons'
 import { AskCard } from './asks'
 import { DocReader } from './docs'
+import { closeIfCentred, PinFrame } from './modalpin'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
-import { ago, jumpKey, useEsc, usePolled } from './shared'
+import { ago, jumpKey, usePolled } from './shared'
 import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
@@ -527,7 +528,11 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   // AND the docket underneath it — the user asked to back out of a document
   // and lost the panel they were reading from.
   const escClose = useCallback(() => { if (!docView) close() }, [docView, close])
-  useEsc(escClose)
+  // ⚠ AND A PINNED DOCKET DOES NOT CLOSE ITSELF TO GET OUT OF THE WAY. Every
+  // jump below hands `navClose` down instead of `close`: centred, the panel
+  // covers what it just opened and must go; pinned, it is a window the user
+  // placed beside it. The header close button and Escape keep the real one.
+  const navClose = useCallback(() => closeIfCentred('docket', close), [close])
   const [showArchived, setShowArchived] = useState(false)
   const [showBacklog, setShowBacklog] = useState(false)
   const [groupMode, setGroupMode] = useState<DocketGroupMode>(readGroupMode)
@@ -810,9 +815,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
 
   return (
     <>
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings wide docket-modal" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="docket" title="Work docket" panel="settings wide docket-modal"
+      close={close} onEsc={escClose}>
         {/* THE FILTERS SIT AT THE RIGHT END, which is where the gallery's own
             show-retired checkbox ends up: `.gallery-modal .gallery-head` uses
             justify-content: space-between over two children, so its checkbox is
@@ -885,7 +889,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                             {s.agent
                               ? <GroupAgentHead agent={s.agent} items={s.items}
                                   facts={facts} onFocusAgent={onFocusAgent}
-                                  close={close} />
+                                  close={navClose} />
                               : <span>{s.heading}</span>}
                             <span className="dim docket-group-n">{s.items.length}</span>
                           </div>
@@ -899,7 +903,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                             onClick={() => setSelId(
                               row.item.slug === selId ? null : row.item.slug)}
                             onDismiss={onDismiss} facts={facts}
-                            onFocusAgent={onFocusAgent} close={close}
+                            onFocusAgent={onFocusAgent} close={navClose}
                             flash={row.item.slug === flash}
                             rowRef={(el) => {
                               if (el) rows.current.set(row.item.slug, el)
@@ -913,7 +917,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                     {cur
                       ? <DocketPane key={cur.slug} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
-                          close={close} onFocusAgent={onFocusAgent} facts={facts}
+                          close={navClose} onFocusAgent={onFocusAgent} facts={facts}
                           refIndex={refIndex} onGoToItem={goToItem}
                           refWorld={refWorld} onOpenRef={openRef} />
                       : missedJump
@@ -927,8 +931,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
               )}
         </div>
         <div className="docket-foot dim">Done items archive after 1 hour without an update.</div>
-      </div>
-    </div>
+    </PinFrame>
     {/* ⚠ A SIBLING, NOT A CHILD. Nested inside the docket's own `.overlay`,
         a click on the reader's backdrop would bubble into the docket's
         backdrop handler and close BOTH. As siblings the reader is simply the

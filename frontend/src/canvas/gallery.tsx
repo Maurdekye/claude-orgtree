@@ -27,12 +27,13 @@ import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
+import { PinFrame } from './modalpin'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { openLightboxIfEligibleImage } from './lightbox'
 import { fmtFull } from '../timefmt'
 import { MailReplyBox } from './mail'
-import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
+import { ago, md, TIER_LETTER, tierLabel, usePolled } from './shared'
 
 /** the presenting agent's model card. MOVED to canvas/identity.tsx, which is
  *  now the one place an agent's chip-and-name is drawn; re-exported here so
@@ -80,7 +81,6 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
    *  what it does not supply reads as "not opened from here". */
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
-  useEsc(close)
   const data = usePolled(() => getDocuments(slug), [slug])
   const all = data?.documents
   const [showRetired, setShowRetired] = useState(false)
@@ -125,16 +125,12 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
     },
   }) || undefined, [refs, all])
   return (
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings wide gallery-modal" onClick={(e) => {
-        // same fix as DocReader (docs.tsx) — an eligible image is opened
-        // directly here instead of relying on the click to bubble past
-        // this stopPropagation (which every other click in the modal
-        // still needs, to keep the backdrop above from closing it)
-        openLightboxIfEligibleImage(e)
-        e.stopPropagation()
-      }}>
+    // same fix as DocReader (docs.tsx) — an eligible image is opened from
+    // `onPanelClick`, which the frame runs BEFORE the stopPropagation every
+    // other click in the modal still needs to keep the backdrop from closing
+    <PinFrame kind="gallery" title="presented documents"
+      panel="settings wide gallery-modal" close={close}
+      onPanelClick={openLightboxIfEligibleImage}>
         <div className="gallery-head">
           <h3><DocIcon fontSize="inherit" /> presented documents</h3>
           {/* one control, not two views: the retired cards JOIN the list
@@ -208,8 +204,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
                 </div>
               )}
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 

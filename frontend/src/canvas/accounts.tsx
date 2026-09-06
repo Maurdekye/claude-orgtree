@@ -23,7 +23,7 @@
 // the check could only fire for rows carried over from the old registry — a
 // guard that fires for one row in a hundred just makes the panel inexplicable.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AccountsPayload, AccountUsage, ProviderInfo, RuntimeSettingsPayload,
   TierStanding, ToastFn, UsageLimit,
@@ -40,10 +40,11 @@ import {
 } from './settingskit'
 import type { SettingsTab } from './settingskit'
 import { OpenRouterSection } from './openrouter'
+import { PinFrame } from './modalpin'
 import {
   setCrowdPilesOn, setDeskDpi, setOpenRouterTiers, setStartView, setStartZoomOn,
   fmtCredits, TIER_LETTER,
-  TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
+  TIERS, useCrowdPiles, useDeskDpi, useStartView, useStartZoom,
 } from './shared'
 import { fmtFull, fmtWhen } from '../timefmt'
 import type { StartView } from './shared'
@@ -285,11 +286,11 @@ export function AccountsPanel({ toast, close }: {
   // the OpenRouter model picker is a third layer (2026-09-02): same rule,
   // one Escape closes only the topmost
   const [orrPicker, setOrrPicker] = useState(false)
-  useEsc(() => {
+  const escClose = useCallback(() => {
     if (usageFor) setUsageFor(null)
     else if (orrPicker) setOrrPicker(false)
     else close()
-  })
+  }, [usageFor, orrPicker, close])
   // ⚠ a REF, not state: dragstart and drop can land in one React batch, and a
   // drop reading the dragged id from its render closure would see the
   // pre-drag null and silently do nothing. The state twin is styling only.
@@ -502,8 +503,8 @@ export function AccountsPanel({ toast, close }: {
   }
 
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings acct-panel" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="app-settings" title="App settings" panel="settings acct-panel"
+      close={close} onEsc={escClose}>
         <h3>App settings</h3>
         <SettingsTabs tabs={APP_TABS} tab={tab} setTab={setTab}
           idBase="app-settings" label="App settings sections" />
@@ -932,7 +933,6 @@ export function AccountsPanel({ toast, close }: {
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </PinFrame>
   )
 }

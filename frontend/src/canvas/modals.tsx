@@ -22,6 +22,7 @@ import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
+import { PinFrame } from './modalpin'
 import { fmtStamp } from '../timefmt'
 
 export interface ConfirmModalProps {
@@ -143,7 +144,6 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
-  useEsc(close)
   // user bug 2026-08-12 + 2026-08-14: long commands were unreadable — first
   // truncated with no recourse, then the full text hid behind a click nobody
   // found. The detail panel now OPENS with the whole target/pattern wrapped
@@ -155,8 +155,8 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
       .then((r) => { toast([`${dog.name}: ${r.state}`]); if (a === 'remove') close() })
       .catch((e: Error) => toast([`error: ${e.message}`]))
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="watchdog" title={`${dog.name} · watchdog`} panel="settings"
+      close={close}>
         <h3>🐕 {dog.name} <span className="dim">· watchdog · {dog.spent ? 'departing' : dog.state}</span>
           {dog.once && <span className="wd-once-label">one-shot dog</span>}</h3>
         {dog.once && <div className="wd-once-note">
@@ -212,8 +212,7 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
           {!dog.spent && <button className="danger" onClick={() => act('remove')}>remove</button>}
           <button onClick={close}>close</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 
