@@ -439,6 +439,47 @@ def public_event(ev: Mapping[str, Any]) -> dict[str, Any]:
 SEGMENT_KINDS: Final = ("notices", "mail", "state", "drive", "text")
 DELIVERY_MODES: Final = ("turn", "steer", "boundary", "reconcile", "rehire", "idle_only")
 
+#: Step 4 (design §8): the qualified reply target a client may send — identity keys
+#: ONLY. Mirrors the `ReplyTarget` union emitted to events.ts; `parse_reply_target`
+#: is the one validator (the routes call it, the TS type is generated beside it).
+REPLY_TARGET_KINDS: Final = ("mail", "document", "work_item")
+REPLY_TARGET_BOXES: Final = ("user", "org", "node")
+_REPLY_TARGET_KEYS: Final[dict[str, tuple[str, ...]]] = {
+    "mail": ("org", "box", "id"), "document": ("org", "id"), "work_item": ("org", "slug")}
+
+
+def parse_reply_target(raw: Any) -> dict[str, str]:
+    """Strict shape check of a client `target` (design §8 / B12): a mapping with
+    `kind` in the closed enum, exactly the identity keys of that kind (plus `node`
+    iff box == "node"), every value a non-empty string. No title, gist, sender or
+    at — a client that sends one is refused, never silently stripped. Refusal is an
+    EventInvalid with a static {code, path, expected}; the route turns it into 422."""
+    if not isinstance(raw, Mapping):
+        raise EventInvalid("bad_structure", "target", "object")
+    kind = raw.get("kind")
+    if kind not in REPLY_TARGET_KINDS:
+        raise EventInvalid("bad_literal", "target.kind", "|".join(REPLY_TARGET_KINDS))
+    want = set(_REPLY_TARGET_KEYS[kind]) | {"kind"}
+    if kind == "mail":
+        box = raw.get("box")
+        if box not in REPLY_TARGET_BOXES:
+            raise EventInvalid("bad_literal", "target.box", "|".join(REPLY_TARGET_BOXES))
+        if box == "node":
+            want.add("node")
+    extra = sorted(set(raw) - want)
+    if extra:
+        raise EventInvalid("extra_field", f"target.{extra[0]}", "absent")
+    missing = sorted(want - set(raw))
+    if missing:
+        raise EventInvalid("missing_field", f"target.{missing[0]}", "str")
+    out: dict[str, str] = {}
+    for k in sorted(want):
+        v = raw[k]
+        if not isinstance(v, str) or not v.strip():
+            raise EventInvalid("wrong_type", f"target.{k}", "non-empty str")
+        out[k] = v
+    return out
+
 
 def wire_row(row: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
     """The WIRE projection of one stored mail / notice / user-inbox row (design §6):
@@ -515,6 +556,22 @@ def wire_segments(segments: list[Mapping[str, Any]] | None, *,
 
 
 # ============================================================================ manifest
+def human_hidden_variants() -> list[str]:
+    """Leaves whose EVERY own field is model_only/internal — the machine-state and
+    instruction segments (coordinator ruling 2026-09-06 21:35Z): they keep their
+    canonical event and agent rendering, but a human transcript shows NO card for them
+    (not a heading-only stub). Derived from the dispositions, so it is typed policy —
+    a leaf becomes hidden by declaring every field model_only, never by name, and a
+    leaf with one human-visible field is shown. Leaves with no own fields are NOT
+    hidden: their variant is their content (e.g. policy.unstuck)."""
+    out: list[str] = []
+    for v in VARIANTS:
+        own = T.LEAVES[v]["fields"]
+        if own and all(f["d"] in ("model_only", "internal") for f in own.values()):
+            out.append(v)
+    return out
+
+
 def manifest() -> dict[str, Any]:
     """Every field of every leaf/ref/record with its type, disposition, public flag and
     exemption — the reviewable table (design §4, B16 packet table)."""
@@ -533,6 +590,7 @@ def manifest() -> dict[str, Any]:
         "leaves": {v: {"family": FAMILY_OF[v], "object": T.LEAVES[v]["object"],
                        "fields": fmap(leaf_fields(v))} for v in VARIANTS},
         "elided_row_fields": {k: list(v) for k, v in T.ELIDED_FIELDS.items()},
+        "human_hidden": human_hidden_variants(),
     }
 
 
@@ -707,11 +765,27 @@ export type PublicSegment =
 export const DELIVERY_MODES = ["turn","steer","boundary","reconcile","rehire","idle_only"] as const;
 export type DeliveryMode = (typeof DELIVERY_MODES)[number];
 export interface Delivery { mode: DeliveryMode; via: "turn" | "steer"; attempt: number; at: string; }
+// ---- STEP 4: the qualified reply target (design §8). IDENTITY KEYS ONLY — the server
+// resolves the object and fills the Ref (title/sender/at) itself; any other key is refused.
+// Exactly one of `target` / legacy `reply_to` per send.
+export const REPLY_TARGET_KINDS = ["mail","document","work_item"] as const;
+export type ReplyTarget =
+  | { kind: "mail"; org: string; box: "user" | "org" | "node"; node?: string; id: string }
+  | { kind: "document"; org: string; id: string }
+  | { kind: "work_item"; org: string; slug: string };
+// what a typed send returns beside today's result fields: the delivered mail id, its
+// `@mail:` ref and the minted event in the caller's projection (never both).
+export interface TypedReplyReceipt { id: string; ref: string; ev?: Event; ev_public?: PublicEvent; }
 """)
     out.append("export const FAMILY_OF: Record<Event['variant'], Family> = "
                + json.dumps(FAMILY_OF, indent=2) + ";")
     out.append("export const VARIANTS = " + json.dumps(list(VARIANTS), indent=2) + " as const;")
     out.append("export const STRUCTURAL_KEYS = " + json.dumps(sorted(T.STRUCTURAL)) + " as const;")
+    out.append("// Machine-only segments (every own field model_only/internal): a human transcript\n"
+               "// renders NO card for these — the event and its agent text are kept untouched.\n"
+               "// Derived from MANIFEST dispositions; typed policy, never a body pattern.\n"
+               "export const HUMAN_HIDDEN_VARIANTS = "
+               + json.dumps(human_hidden_variants(), indent=2) + " as const;")
     out.append("export const ELIDED_ROW_FIELDS: Record<string, readonly string[]> = "
                + json.dumps({k: list(v) for k, v in T.ELIDED_FIELDS.items()}, indent=2) + ";")
     out.append("export const MANIFEST = " + json.dumps(manifest(), separators=(",", ":")) + " as const;")
