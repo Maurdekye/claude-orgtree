@@ -29,7 +29,7 @@ import { isMobile } from '../mobile'
 import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import { fmtFull, fmtShort } from '../timefmt'
 import { decodeEventRow } from '../events/decode'
-import { projectEvent } from '../events/project'
+import { eventSummary, projectEvent } from '../events/project'
 import type { EventView } from '../events/project'
 import { EventCard } from '../events/card'
 
@@ -523,7 +523,7 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
                 ever see. The body is still one click away in the reading
                 pane, and the `l1` header keeps the row identifiable. */}
             {!isSystemNotice(m)
-              && <div className="l2">{brief(view?.fields.filter(f => f.placement === 'body' && typeof f.value === 'string').map(f => f.value).join('\n') ?? m.body)}</div>}
+              && <div className="l2">{brief(view ? eventSummary(view.event) : m.body)}</div>}
           </div>
           )
         })}

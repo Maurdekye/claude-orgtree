@@ -15,7 +15,7 @@ test('operator and visitor render every canonical family with a type heading', a
     const view = await mountView(<div>{fixtures.map(f => <EventCard key={f.variant} org="fixture" profile={profile}
       row={profile === 'operator' ? { ev: f.private, body: f.body } : { ev_public: f.public, body: f.body }} />)}</div>, h => h)
     t.after(() => view.unmount())
-    assert.equal(view.el.querySelectorAll('[data-event-variant]').length, fixtures.length)
+    assert.equal(view.el.querySelectorAll(':scope > div > [data-event-variant]').length, fixtures.length)
     assert.equal(view.el.querySelectorAll('.event-unsupported').length, 0)
     for (const family of FAMILIES) {
       const cards = view.el.querySelectorAll('.event-card.event-' + family)
@@ -53,4 +53,30 @@ test('public engine message shows system actor while user message shows User', a
   assert.equal(view.el.querySelector('[data-actor-kind="system"]')!.textContent, 'System')
   assert.equal(view.el.querySelector('[data-actor-kind="user"]')!.textContent, 'User')
   assert.doesNotMatch(view.el.textContent!, /report.stack|report.url/)
+})
+
+
+test('digest members keep typed family and permitted values without dumping canonical metadata', async t => {
+  const digest=fixtures.find(f=>f.variant==='context.notice_digest')
+  const lifecycle=fixtures.find(f=>f.variant==='lifecycle.retired')
+  const model=fixtures.find(f=>f.variant==='context.org_charter')
+  for(const profile of ['operator','public'] as const) {
+    const key=profile==='operator'?'private':'public'
+    const member={...lifecycle[key],freed:31.25}
+    const ev={...digest[key],groups:[{variant:member.variant,object_kind:'node',members:[{at:'2026-09-06T01:02:03Z',event:member}]}]}
+    const view=await mountView(<EventCard org="fixture" profile={profile} row={profile==='operator'?{ev}:{ev_public:ev}}/>,h=>h)
+    t.after(()=>view.unmount())
+    assert.equal(view.el.querySelectorAll('.event-lifecycle').length,1,'member uses its actual family')
+    assert.match(view.el.textContent!,/31.25/,'unique retained value is readable')
+    assert.match(view.el.textContent!,/2026-09-06T01:02:03Z/,'each occurrence keeps its time')
+    assert.equal(view.el.querySelectorAll('[data-event-field="engine_authored"],[data-event-field="org"]').length,0)
+    if(profile==='operator') {
+      const hidden={...model.private,text:'MODEL_ONLY_SENTINEL'}
+      const wrapped={...digest.private,groups:[{variant:hidden.variant,object_kind:'org',members:[{at:'now',event:hidden}]}]}
+      const hiddenView=await mountView(<EventCard org="fixture" profile="operator" row={{ev:wrapped}}/>,h=>h)
+      t.after(()=>hiddenView.unmount())
+      assert.equal(hiddenView.el.querySelectorAll('[data-event-variant="context.org_charter"]').length,1)
+      assert.doesNotMatch(hiddenView.el.textContent!,/MODEL_ONLY_SENTINEL/)
+    }
+  }
 })

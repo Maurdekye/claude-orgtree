@@ -1,10 +1,12 @@
 import type { Event, PublicEvent, Family } from '../generated/events'
 import { FAMILY_OF } from '../generated/events'
 import { record } from './decode'
+import { fieldType, humanValue } from './value'
+import type { HumanValue } from './value'
 
 export type KnownEvent = Event | PublicEvent
 export type Placement = 'header' | 'body' | 'context'
-export interface EventField { key: string; label: string; placement: Placement; value: unknown }
+export interface EventField { key: string; label: string; placement: Placement; value: unknown; type: string }
 export interface EventView { event: KnownEvent; family: Family; title: string; fields: EventField[] }
 type Keys<T> = T extends unknown ? keyof T : never
 type Spec<T> = readonly [Keys<T> & string, string, Placement]
@@ -14,7 +16,7 @@ function layout<T extends KnownEvent>(event: T, title: string, specs: readonly S
   // Private-only fields are absent by construction in PublicEvent. No casts
   // or text recognition fill those gaps, and no raw payload is rendered.
   if (record(event)) for (const [key, label, placement] of specs) {
-    if (Object.prototype.hasOwnProperty.call(event, key)) fields.push({ key, label, placement, value: event[key] })
+    if (Object.prototype.hasOwnProperty.call(event, key)) fields.push({ key, label, placement, value: event[key], type: fieldType(event.variant, key) })
   }
   return { event, family: FAMILY_OF[event.variant], title, fields }
 }
@@ -113,4 +115,27 @@ export function projectEvent(event: KnownEvent): EventView {
     case "context.drive_restart_wake": return layout(event, "Restart wake", [])
   }
   return assertNever(event)
+}
+
+
+function summaryValue(value: HumanValue): string {
+  switch(value.kind) {
+    case 'text': return value.text
+    case 'scalar': return value.value === null ? '' : String(value.value)
+    case 'list': return value.items.map(summaryValue).filter(Boolean).join(' / ')
+    case 'record': return value.fields.map(f=>summaryValue(f.value)).filter(Boolean).join(' / ')
+    case 'event': return eventSummary(value.event)
+    case 'unavailable': return ''
+  }
+  const unhandled: never = value
+  return unhandled
+}
+/** List previews and user-jump labels use the same declared human fields as
+ * the card, including nested answers; empty bodies still have a useful label. */
+export function eventSummary(event: KnownEvent): string {
+  const view=projectEvent(event), profile='projection' in event?'public':'operator'
+  const body=view.fields.filter(f=>f.placement==='body')
+  const fields=body.length?body:view.fields.filter(f=>f.placement==='header')
+  const text=fields.map(f=>summaryValue(humanValue(f.value,f.type,profile))).filter(Boolean).join(' / ')
+  return text || view.title
 }

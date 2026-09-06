@@ -5715,3 +5715,6 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .event-card .turn-mail-preview { margin: 0; }
 
 .mailrow .event-row-kind { font-size: 10px; color: var(--accent); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+
+.hist-event { padding: 8px; border-bottom: 1px solid var(--border); }
+.hist-event > .event-card { margin-top: 5px; }

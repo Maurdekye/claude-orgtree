@@ -1081,6 +1081,10 @@ export interface EventsPayload {
 
 // GET /api/orgs/{slug}/nodes/{nid}/history — api.py node_history items
 export interface HistoryItem {
+  ev?: unknown
+  ev_public?: unknown
+  ev_raw?: unknown
+  ev_error?: unknown
   at: string
   kind: string
   actor: string

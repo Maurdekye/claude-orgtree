@@ -2156,7 +2156,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             </button>)}
         </div></div>
       )}
-      {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
+      {view === 'history' && <HistoryView slug={slug} nid={node.id} refs={deskRefs} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
       {/* ⚠ THE SAME `deskRefs` THE CHAT AND THE INBOX USE. This tab was
           building its own narrower world, which left a `@doc:` or `@mail:`
@@ -2362,23 +2362,27 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     </div>
   )
 }
-function HistoryView({ slug, nid }: { slug: string; nid: string }) {
+export function HistoryView({ slug, nid, refs }: { slug: string; nid: string; refs?: RefRoutes }) {
   // G5: the agent keeps acting while this tab is open — a fetch-once list is
   // a photograph of the moment the tab was clicked
   const items = usePolled(() => getHistory(slug, nid).then((r) => r.items), [slug, nid])
+  const profile = BASE ? 'public' : 'operator'
   return (
     <div className="msgs">
       {items == null && <div className="dim pad">loading…</div>}
       {items?.length === 0 && <div className="dim pad">nothing recorded yet</div>}
-      {items?.map((it, i) => (
-        <div key={i} className="hist-row">
+      {items?.map((it, i) => {
+        const text = String(it.detail.gist ?? it.detail.text ?? Object.entries(it.detail)
+          .filter(([k]) => k !== 'gist').map(([k, v]) => `${k}=${v}`).join(' · '))
+        const row = {...it, text}
+        const decoded = decodeEventRow(row, profile)
+        return <div key={i} className={decoded.kind === 'legacy' ? 'hist-row' : 'hist-event'}>
           <span className="dim">{fmtFull(it.at)}</span>
-          <b>{it.kind}</b>
-          <span className="dim">{it.actor}</span>
-          <span>{it.detail.gist ?? it.detail.text ?? Object.entries(it.detail)
-            .filter(([k]) => k !== 'gist').map(([k, v]) => `${k}=${v}`).join(' · ')}</span>
+          {decoded.kind === 'legacy' ? <><b>{it.kind}</b><span className="dim">{it.actor}</span><span>{text}</span></>
+            : <EventCard row={row} profile={profile} org={slug} world={refs?.world} onOpen={refs?.onOpen}
+                actor={id => <MailFrom from={id}/>} imgBase={fileBase(slug,nid)}/>}
         </div>
-      ))}
+      })}
     </div>
   )
 }

@@ -3,7 +3,7 @@ import type { Segment, PublicSegment } from '../generated/events'
 import { decodeEventRow, isAuthoredUser, record } from './decode'
 import type { EventProfile } from './decode'
 import { EventCard } from './card'
-import { projectEvent } from './project'
+import { eventSummary } from './project'
 import { RefMdBody } from '../canvas/refmd'
 import type { RefWorld, ResolvedRef } from '../canvas/reflinks'
 import { md } from '../canvas/shared'
@@ -22,7 +22,7 @@ export function authoredUserLabel(segments: unknown, profile: EventProfile): str
     for (const row of segment.rows) {
       const decoded = decodeEventRow(row, profile)
       if (decoded.kind === 'known' && isAuthoredUser(decoded.event)) {
-        const text = projectEvent(decoded.event).fields.filter(f => f.placement === 'body' && typeof f.value === 'string').map(f => f.value).join(' ')
+        const text = eventSummary(decoded.event)
         content.push(text)
       }
     }

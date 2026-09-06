@@ -16,7 +16,7 @@ function compile() {
 try {
   mkdirSync(path.join(temp, 'events'))
   mkdirSync(path.join(temp, 'generated'))
-  for (const file of ['events/project.ts', 'events/decode.ts', 'generated/events.ts', 'generated/events.schema.json'])
+  for (const file of ['events/project.ts', 'events/value.ts', 'events/decode.ts', 'generated/events.ts', 'generated/events.schema.json'])
     copyFileSync(path.join(frontend, 'src', file), path.join(temp, file))
   writeFileSync(path.join(temp, 'tsconfig.json'), JSON.stringify({ compilerOptions: {
     strict: true, noUncheckedIndexedAccess: true, module: 'ESNext', target: 'ESNext',

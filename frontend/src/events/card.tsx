@@ -1,6 +1,8 @@
 ﻿import type { ReactNode } from 'react'
 import type { Event, PublicEvent, Family } from '../generated/events'
-import { decodeEventRow, record } from './decode'
+import { decodeEventRow } from './decode'
+import { humanValue } from './value'
+import type { HumanValue } from './value'
 import type { EventProfile } from './decode'
 import { projectEvent } from './project'
 import type { EventField, KnownEvent } from './project'
@@ -27,23 +29,27 @@ function Text({ text, world, onOpen, imgBase }: ContentProps & { text: string })
   return <RefMdBody className="event-prose md" html={md(text, imgBase)} world={world} onOpen={onOpen} />
 }
 
-/** Values come only from explicitly placed fields of a validated leaf. */
-function Value({ value, ...props }: ContentProps & { value: unknown }): ReactNode {
-  if (value === null) return <span className="dim">Not recorded</span>
-  if (typeof value === 'string') return <Text text={value} {...props} />
-  if (typeof value === 'number') return <span>{value}</span>
-  if (typeof value === 'boolean') return <span>{value ? 'Yes' : 'No'}</span>
-  if (Array.isArray(value)) return value.length
-    ? <ul className="event-values">{value.map((v, i) => <li key={i}><Value value={v} {...props} /></li>)}</ul>
-    : <span className="dim">None</span>
-  if (record(value)) return <dl className="event-record">{Object.entries(value).map(([key, v]) =>
-    <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd><Value value={v} {...props} /></dd></div>)}</dl>
-  return <span className="dim">Unavailable</span>
+interface ValueProps extends ContentProps { profile: EventProfile; org: string; actor?: (id: string) => ReactNode }
+/** Nested events take the same exhaustive path as top-level events. */
+function Value({ value, ...props }: ValueProps & { value: HumanValue }): ReactNode {
+  switch (value.kind) {
+    case 'text': return <Text text={value.text} {...props} />
+    case 'scalar': return value.value === null ? <span className="dim">Not recorded</span>
+      : <span>{typeof value.value === 'boolean' ? value.value ? 'Yes' : 'No' : value.value}</span>
+    case 'list': return value.items.length ? <ul className="event-values">{value.items.map((v,i)=><li key={i}><Value value={v} {...props}/></li>)}</ul>
+      : <span className="dim">None</span>
+    case 'record': return <dl className="event-record">{value.fields.map(field=><div key={field.key} data-event-field={field.key}>
+      <dt>{field.label}</dt><dd><Value value={field.value} {...props}/></dd></div>)}</dl>
+    case 'event': return <EventCard {...props} row={props.profile === 'public' ? {ev_public:value.event} : {ev:value.event}}/>
+    case 'unavailable': return <span className="dim">Unavailable</span>
+  }
+  const unhandled: never = value
+  return unhandled
 }
-function Fields({ fields, ...props }: ContentProps & { fields: EventField[] }) {
+function Fields({ fields, ...props }: ValueProps & { fields: EventField[] }) {
   return <>{fields.map(f => <div className="event-field" key={f.key} data-event-field={f.key}>
     {fields.length > 1 && <span className="event-field-label">{f.label}</span>}
-    <Value value={f.value} {...props} />
+    <Value value={humanValue(f.value, f.type, props.profile)} {...props} />
   </div>)}</>
 }
 export function eventReference(event: KnownEvent, enclosingOrg: string): TypedRef | null {
@@ -90,7 +96,7 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
   const body = view.fields.filter(f => f.placement === 'body')
   const header = view.fields.filter(f => f.placement === 'header')
   const context = view.fields.filter(f => f.placement === 'context')
-  const bodyContent = <div className="event-body"><Fields fields={body} {...content} /></div>
+  const bodyContent = <div className="event-body"><Fields fields={body} {...content} profile={profile} org={org} actor={actor} /></div>
   return <section className={'event-card event-' + view.family} data-event-variant={event.variant}>
     <header className="event-head">
       <span className="event-family" aria-label={FAMILY_MARK[view.family]} title={FAMILY_MARK[view.family]}>{FAMILY_ICON[view.family]}</span>
@@ -101,13 +107,13 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
       </span>
       <ObjectLabel event={event} org={org} world={content.world} onOpen={content.onOpen} />
       {header.map(f => <div className="event-head-field" key={f.key} data-event-field={f.key}>
-        <span className="dim">{f.label}: </span><Value value={f.value} {...content} />
+        <span className="dim">{f.label}: </span><Value value={humanValue(f.value, f.type, profile)} {...content} profile={profile} org={org} actor={actor} />
       </div>)}
     </header>
     {body.length > 0 && (preview
       ? <ReceivedMailBody>{bodyContent}</ReceivedMailBody> : bodyContent)}
     {context.length > 0 && <details className="event-context">
-      <summary>Context</summary><Fields fields={context} {...content} />
+      <summary>Context</summary><Fields fields={context} {...content} profile={profile} org={org} actor={actor} />
     </details>}
   </section>
 }
