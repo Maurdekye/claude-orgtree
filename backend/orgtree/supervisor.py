@@ -3555,12 +3555,8 @@ def _publish_handoff_record(org: Org, nid: str, dst: str, old_sid: str,
             return None
         out = handoff.write_generation(sd, gen, art, lines)
         if out and handoff_flag_on():
-            org._notify([nid],
-                        f"A handoff record for this boundary is at handoff-g{gen}/record.md "
-                        f"in your working folder: a citation index of instructions, tool "
-                        f"calls, artifacts and mail built from files, with line refs into "
-                        f"transcript.jsonl — not memory, and not evidence that any "
-                        f"provider context carried over.")
+            org._notify_ev([nid], events.mint("lifecycle.handoff_record", _SYSTEM_ACTOR,
+                                              _node_ref(org, nid), generation=int(gen)))
         return out
     except Exception as e:                                       # noqa: BLE001
         print(f"[orgtree] {org.d['slug']}/{nid}: handoff record skipped: {e!r}")
@@ -18585,11 +18581,9 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 # case — it is the one agent whose reason to consult this
                 # bearer just changed — and `_notify` de-duplicates, so the
                 # self-rehired case (parent == successor) still sends one.
-                o2._notify([o2.node(nid)["parent"],
-                            o2.node(nid).get("successor")],
-                           f'Knowledge bearer "{nid}" has exhausted its headroom and is '
-                           f'now a PRESERVING ORACLE — it still answers, but exchanges '
-                           f'are no longer retained by it.')
+                o2._notify_ev([o2.node(nid)["parent"], o2.node(nid).get("successor")],
+                              events.mint("lifecycle.bearer_exhausted", _SYSTEM_ACTOR,
+                                          _node_ref(o2, nid), bearer=nid))
                 store.save_org(o2)
         return
     # per-org compaction threshold (user setting, 50–95%); the env default is

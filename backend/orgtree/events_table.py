@@ -311,6 +311,9 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
                                     by=F("str", B, True)),
     "lifecycle.switch_cancelled": leaf("lifecycle", "NodeRef", node=F("str", B, True),
                                        target=F("str", B, True), by=F("str", B, True)),
+    "lifecycle.switch_dropped": leaf("lifecycle", "NodeRef", node=F("str", B, True),
+                                     target=F("str", B, True), kept=F("str", B, True),
+                                     reason=F("str", B, True)),
     "lifecycle.seat_swapped": leaf(
         "lifecycle", "NodeRef", a=F("str", B, True, _VARIANT), b=F("str", B, True, _VARIANT),
         role=F("L[parent_of_a|parent_of_b|peer_of_a|peer_of_b|child_of_a|child_of_b|a|b]",
