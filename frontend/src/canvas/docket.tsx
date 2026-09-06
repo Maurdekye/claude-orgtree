@@ -1244,8 +1244,7 @@ function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark,
             {items.map((t, i) => (
               <li key={i}>
                 <RefProse text={t} world={refWorld} onOpen={onOpenRef}
-                  index={refIndex} onPick={onGoToItem}
-                  onFocusAgent={onGoToAgent} />
+                  index={refIndex} onPick={onGoToItem} />
               </li>
             ))}
           </ul>}
@@ -1348,8 +1347,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         {item.objective
           ? <div className="docket-desc-body">
               <RefProse text={item.objective} world={refWorld}
-                onOpen={onOpenRef} index={refIndex} onPick={onGoToItem}
-                onFocusAgent={goToAgent} />
+                onOpen={onOpenRef} index={refIndex} onPick={onGoToItem} />
             </div>
           : <div className="dim docket-list-empty">
               no description — this item predates the rule that every item
@@ -1389,8 +1387,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           {/* the reason is written as several lines; a plain <div> ran them together */}
           <div className="docket-attention-body">
             <RefProse text={manualAttn.reason} world={refWorld}
-              onOpen={onOpenRef} index={refIndex} onPick={onGoToItem}
-              onFocusAgent={goToAgent} />
+              onOpen={onOpenRef} index={refIndex} onPick={onGoToItem} />
           </div>
         </div>
       )}

@@ -368,35 +368,32 @@ export function RefChip({ r, onOpen }: {
 /** Prose with its canonical references rendered. With no `onOpen` every chip
  *  is inert, which is the correct read-only rendering rather than a special
  *  case each surface has to remember. */
-/** THE ONE A SURFACE ACTUALLY RENDERS. Two matchers run over the same prose:
- *  canonical tokens (`@item:org/slug`), then — on the text BETWEEN them — the
- *  bare-slug mentions the docket already linked.
- *
- *  ⚠ TYPED FIRST, AND THAT ORDER IS LOAD-BEARING. A token contains a slug:
- *  `@item:orgtree/alpha` ends in `alpha`. Running the bare matcher over the
- *  whole string would find that inner `alpha` and cut the token in half. Its
- *  boundary rules do reject a slug preceded by `/`, so today it would decline
- *  anyway — but that is a second, independent rule agreeing by luck, and this
- *  ordering does not depend on it. */
-export function RefProse({ text, world, onOpen, index, onPick,
-  onFocusAgent }: {
+/** THE ONE A SURFACE ACTUALLY RENDERS. Canonical references that the author
+ *  explicitly wrote (`@item:org/slug`, `@agent:org/name`, etc.) are always
+ *  linkified. Bare item names retain the docket's existing navigation, but
+ *  bare agent names are deliberately excluded: a stale or ordinary agent word
+ *  must not become a destination merely because it matches the catalogue. */
+export function RefProse({ text, world, onOpen, index, onPick }: {
   text: string
   world: RefWorld
   onOpen?: (r: ResolvedRef) => void
-  /** the bare-name index — items and agents in one namespace. Omit it and
-   *  only canonical tokens are linked. */
+  /** the existing bare-name index; only item entries are used here */
   index?: MentionIndex
   onPick?: (name: string) => void
+  /** retained for callers; bare agent entries are filtered before rendering */
   onFocusAgent?: (id: string) => void
 }) {
   const runs = useMemo(() => splitTypedRefs(text, world), [text, world])
+  const itemIndex = useMemo(() => index && new Map(
+    [...index].filter(([, ref]) => ref.kind === 'item')),
+    [index])
   return (
     <>
       {runs.map((p, i) => (p.ref
         ? <RefChip key={i} r={p.ref} onOpen={onOpen} />
-        : (index && index.size
-          ? <WorkRefText key={i} text={p.text} index={index} onPick={onPick}
-              onFocusAgent={onFocusAgent} />
+        : (itemIndex?.size && onPick
+          ? <WorkRefText key={i} text={p.text} index={itemIndex}
+              onPick={onPick} />
           : <span key={i}>{p.text}</span>)))}
     </>
   )

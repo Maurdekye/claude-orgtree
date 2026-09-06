@@ -388,41 +388,23 @@ test('§11b the handles check runs before the index, so a kind this panel '
   assert.equal(r.outcome, 'elsewhere')
 })
 
-// --------------------------------- §12: an explicit token outranks a collision
+// --------------------------------- §12: prose requires explicit references
 
-test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
-  + 'happens to share the name', async () => {
-  // ⚠ THE ORG REALLY HAS THIS COLLISION. An agent named `checklist-evidence`
-  // works on items that could easily carry the same name, and the shared
-  // mention index resolves such a bare word to the ITEM — deliberately, and
-  // that rule is right for a bare word. It must not overrule a writer who
-  // typed `@agent:orgtree/checklist-evidence` and thereby said which they
-  // meant.
-  //
-  // What keeps it true is the ORDER inside RefProse: canonical tokens are cut
-  // out first, so the bare matcher only ever sees the text BETWEEN them and
-  // can never reach inside one. (Its boundary rules would also decline a slug
-  // preceded by `/` — a second, independent rule agreeing by luck, which this
-  // must not depend on.)
-  //
-  // ⚠ AND THE INDEX IS THE REAL ONE, built by `buildMentionIndex` with the
-  // name registered as BOTH an item and an agent. A hand-rolled Map would let
-  // this pass without the collision ever existing — which is the failure mode
-  // that once let a "leak" control of mine pass for days.
-  const NAME = 'checklist-evidence'
+test('§12 bare agent names stay plain, bare items link, explicit refs remain links', async () => {
+  const LIVE = 'live-agent'
+  const RETIRED = 'retired-agent'
+  const ITEM = 'checklist-evidence'
   const index = buildMentionIndex(
-    [{ slug: NAME } as WorkItem], [[NAME, 'opus'] as const])
-  assert.equal(index.get(NAME)?.kind, 'item',
-    'the fixture must really collide, with the item winning the bare word')
+    [{ slug: ITEM } as WorkItem], [[LIVE, 'opus'], [RETIRED, 'haiku']])
+  const prose = `@agent:${HERE}/${LIVE} then ${LIVE}, ${RETIRED}, and ${ITEM}`
 
-  const picked: string[] = []
-  const focused: string[] = []
   const opened: string[] = []
   const view = await mountView(
-    <RefProse text={`ask @agent:${HERE}/${NAME} about ${NAME}`}
-      world={world()} onOpen={(r) => opened.push(r.ref.kind)}
-      index={index} onPick={(n) => picked.push(n)}
-      onFocusAgent={(id) => focused.push(id)} />,
+    <RefProse text={prose} world={world({
+      agents: new Map([[LIVE, LIVE], [RETIRED, RETIRED]]),
+      tierOf: () => 'opus',
+    })} onOpen={(r) => opened.push(r.ref.kind)} index={index}
+      onPick={() => {}} onFocusAgent={() => {}} />,
     (el) => el)
   await flush()
 
@@ -435,16 +417,14 @@ test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
 
   await inAct(() => (agent as HTMLElement).click())
   assert.deepEqual(opened, ['agent'], 'clicking it opens the AGENT')
-  assert.deepEqual(picked, [], 'and never the item that shares the name')
 
-  // CONTROL: the BARE occurrence of the same word, later in the same string,
-  // still links — as the ITEM, per the collision rule. Without this the check
-  // above could be passing because the index was inert.
+  // CONTROL: both bare live and retired agent names remain ordinary text,
+  // while the bare item link is preserved for docket navigation.
   const bare = view.el.querySelectorAll('button.docket-ref')
-  assert.equal(bare.length, 1, 'the bare mention is still a link')
-  await inAct(() => (bare[0] as HTMLElement).click())
-  assert.deepEqual(picked, [NAME], 'and the bare word went to the item')
-  assert.deepEqual(focused, [], 'the bare word did not go to the agent')
+  assert.equal(bare.length, 1, 'the bare item link was lost or an agent linked')
+  assert.equal(bare[0]!.textContent, ITEM)
+  assert.match(view.el.textContent ?? '', new RegExp(
+    `${LIVE}, ${RETIRED}, and ${ITEM}`))
   await view.unmount()
 })
 
