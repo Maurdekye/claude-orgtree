@@ -8720,7 +8720,7 @@ class Org:
         unsticking it, such as session limits, weekly limits, or fable
         specific limits."
 
-        USER AUTHORITY ONLY — that restriction is the entire safety story:
+        USER OVERRIDE OR SUPERVISOR AUTHORITY: the user may override any freeze; an authenticated superior may release only a descendant:
         an agent that could unstick itself (or a peer) walks straight
         through a spend cap; the ruling says the USER overrides the locks,
         not that the locks stop being locks. Clears, in ONE action: the
@@ -8737,10 +8737,7 @@ class Org:
         result WARNS when one still holds, because unsticking the agent
         does not turn off the org's meters."""
         if actor_kind(actor) != "user":
-            raise LedgerError(
-                "only the user may unstick an agent — these locks exist "
-                "precisely so agents cannot walk themselves (or each other) "
-                "through a limit; ask the user")
+            self._require_authority(actor, nid)
         n = self.node(nid)
         released: list[str] = []
         was = n.pop("frozen", None)
@@ -8756,8 +8753,8 @@ class Org:
             return {"status": f"{nid} is not stuck — nothing to release",
                     "released": []}
         cast("dict[str, Any]", n)["unstuck"] = {
-            "by": USER, "at": now(), **({"was": was} if was else {})}
-        self._notify_ev([nid], _mint("policy.unstuck", actor_of(USER), self.node_ref(nid)))
+            "by": actor, "at": now(), **({"was": was} if was else {})}
+        self._notify_ev([nid], _mint("policy.unstuck", actor_of(actor), self.node_ref(nid)))
         self._log("unstick", actor, {"node": nid, "released": released}, [])
         warnings: list[str] = []
         if self.d.get("spend_frozen"):

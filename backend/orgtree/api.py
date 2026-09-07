@@ -6902,6 +6902,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             raise HTTPException(422, str(e))
     drive: list[str] = []      # nodes whose turn should run after we release the lock
     stale_freeze_resumed: list[str] = []  # switch_model cleared their freeze
+    unstick_resume: tuple[str, list[str], list[str]] | None = None
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
@@ -7644,6 +7645,17 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 org.node(_int_node)     # 422s a bogus target before it acts
                 org._require_authority(body.node, _int_node)
                 result = supervisor.interrupt_turn(body.org, _int_node)
+            elif body.tool == "orgtree_unstick":
+                _unstick_node = str(a.get("node") or "")
+                org.node(_unstick_node)
+                org._require_authority(body.node, _unstick_node)
+                result = org.unstick(body.node, _unstick_node)
+                if result.get("released"):
+                    unstick_resume = (
+                        _unstick_node,
+                        [str(x) for x in result.get("resume_texts") or []],
+                        [str(x) for x in result.get("resume_views") or []],
+                    )
             else:
                 raise LedgerError(f"unknown orgtree tool {body.tool!r}")
             # a verb whose result ROUTED to a superior as mail (an ask or a
@@ -7685,6 +7697,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             # below it is a rewind (opreceipts.witness)
             opreceipts.witness(store.DATA_ROOT, body.org,
                                opreceipts.seq(cast("dict[str, Any]", org.d)))
+    if unstick_resume is not None:
+        _target, _texts, _views = unstick_resume
+        _texts = _texts or [
+            "(orgtree) Your superior manually UNSTUCK you. Handle any mail "
+            "above and continue."
+        ]
+        for i, _text in enumerate(_texts):
+            supervisor.send_message(
+                body.org, _target, _text, mail_ping=True, sender=body.node,
+                ping_reason="unstuck",
+                view=_views[i] if i < len(_views) else _text)
+        supervisor.notify(body.org, _target, "turn_started")
     if smoke_req is not None:
         # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
         # the agent nothing about whether its target actually works, so a

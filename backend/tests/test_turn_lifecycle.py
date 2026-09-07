@@ -707,12 +707,10 @@ def hermetic() -> None:
         "org-wide ▶ kept as the bulk action it already is.",
         _the_user_can_unstick_a_node_holding_every_gate_at_once)
 
-    def _unstick_is_never_an_agent_capability():
-        """The constraint that keeps the ruling safe rather than a hole, and
-        it holds TODAY (vacuously — there is no verb) and must keep holding
-        the moment one lands. The user overriding a spend cap is a decision;
-        an AGENT overriding one is the failure mode every gate here exists to
-        prevent."""
+    def _unstick_authority_stays_descendant_only():
+        """The authenticated agent verb is limited to a real descendant.
+        The user may still override any node, while self, peer and unrelated
+        agent targets remain refused."""
         unstick = getattr(Org, "unstick", None)
         if unstick is None:
             # nothing to abuse yet — but pin the SURFACE too, so the verb
@@ -729,18 +727,17 @@ def hermetic() -> None:
         org.hire("boss", "boss", "fable", 10, "f1", **hspec())
         store.save_org(org)
         try:
-            unstick(org, "boss", "f1")            # a superior, not the user
+            unstick(org, "boss", "boss")            # self is still refused
         except Exception as e:                    # noqa: BLE001
             assert "user" in str(e).lower(), (
                 f"unstick refused a non-user actor, but not on authority "
                 f"grounds: {e}")
             return
         raise AssertionError(
-            "an AGENT unstuck another agent — the override must be the "
-            "user's alone")
-    check("unstick · the override is never an agent capability (holds now, "
+            "an unauthorized agent unstick was allowed")
+    check("unstick · agent authority is limited to descendants (holds now, "
           "and pins the agent catalogue so it cannot become one)",
-          _unstick_is_never_an_agent_capability)
+          _unstick_authority_stays_descendant_only)
 
     def _breadcrumbs_line_reaches_writing_agents_only():
         """FR-24c (user ruling 2026-08-12): agents write their own compaction

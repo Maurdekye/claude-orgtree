@@ -166,6 +166,7 @@ _COVERAGE_STATIC: dict[str, str] = {
     "orgtree_cheap_compact": UNROLLED,
     # `supervisor.interrupt_turn` signals a live process inside the lock.
     "orgtree_interrupt": UNROLLED,
+    "orgtree_unstick": TX_POST,
     # -- irreversible work BEFORE the transaction -------------------------
     # both wait for the target's turn boundary (`interrupt_before_archive`)
     # before the lock is taken.
@@ -281,6 +282,7 @@ _RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "orgtree_withdraw_ask": ("withdrawn",),
     "orgtree_cheap_compact": ("node", "old_session"),
     "orgtree_interrupt": ("interrupted",),
+    "orgtree_unstick": ("released", "warnings"),
     "orgtree_self_restart": ("target",),
     "orgtree_self_update": ("target",),
     "orgtree_prime_restart": ("state", "armed"),

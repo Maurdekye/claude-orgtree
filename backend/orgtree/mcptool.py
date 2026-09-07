@@ -1556,6 +1556,17 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["node"]},
     },
     {
+        "name": "orgtree_unstick",
+        "description": (
+            "Release a frozen descendant and resume it using retained replay "
+            "text. Your own node, peers, and unrelated nodes are refused; "
+            "the user retains the broad override and organization-wide "
+            "spending and storage controls remain in force."),
+        "inputSchema": {"type": "object",
+                        "properties": {"node": {"type": "string"}},
+                        "required": ["node"]},
+    },
+    {
         "name": "orgtree_reallocate",
         "description": "Move grant credits between one of your reports and its parent: positive delta grants more, negative claws back unused credits.",
         "inputSchema": {"type": "object",
