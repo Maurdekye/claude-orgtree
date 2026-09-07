@@ -248,6 +248,51 @@ uiTest('§2 CONTROL: the same sequence with a canvas drag in between focuses the
   })
 
 // ==========================================================================
+// §1b — the ONE-GESTURE trigger (redteam-opus, review 2026-09-07 13:45Z): a
+// press that starts on the eye and DRAGS. No switchboard opens and no zoom-out
+// is needed — the release is `moved`, so the eye branch never consumes the
+// flag, and the very next agent click goes to the switchboard. The eye sits
+// centrally and is a natural place to grab to pan (allowed since 2026-09-03),
+// so this is probably the common accident behind "sometimes ANY agent".
+uiTest('§1b a pan that STARTS on the eye must not send the next agent click to the switchboard',
+  async ({ host }) => {
+    assert.ok(refCam, '§REF did not run')
+    const eye = eyeCard(host)
+    await inAct(() => { eye.dispatchEvent(pointer('pointerdown', 200, 200)) })
+    await flush()
+    await inAct(() => { eye.dispatchEvent(pointer('pointermove', 260, 240)) })
+    await flush()
+    await inAct(() => { eye.dispatchEvent(pointer('pointerup', 260, 240)) })
+    await flush()
+    await advance(600)
+    assert.ok(!switchboard(host), 'a drag from the eye opened the switchboard — not the case under test')
+
+    await clickCard(agentCard(host, 'ceo'))
+    assert.ok(!switchboard(host),
+      `after a pan that began on the eye, the agent click opened the SWITCHBOARD (${show(cam(host))})`)
+    assert.ok(agentDesk(host), 'the agent click opened no desk')
+    assert.ok(same(cam(host), refCam!), `landed at ${show(cam(host))}, reference ${show(refCam!)}`)
+  })
+
+// ==========================================================================
+// §1c — the second trigger (redteam-opus): an eye click taken while the
+// switchboard ALREADY holds focus. The `focusId !== USER` guard keeps that
+// release from consuming the flag, so it was left set for the next agent click.
+uiTest('§1c a second eye click on the open switchboard must not leak into the next agent click',
+  async ({ host, viewport }) => {
+    assert.ok(refCam, '§REF did not run')
+    await clickCard(eyeCard(host))
+    assert.ok(switchboard(host), 'the first eye click did not open the switchboard')
+    await clickCard(eyeCard(host))              // switchboard already open: guard closes the branch
+    assert.ok(switchboard(host), 'the second eye click closed the switchboard')
+    await zoomOut(host, viewport)
+    await clickCard(agentCard(host, 'ceo'))
+    assert.ok(!switchboard(host) && agentDesk(host),
+      `after two eye clicks, the agent click opened the SWITCHBOARD (${show(cam(host))})`)
+    assert.ok(same(cam(host), refCam!), `landed at ${show(cam(host))}, reference ${show(refCam!)}`)
+  })
+
+// ==========================================================================
 // §3 — the eye's own click-to-focus must keep working after the fix: a still
 // press on the eye still opens the switchboard, twice in a row.
 uiTest('§3 GUARD: the eye still focuses on a plain click, and again after zooming out',
