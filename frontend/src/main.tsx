@@ -7,15 +7,22 @@ import ReactDOM from 'react-dom/client'
 import './mobile'   // D-125: stamp html.mobile before first paint
 import App from './App'
 import CrashBoundary, { CrashTestRenderTrigger } from './CrashBoundary'
+import { installFreezeLog } from './freezelog'
+import FreezeLogPage, { isFreezeLogPath } from './FreezeLogPage'
 import './styles.css'
 
 flushPendingReports()
+
+// /debug/freezes shows the freeze log instead of the app; every other path
+// runs the app with the recorder installed (see freezelog.ts)
+const freezePage = isFreezeLogPath()
+if (!freezePage) installFreezeLog()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <CrashBoundary>
       <CrashTestRenderTrigger />
-      <App />
+      {freezePage ? <FreezeLogPage /> : <App />}
     </CrashBoundary>
   </React.StrictMode>,
 )
