@@ -63,6 +63,25 @@ try:
   a,b=[notices.nth(i).bounding_box() for i in range(2)];assert a['y']+a['height']<=b['y'],(a,b)
   children[0].close();page.wait_for_timeout(150);assert notices.count()==1
   children[1].close();page.wait_for_timeout(150);assert notices.count()==0
+  assert page.locator('.popout-notices').count()==0,'orphan notice host after final close'
+  with page.expect_popup() as reopened:page.locator('.test-beta').get_by_role('button',name='Open in new window',exact=True).click()
+  page.locator('.popout-notices .popout-placeholder').wait_for();assert page.locator('.popout-notices').count()==1,'notice host not recreated'
+  reopened.value.close();page.wait_for_timeout(150);assert page.locator('.popout-notices').count()==0
+  # Front-window corners intentionally own a narrow band outside that frame.
+  # Record the overlap tradeoff and prove the back window still accepts its
+  # own title/control actions away from the front window's resize band.
+  page.evaluate('chromeProbe.pinAt("alpha",{x:300,y:180,w:600,h:460});chromeProbe.pinAt("beta",{x:800,y:400,w:600,h:460})')
+  page.wait_for_timeout(100)
+  overlap=page.evaluate('() => {const e=document.elementFromPoint(794,394);return {class:e?.className,owner:e?.closest(".overlay")?.querySelector("h3")?.textContent}}')
+  assert overlap=={'class':'modalpin-rs nw','owner':'beta'},('front resize overlap priority',overlap)
+  alpha=page.locator('.test-alpha').bounding_box()
+  page.mouse.move(794,394);page.mouse.down();page.mouse.move(764,374,steps=6);page.mouse.up();page.wait_for_timeout(70)
+  beta=page.locator('.test-beta').bounding_box();assert beta==dict(x=770,y=380,width=630,height=480),('outer band drag',beta)
+  assert page.locator('.test-alpha').bounding_box()==alpha,'front corner moved back window'
+  page.locator('.test-alpha .modalpin-name').click();page.wait_for_timeout(100)
+  front=page.evaluate('document.elementFromPoint(794,394)?.closest(".overlay")?.querySelector("h3")?.textContent')
+  assert front=='alpha','back titlebar failed to raise its window'
+  page.locator('.test-beta').get_by_role('button',name='close this window',exact=True).click();assert page.locator('.test-beta').count()==0 and page.locator('.test-alpha').count()==1,'overlap close control failed'
   page.evaluate('chromeProbe.agent()');page.locator('.pinwin').wait_for();page.wait_for_timeout(350)
   corners(True)
   win=page.locator('.pinwin');names=win.locator('.cc-head-left > .cc-name');assert names.count()==1,'INERT missing inner identity'

@@ -19,7 +19,7 @@ window.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
 }) as typeof fetch
 function Fixture(){
  const viewportRef=useRef<HTMLDivElement>(null),[open,setOpen]=useState(['alpha','beta']),[jumps,setJumps]=useState(0)
- Object.assign(window,{chromeProbe:{reset:(agent=false)=>agent?commitRect('fixture','builder',rect,{w:1400,h:900}):commitModalRect('alpha',rect),pin:()=>pinModal('alpha',rect),agent:()=>{setOpen([]);addPin('fixture','builder',rect)},requests}})
+ Object.assign(window,{chromeProbe:{reset:(agent=false)=>agent?commitRect('fixture','builder',rect,{w:1400,h:900}):commitModalRect('alpha',rect),pinAt:pinModal,pin:()=>pinModal('alpha',rect),agent:()=>{setOpen([]);addPin('fixture','builder',rect)},requests}})
  return <CurrentOrg.Provider value="fixture"><DeskHosts slug="fixture" map={map}>
  <div ref={viewportRef} style={{position:'fixed',inset:0,overflow:'hidden'}}>
  <output id="jumps">{jumps}</output><div id="flow-marker" style={{width:160,height:40}}>Main canvas marker</div>
