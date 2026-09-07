@@ -696,7 +696,7 @@ button.badge.audience-fold.alert {
 .sq-meta .ctxwheel { flex: none; width: 13px; height: 13px; }
 .sq-actions {
   display: flex; align-items: center; justify-content: flex-start; gap: 4px;
-  min-height: 16px;
+  min-height: 16px; max-width: 100%; flex-wrap: wrap;
 }
 .sq-actions > button {
   position: relative; top: auto; right: auto;

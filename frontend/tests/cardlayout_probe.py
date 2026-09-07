@@ -80,12 +80,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="orgtree-cardlayout-") as tmp:
         out = pathlib.Path(tmp)
         subprocess.run(["node", str(BUILD), str(out)], cwd=FRONTEND, check=True)
-        shot = FRONTEND / "node_modules" / ".cardlayout-probe.png"
+        shot = HERE / "gear-browser-evidence.png"
         with sync_playwright() as pw:
             browser = pw.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page(viewport={"width": 1200, "height": 600}, device_scale_factor=1)
             page.goto((out / "probe.html").as_uri())
             page.wait_for_selector("#normal .sq")
+            page.evaluate("() => document.documentElement.style.setProperty('--invzf', '1.818')")
             values = page.evaluate("""() => {
               const read = (root) => [...document.querySelectorAll(`${root} .sq`)].map((card) => {
                 const r = card.getBoundingClientRect();
@@ -132,6 +133,47 @@ def main() -> int:
             # Capture a real hover state: the existing card design deliberately
             # reveals its action row only while the pointer is over a card.
             page.locator("#normal .sq").nth(1).hover()
+            # First fixture has all six production actions and uses the real
+            # pointer route for the gear callback.
+            page.locator("#normal .sq").nth(0).hover()
+            page.locator("#normal .sq").nth(0).locator(".gearbtn").click()
+            values["gearConfigured"] = page.evaluate("() => window.configured")
+            values["allActionButtons"] = page.evaluate("() => [...document.querySelectorAll('#normal .sq')].map(el => el.querySelectorAll('.sq-actions > button').length)")
+            values["allActionGeometry"] = page.evaluate("""() => {
+              const card = document.querySelector('#normal .sq');
+              const cr = card.getBoundingClientRect();
+              return [...card.querySelectorAll('.sq-actions > button')].map(el => {
+                const r = el.getBoundingClientRect();
+                return {className: el.className, inside: r.left >= cr.left && r.right <= cr.right
+                  && r.top >= cr.top && r.bottom <= cr.bottom};
+              });
+            }""")
+            # Negative control: restore the original single-line rule and
+            # require this same mounted component to overflow.
+            values["originalOverflow"] = page.evaluate("""() => {
+              const style = document.createElement('style');
+              style.textContent = '.sq-actions { max-width: none !important; flex-wrap: nowrap !important; }';
+              document.head.appendChild(style);
+              const card = document.querySelector('#normal .sq');
+              const cr = card.getBoundingClientRect();
+              const gear = card.querySelector('.gearbtn').getBoundingClientRect();
+              const ar = card.querySelector('.sq-actions').getBoundingClientRect();
+              const actions = card.querySelector('.sq-actions');
+              return {gearRight: gear.right, cardRight: cr.right, actionsRight: ar.right,
+                buttonWidth: gear.width, scrollWidth: actions.scrollWidth, clientWidth: actions.clientWidth,
+                outside: gear.right >= cr.right - .5 && actions.scrollWidth > actions.clientWidth};
+            }""")
+            page.reload()
+            page.wait_for_selector("#normal .sq")
+            page.evaluate("() => document.documentElement.style.setProperty('--invzf', '1')")
+            page.locator("#normal .sq").nth(0).hover()
+            values["normalZoom"] = page.evaluate("""() => {
+              const card = document.querySelector('#normal .sq');
+              const cr = card.getBoundingClientRect();
+              const gear = card.querySelector('.gearbtn').getBoundingClientRect();
+              return {inside: gear.left >= cr.left && gear.right <= cr.right
+                && gear.top >= cr.top && gear.bottom <= cr.bottom};
+            }""")
             page.screenshot(path=str(shot))
             mobile = browser.new_page(viewport={"width": 480, "height": 600}, device_scale_factor=1)
             mobile.goto((out / "probe.html").as_uri())
@@ -189,6 +231,18 @@ def main() -> int:
         failures.append(f"pinned card mail action is not leftmost: {values['pinnedActions']!r}")
     if not values["mobileActionsHidden"]:
         failures.append("mobile card controls are hidden without removing the action row")
+    if values.get("gearConfigured") != ["claude-agent"]:
+        failures.append(f"real gear pointer callback routed to {values.get('gearConfigured')!r}")
+    if values.get("allActionButtons", [0])[0] != 6:
+        failures.append(f"all-action fixture rendered {values.get('allActionButtons')!r} buttons")
+    if not values.get("allActionGeometry") or not all(b["inside"] for b in values["allActionGeometry"]):
+        failures.append(f"all-action control escaped card: {values.get('allActionGeometry')!r}")
+    if not values.get("originalOverflow", {}).get("outside"):
+        failures.append(f"original no-wrap rule did not overflow: {values.get('originalOverflow')!r}")
+    if values.get("normal", [{}])[0].get("button", {}).get("w") != 24:
+        failures.append(f"minimum-zoom button did not reach 24px: {values.get('normal', [{}])[0].get('button')!r}")
+    if not values.get("normalZoom", {}).get("inside"):
+        failures.append("normal-zoom gear escaped card")
     print(json.dumps({"measurements": values, "opened": opened, "screenshot": str(shot)}, indent=2))
     if failures:
         print("FAIL:", " | ".join(failures), file=sys.stderr)

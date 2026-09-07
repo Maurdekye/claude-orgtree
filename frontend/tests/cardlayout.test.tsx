@@ -43,7 +43,7 @@ function node(id: string, tier: string, busy: boolean): CanvasNode {
 }
 
 function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
-  pinned = false) {
+  pinned = false, onDocket: (() => void) | undefined = undefined) {
   return <NodeSquare key={n.id} node={n} pos={{ x: 0, y: 0 }} lod={lod} focused={false}
     dragging={false} isDrop={false} seats={seats} codexHire={hire}
     antigravityHire={hire} claudeHire={hire} map={new Map([[n.id, n]])}
@@ -51,6 +51,7 @@ function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
     compactAt={.8} pub={false} maxTop={100} kioskRemaining={null}
     cascadeAlloc onSpawn={noop} onSpawnSide={noop} onSpawnTop={noop}
     onConfig={noop} onInbox={noop} onLineage={noop} onOpenDoc={noop}
+    onDocket={onDocket}
     onRecenter={noop} onJump={noop} onMailLink={noop}
     onDragStart={noop} onDragMove={noop} onDragEnd={noop}
     onDragCancel={noop} onPin={onPin} pinned={pinned} />
@@ -124,9 +125,22 @@ test('pinned cards do not offer a duplicate expand action', async () => {
   finally { await view.unmount() }
 })
 
+test('all-action fixture mounts the gear in the constrained action row', async () => {
+  const n = node('many-actions', 'haiku', false)
+  ;(n as unknown as { documents: unknown[] }).documents = [{ id: 'presented-doc' }]
+  const view = await mountView(card(n, 'mini', noop, false, noop), (el) => el)
+  try {
+    const actions = view.el.querySelector<HTMLElement>('.sq-actions')!
+    assert.equal(actions.querySelectorAll('button').length, 6,
+      'fixture must exercise docket, presented, mail, expand, retire, and gear')
+    assert.ok(actions.querySelector('.gearbtn'), 'gear control is missing')
+  } finally { await view.unmount() }
+})
+
 test('zoomed-out card CSS keeps actions left-aligned and tier accents distinct', () => {
   const css = readFileSync(path.join(__SRC_DIR__, 'styles.css'), 'utf8')
   assert.match(css, /\.sq-actions\s*\{[^}]*justify-content:\s*flex-start/s)
+  assert.match(css, /\.sq-actions\s*\{[^}]*max-width:\s*100%[^}]*flex-wrap:\s*wrap/s)
   assert.match(css, /\.sq\.prov-openai\.busy:not\(\.desk\)[^}]*\{[\s\S]*?--tier-accent/s)
   assert.match(css, /\.sq\.prov-google\.busy:not\(\.desk\)[^}]*\{[\s\S]*?--tier-accent/s)
   for (const tier of ['haiku', 'terra', 'luna', 'flash']) {
