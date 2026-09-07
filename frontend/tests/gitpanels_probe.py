@@ -33,6 +33,7 @@ def run():
     app = FastAPI(); app.include_router(gitapi.router)
     client = TestClient(app)
     requests, errors, results, aborted = [], [], [], []
+    held_snapshot = dict(rid=None, release=threading.Event(), entered=threading.Event())
     body = 'Typed message expands with the window. ' * 80
     event = dict(v=1, variant='ordinary.message', actor=dict(kind='user', id='user'), object=None, engine_authored=False, body=body)
     messages = [dict(role='user', text=body, seq=1, segments=[dict(kind='mail', rows=[dict(id='width-row', at='2026-09-07T00:00:00Z', **{'from':'user'}, kind='message', body=body, ev=event)])]),
@@ -53,8 +54,13 @@ def run():
                 self.reply(dict(messages=messages, total=2, busy=False, pending_mail=[], session_id='width-fixture', node='reader')); return
             if '/git' not in path:
                 self.reply({}); return
+            if path.endswith('/snapshot') and held_snapshot['rid'] and '/'+held_snapshot['rid']+'/' in path:
+                held_snapshot['entered'].set()
+                if not held_snapshot['release'].wait(15):
+                    self.reply({'detail':'INERT held refresh was not released'},503);return
+                self.reply({'detail':'fixture refresh unavailable'},503);return
             response = client.request(self.command, self.path, content=content, headers={'content-type':'application/json'})
-            if path.endswith('/observation') or path.endswith('/watch'): entry['response']=response.json()
+            if path.endswith(('/observation','/watch','/snapshot','/history')): entry['response']=response.json()
             self.reply(response.content, response.status_code)
         def do_GET(self):
             if self.path.startswith('/api/'): self.api()
@@ -108,7 +114,7 @@ def run():
             page.wait_for_function('document.querySelectorAll(".git-loading").length===0',polling=50)
             first.get_by_role('button',name='Branches and history',exact=True).click()
             original_queries=sum(a.rid in r['path'] and 'branches=' in r['path'] for r in requests)
-            page.evaluate('window.originalPanel=document.querySelector(".git-viewport")')
+            page.evaluate('() => { window.originalPanel=document.querySelector(".git-viewport") }')
             first.get_by_role('button',name='Open another panel',exact=True).click()
             page.wait_for_function('document.querySelectorAll(".git-workspace").length===2')
             second_panel = page.locator('.git-workspace').nth(1)
@@ -146,7 +152,7 @@ def run():
             graph_ready(second_panel)
             page.screenshot(path=str(out/'side-by-side.png'))
             results.append('two real repositories side by side; repository and branch selections do not change sibling scroll or queries')
-            page.evaluate('window.secondViewport=document.querySelectorAll(".git-viewport")[1]')
+            page.evaluate('() => { window.secondViewport=document.querySelectorAll(".git-viewport")[1] }')
             for width,height in [(600,410),(820,720)]:
                 page.evaluate('([w,h])=>panelProbe.resize(panelProbe.panels()[1].kind,{x:950,y:70,w,h})',[width,height])
                 page.wait_for_timeout(200)
@@ -193,7 +199,7 @@ def run():
             child.set_viewport_size(dict(width=2400,height=1400));child.wait_for_timeout(300)
             child.locator('.git-ticket-row button').first.click()
             assert child.locator('.git-workspace').count()==1, 'post-refresh navigation must remain rendered and usable'
-            child.evaluate('opener.secondViewport=document.querySelector(".git-viewport")')
+            child.evaluate('() => { opener.secondViewport=document.querySelector(".git-viewport") }')
             # Persisted default differs from the source: a new panel must use its explicit seed.
             gitsettings.change(lambda d:d['selected_by_org'].update({a.slug:a.rid}))
             child.get_by_role('button',name='Open another panel',exact=True).click()
@@ -230,6 +236,73 @@ def run():
             assert page.evaluate('(id)=>!panelProbe.pins()[id]',extra_id), 'org change leaked extra geometry'
             page.wait_for_function('gitPending===0',polling=50)
             results.append('centered reference navigation closes its panel; pinned/detached navigation preserves it; source seed beats persisted default; close/org change remove extra pin geometry; insecure-context ID fallback opens panels')
+            # Actual combined capture survives an explicit refresh pending across detachment,
+            # then a failure. Its original next-page cursor must remain usable.
+            page.goto(f'http://127.0.0.1:{server.server_port}')
+            page.get_by_role('button',name='Open Git repositories',exact=True).click()
+            first=page.locator('.git-workspace');graph_ready(first)
+            active=first.get_by_label('Repository',exact=True).input_value()
+            original_capture=next(r['response'] for r in reversed(requests) if r['path'].endswith('/'+active+'/snapshot'))
+            next_cursor=original_capture['history']['next_cursor'];assert next_cursor,'INERT paging fixture'
+            first.locator('.git-viewport').evaluate('e=>{e.scrollTop=700;e.scrollLeft=0}')
+            page.clock.run_for(32)
+            page.evaluate('() => { window.retainedViewport=document.querySelector(".git-viewport") }')
+            before=first.locator('.git-viewport').evaluate('e=>({top:e.scrollTop,left:e.scrollLeft})')
+            held_snapshot['rid']=active
+            first.locator('.git-toolbar').get_by_role('button',name='Refresh',exact=True).click()
+            assert held_snapshot['entered'].wait(5),'INERT refresh hold'
+            first.locator('.git-loading').wait_for()
+            assert page.evaluate('retainedViewport===document.querySelector(".git-viewport")')
+            assert first.locator('.git-viewport').evaluate('e=>({top:e.scrollTop,left:e.scrollLeft})')==before
+            assert first.locator('.git-node').count()>0,'pending refresh removed visible nodes'
+            with page.expect_popup() as popped:first.get_by_role('button',name='Open in new window',exact=True).click()
+            child=popped.value;child.on('pageerror',lambda e:errors.append(str(e)))
+            assert child.evaluate('opener.retainedViewport===document.querySelector(".git-viewport")')
+            held_snapshot['release'].set();held_snapshot['rid']=None
+            child.get_by_role('alert').filter(has_text='fixture refresh unavailable').wait_for()
+            child.wait_for_function('[...document.querySelectorAll("link[rel=stylesheet]")].every(e=>e.sheet)',polling=50)
+            page.clock.run_for(32)
+            assert child.locator('.git-viewport').evaluate('e=>({top:e.scrollTop,left:e.scrollLeft})')==before,(before,child.locator('.git-viewport').evaluate('e=>({top:e.scrollTop,left:e.scrollLeft,sh:e.scrollHeight,ch:e.clientHeight})'))
+            assert child.locator('.git-node').count()>0,'failed refresh removed visible nodes'
+            child.set_viewport_size(dict(width=2000,height=1000));child.wait_for_timeout(250)
+            vb=child.locator('.git-viewport').bounding_box();cb=child.locator('.git-canvas').bounding_box()
+            assert cb['width']>=vb['width']-16 and child.locator('.git-viewport').evaluate('e=>e.scrollTop')==700,('failed refresh resizing',vb,cb)
+            previous_pages=sum('/history?' in r['path'] for r in requests)
+            child.locator('.git-viewport').evaluate('e=>e.scrollTop=e.scrollHeight-e.clientHeight')
+            graph_ready(child.locator('.git-workspace'))
+            page.wait_for_function('gitPending===0',polling=50)
+            history_requests=[r for r in requests if '/history?' in r['path']]
+            assert len(history_requests)>previous_pages,'failed refresh lost paging cursor'
+            from urllib.parse import parse_qs
+            assert parse_qs(urlsplit(history_requests[-1]['path']).query)['cursor']==[next_cursor],'cursor switched capture'
+            # Shrinking selected history must clamp the old pan to the short graph and
+            # render its real nodes; expanding it again keeps the correct viewport observer.
+            child.get_by_role('button',name='Branches and history',exact=True).click()
+            child.get_by_label('long',exact=True).uncheck()
+            graph_ready(child.locator('.git-workspace'))
+            child.get_by_role('button',name='Branches and history',exact=True).click()
+            child.wait_for_timeout(200)
+            assert child.locator('.git-viewport').evaluate('e=>e.scrollTop')==0,'short selection kept stale pan'
+            assert child.locator('.git-node').count()>0,'short selection culled every node'
+            child.set_viewport_size(dict(width=2400,height=1300));child.wait_for_timeout(200)
+            vb=child.locator('.git-viewport').bounding_box();cb=child.locator('.git-canvas').bounding_box()
+            assert abs(vb['width']-cb['width'])<2 and abs(vb['height']-cb['height'])<2,('selection resize',vb,cb)
+            child.get_by_role('button',name='Branches and history',exact=True).click();child.get_by_label('long',exact=True).check()
+            graph_ready(child.locator('.git-workspace'))
+            child.get_by_role('button',name='Branches and history',exact=True).click()
+            child.locator('.git-viewport').evaluate('e=>e.scrollTop=900')
+            other=second if active==a.rid else a.rid
+            child.get_by_label('Repository',exact=True).select_option(other)
+            graph_ready(child.locator('.git-workspace'))
+            child.wait_for_timeout(100)
+            assert child.locator('.git-viewport').evaluate('e=>e.scrollTop')==0,'repository switch failed to reset position'
+            assert child.locator('.git-node').count()>0,'repository reset left blank viewport'
+            child.screenshot(path=str(out/'captured-combined.png'))
+            child.close();page.wait_for_timeout(100)
+            if first.get_by_role('button',name='pin this to the window',exact=True).count():
+                first.get_by_role('button',name='pin this to the window',exact=True).click()
+            first.get_by_role('button',name='close this window',exact=True).click()
+            results.append('pending refresh detaches with same DOM/pan; failure retains graph and original paging cursor; branch shrink and repository switch render correct reset; resizing still observes child')
             page.goto(f'http://127.0.0.1:{server.server_port}/?desk=1')
             page.locator('[data-mail-id="width-row"]').wait_for()
             with page.expect_popup() as popped:page.get_by_role('button',name='Open in new window',exact=True).click()
@@ -243,6 +316,6 @@ def run():
             assert not errors,errors
         print(json.dumps(dict(passed=results,git_widths=widths,typed_desk_widths=desk,data=str(DATA),aborted_on_close=aborted,polling=dict(busy_poll=busy_poll,cadence=cadence,same_repo=same_repo,different_repo=different_repo,before_detach=before_detach,detached=detached_poll,returned=returned_poll,last_b_close=last_b_close,last_close=last_close)),indent=2))
     finally:
-        server.shutdown();thread.join();server.server_close();gw.scheduler.stop();client.close()
+        held_snapshot['release'].set();server.shutdown();thread.join();server.server_close();gw.scheduler.stop();client.close()
 
 if __name__=='__main__':run()

@@ -83,6 +83,41 @@ export function PopoutButton() {
   </button>
 }
 
+/** Linked sheets load after adoption. An unstyled viewport can clamp a valid
+ * saved scroll to zero; retry once its real styles and React layout are ready.
+ * Any user input cancels the retry so a late sheet never undoes their action. */
+function restoreWhenStyled(frame: Window, current: () => boolean, restore: () => void, settled: () => void, failed: () => void) {
+  const doc = frame.document
+  let ended = false, untouched = true, raf: number | undefined
+  const input = () => { untouched = false; settled() }
+  const cleanup = () => {
+    ended = true
+    if (raf !== undefined) frame.cancelAnimationFrame(raf)
+    doc.removeEventListener('load', ready, true); doc.removeEventListener('error', error, true)
+    for (const event of ['pointerdown', 'keydown', 'wheel', 'beforeinput']) doc.removeEventListener(event, input, true)
+  }
+  const ready = () => {
+    if (ended || !current()) return
+    const links = [...doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')]
+    if (links.some(link => !link.disabled && !link.sheet)) return
+    if (raf !== undefined) frame.cancelAnimationFrame(raf)
+    raf = frame.requestAnimationFrame(() => {
+      if (ended || !current()) return
+      try { if (untouched) restore(); settled() } catch { cleanup(); failed(); return }
+      cleanup()
+    })
+  }
+  const error = (event: Event) => {
+    if (!ended && current() && (event.target as Element | null)?.matches?.('link[rel="stylesheet"]')) {
+      cleanup(); failed()
+    }
+  }
+  doc.addEventListener('load', ready, true); doc.addEventListener('error', error, true)
+  for (const event of ['pointerdown', 'keydown', 'wheel', 'beforeinput']) doc.addEventListener(event, input, true)
+  ready()
+  return cleanup
+}
+
 function preservePosition(root: HTMLElement) {
   const scrolling = [root, ...root.querySelectorAll<HTMLElement>('*')]
     .filter((e) => e.scrollTop || e.scrollLeft).map((e) => [e, e.scrollLeft, e.scrollTop] as const)
@@ -123,6 +158,7 @@ export function MovableSurface({ kind, title, org = null, editable = true, child
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
   const child = useRef<Window | null>(null)
+  const pendingRestore = useRef<(() => void) | null>(null)
   const cleanups = useRef<(() => void)[]>([])
   const epoch = useRef(0)
   const latest = useRef({ anchor, parent, onDetached, flush, org, title })
@@ -143,7 +179,8 @@ export function MovableSurface({ kind, title, org = null, editable = true, child
     return fallback.current
   }
   const redock = () => {
-    const restore = preservePosition(parts.container)
+    const restore = pendingRestore.current ?? preservePosition(parts.container)
+    pendingRestore.current = null
     epoch.current++
     const w = child.current; child.current = null
     for (const fn of cleanups.current.splice(0).reverse()) { try { fn() } catch { /* cleanup is idempotent */ } }
@@ -238,6 +275,9 @@ export function MovableSurface({ kind, title, org = null, editable = true, child
         editable, window: w, redock, flush: () => latest.current.flush?.() }))
       setOwner(d); setDetached(true); setError(''); latest.current.onDetached?.(true)
       restore(); w.focus()
+      pendingRestore.current = restore
+      cleanups.current.push(restoreWhenStyled(w, () => epoch.current === transaction && !w!.closed, restore, () => { pendingRestore.current = null },
+        () => { setError('Window styling failed. Your surface was returned.'); redock() }))
     } catch (e) {
       redock()
       try { w?.close() } catch { /* inaccessible */ }

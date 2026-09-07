@@ -250,9 +250,6 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
       vp.scrollLeft = Math.max(0, layout.trunkX - vp.clientWidth / 2)
       vp.scrollTop = 0
       initialPosition.current = false
-      // Publish the programmatic reset now: child layout effects may have
-      // measured the previous scroll before this parent effect runs.
-      setView({ top: vp.scrollTop, left: vp.scrollLeft, width: vp.clientWidth, height: vp.clientHeight })
     }
   }, [layout])
   const updateView = useCallback(() => {
