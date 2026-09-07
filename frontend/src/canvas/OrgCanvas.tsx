@@ -38,6 +38,7 @@ import { clearRegion, fitZoom } from './clearRect'
 import type { Region } from './clearRect'
 import { isCompact, isMobile, MaybePortal, sheetGate } from '../mobile'
 import { dropConvo, renameConvo } from '../convo'
+import { isModalPinned } from './modalpin'
 
 export interface OrgCanvasProps {
   tree: TreePayload
@@ -129,6 +130,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   onOpenMailHandled, openDocAt, onOpenDocHandled }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
+  // A pinned node-config remains mounted as a window; clicking its same
+  // opener toggles visibility, while another agent's gear selects that agent.
+  const toggleConfig = useCallback((id: string) => {
+    setConfigId((v) => isModalPinned('node-config') && v === id ? null : id)
+  }, [])
   const [lineageId, setLineageId] = useState<string | null>(null)
   const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
@@ -2438,7 +2444,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
               /* switchboard panel headers mirror the desk header identically
                  (user spec 2026-08-19): the gen badge and gear in each panel
                  open the same canvas-level lineage/config surfaces */
-              onNodeLineage={setLineageId} onNodeConfig={setConfigId}
+              onNodeLineage={setLineageId} onNodeConfig={toggleConfig}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
@@ -2468,7 +2474,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
               onSpawn={(t) => spawn(n.id, t)}
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
               onSpawnTop={(t) => spawnAbove(n, t)}
-              onConfig={() => setConfigId(n.id)}
+              onConfig={() => toggleConfig(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onDocket={() => setAgentDocketId(n.id)}
               onOpenDoc={setDocView}
@@ -2603,7 +2609,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
           targetOf={cardRectOf} op={op} toast={toast} pub={!!tree.public}
           compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
           pxc={pxPerCredit} onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
-          onLineage={setLineageId} onConfig={setConfigId} onJump={centerOn} />
+          onLineage={setLineageId} onConfig={toggleConfig} onJump={centerOn} />
       )}
       {/* nav cluster (user spec): bottom-LEFT beside the agents tray, so
           every zoom target lives in one stack — ordered top to bottom:
@@ -2887,7 +2893,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                   onClick={() => setInboxId(sheetId)}>✉</button>
                 {!tree.public &&
                   <button className="ms-btn" title="permissions & settings"
-                    onClick={() => setConfigId(sheetId)}>⚙</button>}
+                    onClick={() => toggleConfig(sheetId)}>⚙</button>}
                 <button className="ms-btn ms-close" onClick={() => setSheetId(null)}>✕</button>
               </header>
               {sheetDogs && myDogs.length > 0 && (
@@ -2910,7 +2916,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                   maxTop={tree.max_top_grant ?? 1000} pxc={pxPerCredit}
                   onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
                   onLineage={() => setLineageId(sheetId)}
-                  onConfig={() => setConfigId(sheetId)}
+                  onConfig={() => toggleConfig(sheetId)}
                   onJump={(id) => {
                     if (id !== USER && mapRef.current.has(id)) setSheetId(id)
                   }} />
