@@ -12,7 +12,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ReactNode } from 'react'
 import type {
   CacheForecast, ChatMessage, ChatPayload, CodexRouteInfo, HistoryItem, PendingMail,
-  Denial, Readiness, ScratchPayload, TurnStat,
+  Denial, Readiness, ScratchPayload, TreeFrozen, TurnStat,
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
@@ -246,6 +246,35 @@ export function deriveTurnState(node: {
   return 'idle'
 }
 
+/** Presentation precedence only: never change execution/lifecycle or reported state. */
+export function isUsageFrozen(node: {
+  state?: string; frozen?: TreeFrozen | null; limit_locked?: boolean
+}): boolean {
+  return node.state === 'live' && !!node.frozen
+    && freezeKind(node.frozen, node.limit_locked) === 'limit'
+}
+
+/** Capacity reset is not a promise to resume. Only a new server record clears Frozen. */
+export function UsageFreezeStatus({ frozen, variant = 'card' }: {
+  frozen: TreeFrozen; variant?: 'card' | 'banner' | 'tray' | 'map'
+}) {
+  const stamp = frozen.until_ts
+  const deadline = typeof stamp === 'number' && Number.isFinite(stamp) && stamp > 0
+    ? stamp * 1000 : null
+  const left = useCountdown(deadline)
+  const time = left === null ? null : left <= 0 ? 'reset due' : countdownText(left)
+  const title = left === null
+    ? `Frozen: ${frozen.until || 'reset time unknown'}`
+    : left <= 0 ? 'Frozen: recorded reset reached; awaiting server release'
+      : `Frozen: capacity reset in ${countdownText(left)}; release is controlled by the server`
+  return <span className={'usage-freeze-status ' + (variant === 'banner'
+    ? 'turn-status-banner frozen' : variant === 'tray' ? 'tray-status' : '')}
+    title={title} aria-label={title}>
+    <span className={variant === 'banner' ? 'turn-status-label' : 'sq-idle frozen'}>{stateLabel('frozen')}</span>
+    {time && <span className={variant === 'banner' ? 'turn-status-time' : 'sq-idle-time'}>{time}</span>}
+  </span>
+}
+
 /** Unified workstate presentation for NodeSquare. Subscribes to ageClockSecond
  * so active turn elapsed time and idle time tick every second without props/SSE updates. */
 export function AgentWorkstate({ node, turn, live = true }: {
@@ -254,6 +283,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
   const state = deriveTurnState(node)
+  if (isUsageFrozen(node) && node.frozen) return <UsageFreezeStatus frozen={node.frozen} />
   if (state === 'working') {
     return (
       <>
@@ -318,6 +348,7 @@ export function TrayStatus({ node, turn, live = true }: {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
   const state = deriveTurnState(node)
+  if (isUsageFrozen(node) && node.frozen) return <UsageFreezeStatus frozen={node.frozen} variant="tray" />
   if (state === 'working') {
     return (
       <span className="tray-status">
@@ -385,6 +416,7 @@ export function TrayStatus({ node, turn, live = true }: {
 /** Unified indicator dot for mapMode. */
 export function MapModeIndicator({ node }: { node: CanvasNode }) {
   const state = deriveTurnState(node)
+  if (isUsageFrozen(node)) return <FrozenIcon fontSize="inherit" className="tray-frozen" titleAccess="Frozen" />
   if (state === 'working') {
     return (
       <span title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
@@ -415,6 +447,7 @@ export function MapTurnAge({ node, turn }: { node: CanvasNode; turn?: TurnStat |
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
   const state = deriveTurnState(node)
+  if (isUsageFrozen(node) && node.frozen) return <UsageFreezeStatus frozen={node.frozen} variant="map" />
   if (state !== 'idle') {
     return (
       <span className="map-ago"
@@ -439,13 +472,15 @@ export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
  * while Idle measures the last completed turn. Canvas cards continue to use
  * LastTurnAge; the focused desk deliberately has no second age chip. */
 export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
-  reportedSummary, recordedState, tier }: {
+  reportedSummary, recordedState, tier, frozen }: {
+  frozen?: TreeFrozen | null;
   state: TurnBannerState; turn?: TurnStat | null; inflightAt?: string | null;
   tasks?: number | null; reportedSummary?: string | null; recordedState?: string | null;
   tier?: string | null
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
+  if (frozen) return <UsageFreezeStatus frozen={frozen} variant="banner" />
   const active = state !== 'idle'
   const reference = active ? inflightAt : turn?.at
   const elapsed = reference ? ago(reference) : '—'
@@ -1723,7 +1758,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // Waiting for a slot and compacting are desk activity, but neither proves
   // this CLI is claimed. The process cue lights only for an actual busy turn.
   const processActive = Boolean(node.busy || chat?.busy)
-  const bannerDuplicatesStatus = Boolean(node.last_status
+  const bannerDuplicatesStatus = Boolean(!isUsageFrozen(node) && node.last_status
     && node.last_status.status === turnBannerState)
   const processAction = node.proc_control_action
   const toggleProcess = useCallback(() => {
@@ -1883,6 +1918,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               onToggle={!pub && live && processAction ? toggleProcess : undefined} />
           </span>
           <TurnStatusBanner state={turnBannerState} turn={lastTurn}
+            frozen={isUsageFrozen(node) ? node.frozen : null}
             inflightAt={node.inflight_at} tasks={node.tasks}
             recordedState={node.last_status?.status}
             reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined}
@@ -1943,7 +1979,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <CacheForecastMark forecast={node.cache_forecast} busy={processActive} />
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
-            title={node.last_status.summary}>{stateLabel(node.last_status.status)}</span>}
+            title={node.last_status.summary}>{isUsageFrozen(node) ? 'Reported ' : ''}{stateLabel(node.last_status.status)}</span>}
         {/* the collapsed count of what this agent is answerable for; click →
             the tab that lists it. It counts EXACTLY the rows the tab shows
             (both read `agentItems`), because a chip that disagrees with the

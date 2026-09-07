@@ -23,7 +23,7 @@ import type {
   Pt,
 } from './shared'
 import {
-  AgentWorkstate, ContextWheel, deriveTurnState, DeskChat, DestinationBusy, LastTurnAge,
+  AgentWorkstate, ContextWheel, deriveTurnState, isUsageFrozen, DeskChat, DestinationBusy, LastTurnAge,
   MapModeIndicator, MapTurnAge, RouteBadge,
 } from './desk'
 import { DocChips } from './docs'
@@ -1342,7 +1342,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           </span>}
         </div>
         <span className="map-name">{node.id}</span>
-        {deriveTurnState(node) !== 'idle' ? (
+        {isUsageFrozen(node) || deriveTurnState(node) !== 'idle' ? (
           <MapTurnAge node={node} turn={lastTurn} />
         ) : (
           <LastTurnAge turn={lastTurn} busy={node.busy} variant="map" />
@@ -1415,7 +1415,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           <ContextWheel occ={node.occupancy} cw={node.context_window}
             est={node.occupancy_est} compactAt={compactAt} />
           <div className="sq-workstate">
-            {deriveTurnState(node) !== 'idle' ? (
+            {isUsageFrozen(node) || deriveTurnState(node) !== 'idle' ? (
               <AgentWorkstate node={node} turn={lastTurn} live={live} />
             ) : (
               <>

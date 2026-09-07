@@ -5821,3 +5821,7 @@ html.mobile .popout-button { display: none; }
 
 .popout-recovery { flex-direction: column; }
 .popout-recovery .desk-body { flex: 1; min-height: 0; width: 100%; }
+
+/* One shared-clock presentation for a live usage-frozen agent. */
+.usage-freeze-status { display: inline-flex; align-items: center; gap: 4px; color: var(--ice); white-space: nowrap; }
+.usage-freeze-status .sq-idle, .usage-freeze-status .sq-idle-time { color: inherit; }
