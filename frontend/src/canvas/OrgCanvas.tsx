@@ -209,8 +209,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // the eye's unread-mail GLOW is gone (user ruling 2026-08-04: only agents
   // that need the user's answer glow; the header ask icon carries the rest).
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
-  const [, setInboxSeen] = useState(
-    () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
+  // guarded like every other client-state read in this file: a browser that
+  // BLOCKS storage throws from the `localStorage` getter itself, and this one
+  // runs during OrgCanvas's FIRST RENDER — unguarded it took the whole app to
+  // the crash screen the moment the tree loaded, which is the same startup
+  // failure as the crash reporter's (redteam-opus 2026-09-07, seen in Chrome).
+  const [, setInboxSeen] = useState(() => {
+    try { return localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '' }
+    catch { return '' }
+  })
   // ⚠ NOT A LITERAL. This used to spell out eleven prices of its own and the
   // copy went stale: `astra` reached ledger.TIERS and shared.ts's codex table
   // but never this line, so a payload without `tiers` priced an astra seat at

@@ -20,7 +20,7 @@ import { mock } from 'node:test'
 const beacon = mock.fn(() => true)
 ;(navigator as unknown as { sendBeacon: typeof beacon }).sendBeacon = beacon
 
-import { reportCrash } from '../src/crashReporter'
+import { reportCrash, flushPendingReports } from '../src/crashReporter'
 
 const REPORTS_KEY = 'orgtree.crashReports'
 const readStored = (): Array<{ id: string; message: string }> =>
@@ -98,4 +98,65 @@ test('a click breadcrumb rides the next report — "what had the user just done"
   assert.equal(crumb.kind, 'click')
   assert.match(crumb.detail, /Save changes/)
   document.body.removeChild(button)
+})
+
+// ---------------------------------------------------------- denied storage
+// A browser that BLOCKS storage for the origin throws SecurityError from the
+// `localStorage` GETTER — not from getItem — so resolving storage and reading
+// it must both happen inside guarded code. main.tsx calls
+// flushPendingReports() BEFORE ReactDOM.createRoot, so a throw here left the
+// entire app (and /debug/freezes) blank. Verified in a real Chromium too:
+// tests/crashstorage_probe.py.
+//
+// ⚠ DENY BOTH BINDINGS. In a browser `window === globalThis`, so blocked
+// storage throws whichever one the code names. Under this harness they are
+// DIFFERENT objects (harness.ts copies jsdom's localStorage onto globalThis),
+// and a bundle's bare `localStorage` resolves to the GLOBAL one — so denying
+// only `window.localStorage` leaves the real read working and every assertion
+// below passes for free. That vacuous version of this test was seen to pass
+// against the UNGUARDED code (redteam-opus 2026-09-07); this one fails it.
+const withDeniedStorage = (fn: () => void): void => {
+  const targets = [window, globalThis] as unknown as Array<Record<string, unknown>>
+  const saved = targets.map((t) => Object.getOwnPropertyDescriptor(t, 'localStorage'))
+  for (const t of targets) {
+    Object.defineProperty(t, 'localStorage', {
+      configurable: true,
+      get() { throw new Error('SecurityError: Access is denied for this document.') },
+    })
+  }
+  try {
+    // POSITIVE CONTROL: if a redefinition silently failed, the assertions
+    // below would pass for free against working storage.
+    assert.throws(() => void window.localStorage, /denied/, 'window denial must be in effect')
+    assert.throws(() => void localStorage, /denied/, 'global denial must be in effect')
+    fn()
+  } finally {
+    targets.forEach((t, i) => {
+      const own = saved[i]
+      if (own) Object.defineProperty(t, 'localStorage', own)
+      else delete t.localStorage
+    })
+  }
+}
+
+test('flushPendingReports() does not throw when the browser denies storage', () => {
+  withDeniedStorage(() => {
+    assert.doesNotThrow(() => flushPendingReports())
+  })
+})
+
+test('reportCrash() still delivers when the browser denies storage', () => {
+  withDeniedStorage(() => {
+    const before = beacon.mock.callCount()
+    assert.doesNotThrow(() => reportCrash({
+      kind: 'window-error', message: 'denied-storage', stack: 'x',
+    }))
+    assert.equal(beacon.mock.callCount(), before + 1,
+      'a report that cannot be filed locally must still be beaconed')
+  })
+})
+
+test('storage works again once the denial is lifted (the shim leaks nothing)', () => {
+  const report = reportCrash({ kind: 'window-error', message: 'after-denial', stack: 'x' })
+  assert.equal(readStored()[readStored().length - 1]!.id, report.id)
 })

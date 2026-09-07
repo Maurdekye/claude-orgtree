@@ -103,8 +103,38 @@ console.error = (...args: unknown[]) => {
 }
 
 // -------------------------------------------------------------- persistence
+/** The page's localStorage, or null when the browser denies it. The GETTER
+ *  ITSELF throws (SecurityError) where storage is blocked for the origin —
+ *  "block all cookies", some enterprise policies, an opaque origin — so
+ *  RESOLVING storage and READING it must both happen inside guarded code:
+ *  `localStorage.getItem(...)` throws before getItem is ever reached, and a
+ *  reference resolved outside the guard is a throw the guard never sees.
+ *  Deliberately a local copy of what freezelog.ts's storageOf does rather
+ *  than an import:
+ *  this file has no imports on purpose (see the header) and a crash reporter
+ *  that needed another module to evaluate cleanly first would be exactly the
+ *  fragility it exists to survive. */
+function storage(): Storage | null {
+  try {
+    return window.localStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Never throws. flushPendingReports() runs BEFORE ReactDOM.createRoot in
+ *  main.tsx, so a throw here left the whole app (and /debug/freezes) blank on
+ *  a storage-denied browser — the reporter took the page down instead of the
+ *  crash it exists to report (coordinator review, 2026-09-07). Denied storage
+ *  reads as "no reports on file": nothing was persisted there either. */
 function loadReports(): CrashReport[] {
-  return safeParse<CrashReport[]>(localStorage.getItem(REPORTS_KEY), [])
+  const s = storage()
+  if (!s) return []
+  try {
+    return safeParse<CrashReport[]>(s.getItem(REPORTS_KEY), [])
+  } catch {
+    return []
+  }
 }
 
 function persistLocally(report: CrashReport): void {
