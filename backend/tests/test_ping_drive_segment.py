@@ -29,6 +29,11 @@ to MINT it, at both sites, for every `ping` carrier:
         with no duplicate composition across journal rows
     §5  the same reuse at the envelope (boundary feed), and the fallbacks: a
         carrier whose token has no journal row composes its text as before
+    §6  TOKEN ORDER IS TEXT ORDER (feature-astra's seam): each drain site puts
+        its new token at the FRONT, because the envelope prepends the new batch
+        to the text the carrier already held — so a carrier reconstructed with
+        two owned tokens re-reads [new, old] against text [new][old]; pinned at
+        the envelope with successive reuse and at the real turn start
 
 Hermetic: throwaway ORGTREE_DATA/HOME set before any orgtree import; §4 runs
 fakecli.js in-process exactly as test_stuck_mail_pointer_drop.py does.
@@ -546,6 +551,99 @@ def _owned_fallbacks():
 
 check("owned · fallbacks: no tokens / unknown token / v1 row → None, text composed as before",
       _owned_fallbacks)
+
+
+# ══════════════════════════════════════════════════════════════════════════ §6
+print("\n§6  token order is text order — successive reuse with two owned tokens")
+
+
+def _two_owned_tokens_envelope():
+    """The boundary feed's reconstruction, step by step: carrier {toks:[old], text:E1}
+    → _envelope drains new → text E2 = [new] + E1, token t2 goes to the FRONT →
+    carrier {toks:[t2, old], text:E2} folds/requeues → its next envelope re-reads
+    [new segs, old segs], which is what E2 reads as. The wrong order ([old, t2]) is
+    the seam: it would compose [old, new] against a text that says [new, old]."""
+    slug = fresh()
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "OLD words", "message", typed=True)
+    store.save_org(org)
+    o1: list = []
+    e1, t_old, _ = S._envelope(slug, "boss", NUDGE, via="steer", segments_out=o1, ping=True)
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "NEW words", "message", typed=True)
+    store.save_org(org)
+    o2: list = []
+    e2, t_new, _ = S._envelope(slug, "boss", e1, via="turn", segments_out=o2, owned_toks=[t_old])
+    assert t_new and e2.index("NEW words") < e2.index("OLD words"), "text: new first"
+    toks = [t_old]
+    toks.insert(0, t_new)                       # what both drain sites now do
+    o3: list = []
+    e3, t3, _ = S._envelope(slug, "boss", e2, via="turn", segments_out=o3, owned_toks=toks)
+    assert t3 is None and e3 == e2
+    bodies = [r["body"] for sg in o3[0] if sg["kind"] == "mail" for r in sg["rows"]]
+    assert bodies == ["NEW words", "OLD words"], bodies
+    assert o3[0] == o2[0], "successive reuse reproduces the composition the text was built from"
+    assert [sg["kind"] for sg in o3[0]] == ["mail", "mail", "drive"]
+    # the seam itself, as a control: the appended order composes against the text
+    o4: list = []
+    S._envelope(slug, "boss", e2, via="turn", segments_out=o4, owned_toks=[t_old, t_new])
+    wrong = [r["body"] for sg in o4[0] if sg["kind"] == "mail" for r in sg["rows"]]
+    assert wrong == ["OLD words", "NEW words"], \
+        "control: _owned_segments follows carrier order, so the order at the site decides"
+
+
+check("order · envelope: two owned tokens re-read [new, old] against text [new][old]; "
+      "appended order is the seam (control)", _two_owned_tokens_envelope)
+
+
+def _turn_start_token_order():
+    """The REAL turn start: a folded carrier {toks:[old]} drains a new batch; the
+    carrier's token list — the one a filter replay would carry back as
+    `pend_toks` — must read [new, old]. Observed through the confirm call, which
+    receives exactly that list once the provider consumed the text."""
+    marker = "TO-" + os.urandom(4).hex()
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "old " + marker, "message", typed=True)
+        store.save_org(org)
+    etext, t_old, _ = S._envelope(SLUG, NID, NUDGE, via="steer", ping=True)
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "new " + marker, "message", typed=True)
+        store.save_org(org)
+    confirmed: list = []
+    real = S._confirm_delivered
+
+    def spy(slug, nid, toks):
+        confirmed.append(list(toks))
+        return real(slug, nid, toks)
+    S._confirm_delivered = spy
+    try:
+        run_turn(S._mark_ping({"toks": [t_old], "text": etext}, "user_mail"))
+    finally:
+        S._confirm_delivered = real
+    two = [c for c in confirmed if len(c) == 2]
+    assert two, f"no two-token confirm observed: {confirmed}"
+    assert two[0][1] == t_old and two[0][0] != t_old, \
+        f"carrier tokens must be [new, old] (text order), got {two[0]} with old={t_old}"
+
+
+check("order · real turn start: the carrier's tokens read [new, old] after the drain",
+      _turn_start_token_order)
+
+
+def _both_sites_insert_front():
+    """Source pin for the two drain sites (the boundary feed cannot be driven
+    hermetically here): each inserts at the front, none appends. Positive control:
+    the scan sees both sites."""
+    src = open(os.path.join(BACKEND, "orgtree/supervisor.py"), encoding="utf-8").read()
+    assert src.count("ntoks.insert(0, ntok)") == 1 and "ntoks.append(ntok)" not in src
+    assert src.count("toks.insert(0, _journal_drain(") == 1 and \
+        "toks.append(_journal_drain(" not in src
+
+
+check("order · both drain sites insert the new token at the front (source pin)",
+      _both_sites_insert_front)
 
 print(f"\n{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:

@@ -6823,7 +6823,9 @@ def _owned_segments(org: Org, nid: str, toks: Iterable[str] | None
                     ) -> list[dict[str, Any]] | None:
     """The typed composition a carrier already OWNS: the `segments` of its
     unconfirmed journal batches, concatenated in carrier order — the same
-    by-token read `commit_steer` snapshots for the steered log.
+    by-token read `commit_steer` snapshots for the steered log. Carrier order
+    IS text order: every drain site inserts its new token at the FRONT because
+    the envelope prepends the new batch to the text the carrier already held.
 
     None unless EVERY token resolves to a row that carries `segments`: a
     partial answer would silently drop a message from the human transcript,
@@ -14210,11 +14212,13 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     # binary, Docker down, timeout) the drained mail would
                     # die with the turn — the journal folds it back. The row
                     # holds THIS drain's own composition only
-                    toks.append(_journal_drain(org, nid, mail, pending, "turn",
-                                               drive=turn_drive,
-                                               segments=(_segments_for(mail, pending, None)
-                                                         if owned is not None
-                                                         else view_segments)))
+                    # AT THE FRONT (text order, see the boundary feed): the
+                    # new drain is prepended to the owned text below
+                    toks.insert(0, _journal_drain(org, nid, mail, pending, "turn",
+                                                  drive=turn_drive,
+                                                  segments=(_segments_for(mail, pending, None)
+                                                            if owned is not None
+                                                            else view_segments)))
                     store.save_org(org)
             if cache_forecast_event is not None:
                 stream(slug, nid, {"kind": "cache_forecast",
@@ -15622,7 +15626,16 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 nspans = nspans_out[0] if nspans_out else []
                                 nsegs = nseg_out[0] if nseg_out else None
                                 if ntok:
-                                    ntoks.append(ntok)
+                                    # AT THE FRONT: the carrier's tokens are
+                                    # kept in the order its TEXT carries the
+                                    # batches — the envelope prepends the new
+                                    # drain to the owned text, so a later
+                                    # reconstruction of this carrier (stdin
+                                    # write refused → requeued below; the
+                                    # filter replay) re-reads `_owned_segments`
+                                    # in text order, and commit_steer's
+                                    # by-token snapshot agrees with the text
+                                    ntoks.insert(0, ntok)
                                 elif nping and not ntoks:
                                     # ⚠ `not ntoks` IS LOAD-BEARING, the same
                                     # clause the turn-start drop carries and
