@@ -615,3 +615,94 @@ test('zoom card, tray and desk banner agree on the Title Case word for every sta
     <TurnStatusBanner state="working" inflightAt={busy.inflight_at} tier="haiku" />, (el) => el),
     '.turn-status-label'), 'Active')
 })
+
+test('Working state gets fixed non-provider styling across providers, while Active in-turn keeps provider theme', async () => {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const css = fs.readFileSync(path.resolve('src/styles.css'), 'utf-8')
+
+  // CSS rules verification: Working state gets var(--work) (fixed sky #7cc0ff)
+  assert.match(css, /\.sq-idle\.working\s*\{\s*color:\s*var\(--work\);/,
+    'sq-idle.working uses fixed var(--work)')
+  assert.match(css, /\.turn-status-banner\.working\s*\{\s*color:\s*var\(--work\);/,
+    'turn-status-banner.working uses fixed var(--work)')
+  assert.match(css, /\.tray-status-label\.working\s*\{\s*color:\s*var\(--work\);/,
+    'tray-status-label.working uses fixed var(--work)')
+
+  // Active in-turn rules: Active state uses var(--accent) (provider theme)
+  assert.match(css, /\.sq-idle\.working\.active[^{]*\{\s*color:\s*var\(--accent\);/,
+    'sq-idle active turn uses var(--accent)')
+  assert.match(css, /\.turn-status-banner\.working\.active[^{]*\{\s*color:\s*var\(--accent\);/,
+    'turn-status-banner active turn uses var(--accent)')
+  assert.match(css, /\.tray-status-label\.working\.active[^{]*\{\s*color:\s*var\(--accent\);/,
+    'tray-status-label active turn uses var(--accent)')
+
+  // Across providers: Claude (haiku), OpenAI (terra), Google (flash)
+  for (const tier of ['haiku', 'terra', 'flash'] as const) {
+    // 1. Out-of-turn with recorded status 'working'
+    const idleNode = makeNode({ id: `idle-${tier}`, tier, busy: false, last_status: { status: 'working', summary: 'working on task' } as any })
+    const idleCard = await renderCard(idleNode)
+    try {
+      const el = idleCard.el.querySelector('.sq-idle')
+      assert.ok(el, `card mounts sq-idle for ${tier}`)
+      assert.equal(el?.textContent?.trim(), 'Working', `card displays Working for ${tier}`)
+      assert.ok(el?.classList.contains('working'), `card has working class for ${tier}`)
+      assert.ok(!el?.classList.contains('active'), `idle card must not have active class for ${tier}`)
+    } finally { idleCard.unmount() }
+
+    const idleTray = await mountView(<TrayStatus node={idleNode} turn={null} />, (el) => el)
+    try {
+      const label = idleTray.el.querySelector('.tray-status-label')
+      assert.ok(label, `tray mounts status label for ${tier}`)
+      assert.equal(label?.textContent?.trim(), 'Working', `tray displays Working for ${tier}`)
+      assert.ok(label?.classList.contains('working'), `tray has working class for ${tier}`)
+      assert.ok(!label?.classList.contains('active'), `idle tray must not have active class for ${tier}`)
+      const dot = idleTray.el.querySelector('.statusdot')
+      assert.ok(dot?.classList.contains('working'), `tray statusdot has working class for ${tier}`)
+    } finally { idleTray.unmount() }
+
+    const stamp = { at: '2026-09-07T12:00:00Z', cost_usd: 0, killed: false }
+    const idleBanner = await mountView(
+      <TurnStatusBanner state="idle" turn={stamp} recordedState="working" tier={tier} />,
+      (el) => el
+    )
+    try {
+      const banner = idleBanner.el.querySelector('.turn-status-banner')
+      assert.ok(banner?.classList.contains('working'), `banner has working class for ${tier}`)
+      assert.ok(!banner?.classList.contains('active'), `idle banner must not have active class for ${tier}`)
+      assert.equal(banner?.querySelector('.turn-status-label')?.textContent, 'Working', `banner displays Working for ${tier}`)
+    } finally { idleBanner.unmount() }
+
+    // 2. Active turn (busy: true)
+    const activeNode = makeNode({ id: `active-${tier}`, tier, busy: true, inflight_at: new Date().toISOString() })
+    const activeCard = await renderCard(activeNode)
+    try {
+      const el = activeCard.el.querySelector('.sq-idle')
+      assert.ok(el, `card mounts sq-idle for active ${tier}`)
+      assert.equal(el?.textContent?.trim(), 'Active', `active card displays Active for ${tier}`)
+      assert.ok(el?.classList.contains('working'), `active card retains working class for ${tier}`)
+      assert.ok(el?.classList.contains('active'), `active card has active class for ${tier}`)
+    } finally { activeCard.unmount() }
+
+    const activeTray = await mountView(<TrayStatus node={activeNode} turn={null} />, (el) => el)
+    try {
+      const label = activeTray.el.querySelector('.tray-status-label')
+      assert.ok(label, `tray mounts status label for active ${tier}`)
+      assert.equal(label?.textContent?.trim(), 'Active', `active tray displays Active for ${tier}`)
+      assert.ok(label?.classList.contains('working'), `active tray retains working class for ${tier}`)
+      assert.ok(label?.classList.contains('active'), `active tray has active class for ${tier}`)
+    } finally { activeTray.unmount() }
+
+    const activeBanner = await mountView(
+      <TurnStatusBanner state="working" inflightAt={activeNode.inflight_at} tier={tier} />,
+      (el) => el
+    )
+    try {
+      const banner = activeBanner.el.querySelector('.turn-status-banner')
+      assert.ok(banner?.classList.contains('working'), `active banner retains working class for ${tier}`)
+      assert.ok(banner?.classList.contains('active'), `active banner has active class for ${tier}`)
+      assert.equal(banner?.querySelector('.turn-status-label')?.textContent, 'Active', `active banner displays Active for ${tier}`)
+    } finally { activeBanner.unmount() }
+  }
+})
+

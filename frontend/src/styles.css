@@ -679,7 +679,10 @@ button.badge.audience-fold.alert {
 .sq-workstate .statusdot { flex: none; margin-right: 4px; }
 .sq-idle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 600 10px/1 var(--mono); color: var(--dim); }
-.sq-idle.working { color: var(--accent); }
+.sq-idle.working { color: var(--work); }
+.sq-idle.working.active,
+.sq-idle.active,
+.sq.busy .sq-idle.working { color: var(--accent); }
 .sq-idle.waiting, .sq-idle.queued { color: var(--work); }
 .sq-idle.compacting { color: var(--accent); }
 .sq-idle.done { color: var(--ok); }
@@ -1038,7 +1041,9 @@ html.mobile .edge-jump { display: none; }
   border: 0; border-radius: 0; font-size: 11px;
   line-height: 1; white-space: nowrap; color: var(--dim); background: transparent;
 }
-.turn-status-banner.working { color: var(--accent); }
+.turn-status-banner.working { color: var(--work); }
+.turn-status-banner.working.active,
+.turn-status-banner.active { color: var(--accent); }
 .turn-status-banner.queued,
 .turn-status-banner.compacting { color: var(--warn, #e5c07b); }
 .turn-status-banner.blocked { color: var(--bad); }
@@ -4097,7 +4102,9 @@ svg.MuiSvgIcon-root {
 .tray-status-label {
   font: 600 10px/1 var(--mono); color: var(--dim);
 }
-.tray-status-label.working { color: var(--accent); }
+.tray-status-label.working { color: var(--work); }
+.tray-status-label.working.active,
+.tray-status-label.active { color: var(--accent); }
 .tray-status-label.waiting, .tray-status-label.queued { color: var(--work); }
 .tray-status-label.compacting { color: var(--accent); }
 .tray-status-label.blocked { color: var(--bad); }

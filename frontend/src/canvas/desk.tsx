@@ -289,7 +289,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
     return (
       <>
         <DestinationBusy tier={node.tier} />
-        <span className="sq-idle working"
+        <span className="sq-idle working active"
           title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
           {stateLabel('active')}
         </span>
@@ -354,7 +354,7 @@ export function TrayStatus({ node, turn, live = true }: {
     return (
       <span className="tray-status">
         <DestinationBusy tier={node.tier} />
-        <span className="tray-status-label working"
+        <span className="tray-status-label working active"
           title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
           {stateLabel('active')}
         </span>
@@ -486,7 +486,7 @@ export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
   const reference = active ? inflightAt : turn?.at
   const elapsed = reference ? ago(reference) : '—'
   const outOfTurnState = (!active && recordedState && recordedState !== 'idle') ? recordedState : null
-  const displayClass = outOfTurnState || state
+  const displayClass = outOfTurnState || (state === 'working' ? 'working active' : state)
   const label = active
     ? (state === 'working' ? 'Active'
       : state === 'queued' ? 'Queued' : 'Compacting')
