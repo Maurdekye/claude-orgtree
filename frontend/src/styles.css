@@ -5725,6 +5725,8 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
   flex: none; white-space: nowrap; }
 .event-actor .cc-name { flex: none; min-width: 0; white-space: nowrap; }
 .event-actor .tier { flex: none; }
+.event-head .ref-chip.ref-agent { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.event-head .ref-chip.ref-agent .tier { flex: none; }
 .event-head .event-actor::after { content: none; }
 .typed-input { align-self: stretch; min-width: 0; }
 .typed-input .msgtext { margin: 0; }
