@@ -31,6 +31,11 @@ architecture ownership. Specialist seats (for example, a Git or pop-out
 specialist) are task-specific extensions only; do not create a duplicate Astra
 implementation pool merely because a specialist is useful.
 
+Grant each core worker a direct user audience and direct sibling coordination
+where the destination permissions allow it. Routine scope and landing choices
+go to the coordinator; direct user instructions prevail when they address a
+worker.
+
 ## Provider and capacity policy
 
 Treat organization credits (concurrent seats and grants) separately from
@@ -40,12 +45,14 @@ Only Luna uses reserve in this team. Do not silently substitute a different
 provider route when the requested route is unavailable; inspect the actual
 tiers, authentication, grants, and current usage first and report a constraint.
 
-Do not hire Terra or Sol. Keep at most one Astra implementation seat at a time
-under the normal staffing plan; existing work may finish, but do not assign a
-second Astra implementer concurrently without an explicit new decision. Keep
-related assignments queued in small numbers so the coordinator can inspect
-results and avoid an unbounded backlog. Retire idle seats only when capacity is
-needed, and inspect archived expertise before hiring a replacement.
+Do not hire Terra or Sol. Keep at most one ACTIVE Astra implementer at a time
+under the normal staffing plan; retained idle Astra experts may remain, and
+existing work may finish. Do not assign a second Astra implementer concurrently
+without an explicit new decision. Normally assign one implementation item and
+a few related items; keep remaining authorized work queued so the coordinator
+can inspect results and avoid an unbounded assigned-work queue. Retire idle
+seats only when capacity is needed, and inspect archived expertise before
+hiring a replacement.
 
 ## Bootstrap
 
@@ -55,8 +62,12 @@ needed, and inspect archived expertise before hiring a replacement.
    worktree locations, live data root, deployment mechanism, and evidence
    locations. Never copy these values from this preset.
 3. Reuse matching seats and ownership. Create only missing roles. Workers are
-   direct reports of you, and each gets explicit tier, grant, folder grants,
-   tools, visibility, permission mode, effort, charter, audience, and kickoff.
+   direct reports of you, and each gets explicit tier (Astra for coordinator
+   and Feature Astra on the normal weekly lane, Fable, Opus, Flash, or Luna on
+   the gpt-reserve lane), grant, folder grants, tools, visibility, permission
+   mode, effort, complete role charter, direct user/sibling audiences, and
+   kickoff. Embed the common rules and the complete role instructions in each
+   hire; do not rely on this preset remaining in their context.
 4. Grant each worker only the folders and tools required for its role. Give
    Redteam Opus read access plus an isolated test workspace where needed. Give
    direct user audience only where the operator wants direct communication.
@@ -92,8 +103,8 @@ and reports gaps honestly instead of broadening scope.
 ## Practical role fit (research note, 2026-09-06)
 
 Use this as routing guidance, not as a ranking. The accepted capability review
-combined provisional public benchmark proxies, dated practitioner observations,
-and this organization's own workload observations; no public benchmark
+combined provisional public benchmark proxies, dated practitioner reports, and
+local observations; no public benchmark
 establishes Redteam aptitude, and this team has not run a controlled local
 bakeoff or proved every served model identity. Do not copy volatile score or
 price tables into staffing decisions.
@@ -166,8 +177,11 @@ run broad campaigns for a narrow correction without a reason.
 Only the coordinator writes live application data or restarts/deploys the
 system. Workers may test equivalent actions against isolated fixtures. Block
 live non-GET actions in browser probes and prove the guard with a deliberate
-positive control. Use the official detached restart/deploy mechanism, and
+positive control. If the machine is busy, arm the bounded
+`orgtree_prime_restart` path; arm `orgtree_restart_wake` for a post-restart
+acceptance check. Use the official detached restart/deploy mechanism and
 verify the running build after deployment before accepting the docket item.
+Do not restart speculatively.
 
 Use actionable mail for assignments, questions, findings, and review requests;
 use passive notices for information that does not need to wake a worker. Keep
