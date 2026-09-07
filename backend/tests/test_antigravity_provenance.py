@@ -62,7 +62,8 @@ def step(index, kind, message=None, *, state=3, error=b"", stop=2, tools=False):
         # The actual historical error had EMPTY ordinary error_details.
         detail = field(24, field(3, field(1, message or QUOTA) + field(7, 429)))
     else:
-        detail = field({101: 114, 132: 140}[kind], b"fixture")
+        # 23 is the mid-turn compaction summary; its body lives in field 30.
+        detail = field({23: 30, 101: 114, 132: 140}[kind], b"fixture")
     payload = field(1, kind) + field(4, state) + detail
     return (index, kind, state, 0, b"", error, payload)
 
@@ -534,6 +535,149 @@ class ProvenanceTests(unittest.TestCase):
             close(reader)
         with patch.object(p._Read, "close", changed):
             self.assertIsNone(self.reconcile())
+
+    # -- the shapes an ordinary turn actually has ------------------------
+    # Added 2026-09-07 after the 13:56Z decline: the retained turn contained
+    # three failed tool calls and one compaction step, and the old rules
+    # rejected all four. Every control below was seen to fail before the
+    # product change: the two admitted shapes declined step_status/step_type.
+
+    def tool_failed(self, *, run_error=False, state="ERROR"):
+        """Row 6 becomes the failed tool call the CLI really produces: stored
+        type 132 status 7 with error_details, reported on the wire as
+        step_type "tool" state "ERROR" (journal 13:55:37.939Z <-> store 5216)."""
+        row = list(step(6, 132, state=7, error=b"tool error detail"))
+        if run_error:
+            row[6] += field(24, field(3, field(1, QUOTA) + field(7, 429)))
+        self.rows[3] = tuple(row)
+        save(self.path, self.rows)
+        self.events = wire(self.rows)
+        for event in self.events:
+            if event["step_update"]["step_index"] == 6:
+                event["step_update"]["state"] = state
+
+    def compaction(self, *, on_wire=False):
+        """A mid-turn compaction summary, stored only (no wire step_update has
+        ever been observed for one) unless the test asks for one."""
+        self.rows.insert(3, step(6, 23))
+        self.rows[4] = step(7, 132)
+        self.rows[5] = step(8, 15)
+        save(self.path, self.rows)
+        self.events = wire(self.rows)
+        if on_wire:
+            self.events.insert(3, {"event": "step_update", "step_update": {
+                "step_index": 6, "conversation_id": CID, "state": "DONE",
+                "step_type": "compaction"}})
+
+    def test_failed_tool_call_is_not_a_failed_turn(self):
+        self.tool_failed()
+        value, lines = self.logged(self.reconcile)
+        self.assertEqual(value["final_step"], 7, lines)
+        self.assertTrue(lines[0].startswith("reconcile: fired historical=1 boundary=2 final=7"), lines[0])
+
+    def test_a_tool_that_failed_but_carries_a_run_error_still_declines(self):
+        self.tool_failed(run_error=True)
+        self.declines("step_run_error", step=6)
+
+    def test_status_seven_outside_a_tool_step_still_declines(self):
+        self.rows[2] = step(5, 15, "Working.", state=7, tools=True)
+        save(self.path, self.rows)
+        self.declines("step_status", step=5, status=7)
+
+    def test_error_details_outside_a_failed_tool_still_decline(self):
+        self.rows[4] = step(7, 15, error=b"not a tool failure")
+        save(self.path, self.rows)
+        self.declines("step_error_details", step=7)
+
+    def test_the_two_sides_of_a_tool_failure_need_not_agree(self):
+        """Deliberate, and pinned here so a reviewer can attack it rather than
+        wonder whether it was missed: the store's status and the wire's state
+        describe the SAME tool event, and neither is the discriminator - the
+        RunError is. A disagreement between them is not evidence of a current
+        quota error, so it does not decline. A RunError on the row still does
+        (test_a_tool_that_failed_but_carries_a_run_error_still_declines)."""
+        for event in self.events:                     # wire ERROR, store DONE
+            if event["step_update"]["step_index"] == 6:
+                event["step_update"]["state"] = "ERROR"
+        self.assertIsNotNone(self.reconcile())
+        self.tool_failed(state="DONE")                # store status 7, wire DONE
+        self.assertIsNotNone(self.reconcile())
+
+    def test_wire_error_on_a_model_step_declines(self):
+        self.events[-1]["step_update"]["state"] = "ERROR"
+        self.declines("wire_nontool_error", step=7)
+
+    def test_a_tool_left_active_on_the_wire_still_declines(self):
+        self.tool_failed(state="ACTIVE")
+        self.declines("wire_steps_open")
+
+    def test_a_tool_missing_from_the_wire_still_declines(self):
+        self.tool_failed()
+        self.events = [e for e in self.events if e["step_update"]["step_index"] != 6]
+        self.declines("stored_steps_not_done_on_wire", steps=6)
+
+    def test_a_compaction_step_no_longer_blocks_the_turn(self):
+        self.compaction()
+        value, lines = self.logged(self.reconcile)
+        self.assertEqual(value["final_step"], 8, lines)
+
+    def test_a_compaction_step_on_the_wire_declines_by_name_not_by_keyerror(self):
+        self.compaction(on_wire=True)
+        line = self.declines("wire_step_type_unmapped", step=6, step_type=23)
+        self.assertNotIn("exception", line)
+
+    # -- the durable outcome record --------------------------------------
+
+    def records(self):
+        return p.read_records()
+
+    def test_the_outcome_is_recorded_durably_on_both_paths(self):
+        before = len(self.records())
+        self.logged(self.reconcile)
+        fired = self.records()[before:]
+        self.assertEqual([r["outcome"] for r in fired], ["fired"], fired)
+        self.assertEqual(fired[0]["reason"], "")
+        self.assertEqual((fired[0]["historical"], fired[0]["boundary"], fired[0]["final"]), (1, 2, 7))
+        self.assertEqual(fired[0]["wire_lf"], 1)
+        self.result["error"] = "Authentication failed; please sign in."
+        self.logged(self.reconcile)
+        declined = self.records()[before + 1:]
+        self.assertEqual([r["outcome"] for r in declined], ["declined"], declined)
+        self.assertEqual(declined[0]["reason"], "error_not_quota")
+        for row in fired + declined:
+            text = json.dumps(row)
+            for secret in (PROMPT, ANSWER, QUOTA, "Working.", "Earlier"):
+                self.assertNotIn(secret, text, "a retained record carried conversation text")
+            self.assertTrue(text.isascii(), text)
+
+    def test_a_record_that_cannot_be_written_changes_nothing(self):
+        before = len(self.records())
+        with patch.object(p, "_records_path", side_effect=OSError("no disk")):
+            value, lines = self.logged(self.reconcile)
+        self.assertEqual(value["final_step"], 7)
+        self.assertTrue(lines[0].startswith("reconcile: fired"), lines[0])
+        self.assertEqual(len(self.records()), before, "a failed write must leave no record")
+        # and the verdict is identical to the one reached with the record on
+        self.logged(self.reconcile)
+        self.assertEqual(len(self.records()), before + 1)
+
+    def test_records_survive_a_restart_and_stay_bounded(self):
+        self.logged(self.reconcile)
+        path = Path(p._records_path())
+        self.assertTrue(path.is_file(), "no durable record was written")
+        kept = len(self.records())
+        # a fresh process reads the same file; nothing is held in memory
+        self.assertEqual(len(p.read_records()), kept)
+        with patch.object(p, "MAX_RECORDS", 1):
+            self.logged(self.reconcile)
+            self.logged(self.reconcile)
+        self.assertTrue(Path(str(path) + ".1").is_file(), "the record never rotated")
+        with path.open(encoding="utf-8") as handle:
+            self.assertLessEqual(sum(1 for _ in handle), 2)
+        # a torn line is skipped, not fatal
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"outcome": "declin\n')
+        self.assertTrue(all(r.get("outcome") for r in self.records()))
 
 
 if __name__ == "__main__":
