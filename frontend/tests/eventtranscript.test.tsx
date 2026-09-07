@@ -90,3 +90,23 @@ test('each typed transcript message owns its header, body and family styling in 
     assert.equal(message.querySelectorAll('header').length,1)
   }
 })
+
+test('only typed mail-pointer instructions are hidden; identical authored and legacy text remains', async t => {
+  const text='(orgtree) You have new mail above — handle it as appropriate.'
+  for (const profile of ['operator','public'] as const) {
+    const key=profile==='operator'?'private':'public'
+    const pointer=f('context.drive_mail_pointer')[key]
+    const drive={kind:'drive',text,...(profile==='operator'
+      ? {event:{...pointer,text,reason:null}} : {event_public:pointer})}
+    const ordinary={...f('ordinary.message')[key],body:text}
+    const segments=[drive,{kind:'mail',rows:[{from:'@user',kind:'message',at:'now',body:text,
+      ...(profile==='operator'?{ev:ordinary}:{ev_public:ordinary})}]},{kind:'text',text}]
+    assert.ok(isSegments(segments,profile),'nullable unstated reason validates')
+    const v=await mountView(<SegmentList segments={segments} profile={profile} slug="org" nid="worker"/>,h=>h)
+    t.after(()=>v.unmount())
+    assert.equal(v.el.querySelectorAll('[data-event-variant="context.drive_mail_pointer"]').length,0)
+    assert.equal(v.el.querySelectorAll('.event-segment-drive').length,0,'no empty instruction container')
+    assert.equal(v.el.querySelector('.event-body p')!.textContent,text,'authored message is readable')
+    assert.equal(v.el.querySelector('.msgtext p')!.textContent,text,'legacy text is readable')
+  }
+})
