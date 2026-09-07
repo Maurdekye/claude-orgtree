@@ -4310,6 +4310,33 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     return r
 
 
+@app.delete("/api/orgs/{slug}/work-items/{wid}")
+def work_item_delete(slug: str, wid: str, note: str = "") -> dict[str, Any]:
+    """The user deletes an item PERMANENTLY (user 2026-09-07) — the same
+    rule the tool enforces (`Org.work_delete`): the record leaves the docket
+    and its archive, pointers other items hold to it are cleared, and the
+    refusals (nested children, an open attached question) are the ledger's."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            _work_identity_ready(org, slug)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        try:
+            org._work_find(wid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            r = org.work_delete(USER, wid, note)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    return r
+
+
 def _row_out(row: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
     """The WIRE projection of one stored row — events.wire_row (design §6): full
     `ev` for the operator, `ev_public` for a visitor, never the row-encoded form."""
@@ -4566,9 +4593,13 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
         return org.work_move(nid, wid, _s("parent"))
     if act == "supersede":
         return org.work_supersede(nid, wid, str(a.get("by") or ""))
+    if act == "delete":
+        # PERMANENT (user 2026-09-07): the record goes, active or archived.
+        # Authority and refusals live in the ledger (`work_delete`).
+        return org.work_delete(nid, wid, _s("note"))
     raise LedgerError(
         "action must be list|get|create|update|assign|review|participants|"
-        "evidence|claim|verify|check|accept|archive|supersede|move")
+        "evidence|claim|verify|check|accept|archive|supersede|move|delete")
 
 
 class AskAnswer(Body):

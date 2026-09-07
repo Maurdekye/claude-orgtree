@@ -331,7 +331,15 @@ TOOLS: list[dict[str, Any]] = [
             "their superiors, the user, and listed participants; nothing is "
             "org-public. Done items archive by themselves an hour after "
             "their last update; a DROPPED item archives AT ONCE (user "
-            "2026-09-07) — records kept either way. A later update without "
+            "2026-09-07) — records kept either way. `delete` is the ONE act "
+            "that keeps nothing (user 2026-09-07): the record leaves the "
+            "docket and its archive for good, other items' pointers to it are "
+            "cleared, and only the user, a superior of the owner, or a "
+            "top-level owner may do it — never a subordinate on its own item, "
+            "a participant or the reviewer; it refuses while children are "
+            "nested under it or an attached question is open. Archive or drop "
+            "is the normal way to close; delete is for a record that should "
+            "not exist. A later update without "
             "ASSIGNMENT IS OWNERSHIP (user ruling 2026-09-05): the assigned "
             "agent holds the item's management rights, is who the docket "
             "names, and is where the user's replies on it go. `assign` TELLS "
@@ -367,7 +375,8 @@ TOOLS: list[dict[str, Any]] = [
                            "enum": ["list", "get", "create", "update", "assign",
                                     "review", "participants", "evidence",
                                     "claim", "verify", "check", "accept",
-                                    "archive", "supersede", "move"]},
+                                    "archive", "supersede", "move",
+                                    "delete"]},
                 "slug": {"type": "string", "description": "the work item's readable name, e.g. git-review-workspace (every action but list/create). Items have no other identifier"},
                 "include_archived": {"type": "boolean", "description": "list: include archived items"},
                 "include_backlogged": {"type": "boolean", "description": "list: include backlogged (not yet started) items"},

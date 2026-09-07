@@ -1243,7 +1243,7 @@ def doctrine_rides_the_identity_prompt_on_every_lane():
     assert acts == {"list", "get", "create", "update", "assign", "review",
                     "participants", "evidence",
                     "claim", "verify", "check", "accept", "archive", "supersede",
-                    "move"}
+                    "move", "delete"}
     for a in sorted(acts - {"list", "get", "verify", "create"}):
         # `move` needs a destination to get as far as resolving the item, and
         # `review` a decision; the probe is about DISPATCH (422, not "unknown

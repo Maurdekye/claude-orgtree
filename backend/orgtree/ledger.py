@@ -11814,6 +11814,106 @@ class Org:
         self._log("work_archived", actor, {"ids": [wid], "why": "explicit"}, [])
         return {"archived": wid, "rev": it["rev"]}
 
+    # ---- PERMANENT DELETION (user 2026-09-07 08:18Z: "can you delete tickets
+    # completely?"). Archive and drop both KEEP the record; this removes it.
+    #
+    # Authority is deliberately narrower than `_work_can_manage`: deletion is
+    # the one act the record cannot report afterwards, so it belongs to the
+    # user, to a STRICT SUPERIOR of the item's anchor (owner, else creator), or
+    # to the anchor itself only when it answers to nobody but the user (a
+    # top-level agent such as the coordinator, whose own items have no
+    # superior to ask). A subordinate never deletes its own ticket — its
+    # superior does; participants and the named reviewer never do.
+    #
+    # What goes: the record itself, from the active list or the archive, and
+    # every pointer another item holds to it (`dependencies` entries and a
+    # `superseded_by` naming it), each recorded on THAT item's history. What
+    # refuses: children still nested under it (move or delete them first) and
+    # an OPEN attached question (it belongs to its asker — withdraw or answer
+    # it first). What stays: mail, notices and ask history that mention the
+    # name — those are records of the past, and every reader of a docket
+    # pointer already tolerates a name that resolves to nothing
+    # (`_work_pointer_visible`). One `work_deleted` event on the org log is
+    # the audit trail; it is not a docket row and lists nothing.
+    def _work_can_delete(self, actor: str, it: WorkItem) -> bool:
+        if actor == USER:
+            return True
+        anchor = self._work_actor_node(it.get("owner"))             or self._work_actor_node(it.get("created_by"))
+        if not anchor or anchor not in self.nodes:
+            return False
+        if self.is_ancestor(actor, cast(str, anchor)):
+            return True
+        return actor == anchor and self.nodes[actor].get("parent") is None
+
+    def _work_children_of(self, wid: str) -> list[str]:
+        return [str(o["slug"]) for o in self._work_all()
+                if o.get("parent") == wid]
+
+    def work_delete(self, actor: str, wid: str,
+                    note: str | None = None) -> dict[str, Any]:
+        """Remove `wid` PERMANENTLY — active or archived. See the header."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, phys = self._work_get_for(actor, wid)
+        if not self._work_can_delete(actor, it):
+            raise LedgerError(
+                f"only the user, a superior of {wid}'s owner, or a top-level "
+                f"owner may delete it permanently — archive or drop it instead")
+        kids = self._work_children_of(str(it["slug"]))
+        if kids:
+            raise LedgerError(
+                f"{wid} still has {len(kids)} nested item(s): "
+                f"{', '.join(kids)} — move or delete those first")
+        if self._work_questions(str(it["slug"])):
+            raise LedgerError(
+                f"{wid} has an open attached question — it belongs to its "
+                f"asker; withdraw or answer it before deleting the item")
+        me = str(it["slug"])
+        cleared: list[dict[str, str]] = []
+        for other in self._work_all():
+            if other is it:
+                continue
+            deps = other.get("dependencies")
+            if isinstance(deps, list) and me in deps:
+                other["dependencies"] = [d for d in deps if d != me]
+                self._work_hist(other, actor, "pointer_cleared",
+                                {"field": "dependencies", "deleted": me})
+                cleared.append({"item": str(other["slug"]),
+                                "field": "dependencies"})
+            if other.get("superseded_by") == me:
+                other["superseded_by"] = None       # type: ignore[typeddict-unknown-key]
+                self._work_hist(other, actor, "pointer_cleared",
+                                {"field": "superseded_by", "deleted": me})
+                cleared.append({"item": str(other["slug"]),
+                                "field": "superseded_by"})
+        (self._work_archive() if phys else self._work_active()).remove(it)
+        own = self._work_actor_node(it.get("owner"))
+        self._log("work_deleted", actor, {
+            "slug": me, "title": str(it.get("title") or ""),
+            "status": str(it.get("status") or ""), "owner": own,
+            "archived": bool(phys), "note": (note or "").strip() or None,
+            "pointers_cleared": cleared}, [])
+        told: str | None = None
+        if own and own != actor and own != USER and own in self.nodes                 and self.nodes[own].get("state") == "live":
+            body = (f"Your docket item {me} (\"{it.get('title') or ''}\") was "
+                    f"PERMANENTLY DELETED by {actor}"
+                    + (f": {(note or '').strip()}" if (note or "").strip() else ".")
+                    + " It is gone from the docket and its archive; nothing "
+                    "remains to reopen.")
+            try:
+                self.post_mail(actor, own, body, "message")
+                told = own
+            except LedgerError:
+                try:
+                    self.post_mail(USER, own, body + f" (relayed by the "
+                                   f"docket: {actor} could not address you "
+                                   f"directly)", "message")
+                    told = own
+                except LedgerError:
+                    told = None
+        return {"deleted": me, "was_archived": bool(phys),
+                "pointers_cleared": cleared, "owner_told": told}
+
     # ---- SUB-ITEMS (user 2026-09-05, four approved elements of the nested
     # design). `parent` holds the PARENT'S NAME, like every other pointer
     # here. It is a tree, not a graph: one parent, no cycles.
