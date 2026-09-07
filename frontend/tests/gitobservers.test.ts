@@ -74,3 +74,35 @@ test('a late enabled observation cannot start a fetch after the last view closes
     assert.equal(calls.length, 1, 'no POST from a closed panel')
   } finally { close(); mock.restoreAll() }
 })
+
+test('busy observations preserve the 30-second cadence until explicitly disabled', async () => {
+  let tick: (() => void) | undefined, now = 0
+  let observation: { busy: boolean; freshness?: { watched: boolean } } = { busy: false, freshness: { watched: true } }
+  const starts: number[] = [], seenBusy: boolean[] = []
+  mock.method(globalThis, 'setInterval', (cb: () => void) => { tick = cb; return 1 })
+  mock.method(globalThis, 'clearInterval', () => {})
+  mock.method(performance, 'now', () => now)
+  mock.method(globalThis, 'fetch', async (path: string, options?: RequestInit) => {
+    if (path.endsWith('/observation')) return Response.json(observation)
+    assert.equal(options?.method, 'POST'); assert.ok(path.endsWith('/watch'))
+    starts.push(now); return Response.json({ started: true })
+  })
+  const listener = { value: (value: { busy: boolean }) => { if (value.busy) seenBusy.push(true) }, error: (error: unknown) => { throw error } }
+  const closeOne = observeGit('cadence', 'repo', listener)
+  const closeTwo = observeGit('cadence', 'repo', { ...listener })
+  const advance = async (at: number) => { now = at; tick!(); for (let i = 0; i < 20; i++) await Promise.resolve() }
+  try {
+    await advance(5000); assert.deepEqual(starts, [5000], 'positive enabled control')
+    observation = { busy: true }
+    await advance(10000); assert.equal(seenBusy.length, 2, 'both views receive the real busy-only response')
+    observation = { busy: false, freshness: { watched: true } }
+    await advance(15000); await advance(30000)
+    assert.deepEqual(starts, [5000], 'busy does not mean disabled or permit an early watch')
+    await advance(35000); assert.deepEqual(starts, [5000, 35000])
+    observation = { busy: false, freshness: { watched: false } }
+    await advance(40000)
+    observation = { busy: false, freshness: { watched: true } }
+    await advance(45000)
+    assert.deepEqual(starts, [5000, 35000, 45000], 'an authoritative disable really resets the preference transition')
+  } finally { closeOne(); closeTwo(); mock.restoreAll() }
+})

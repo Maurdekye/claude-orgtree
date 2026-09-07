@@ -17,7 +17,7 @@ export function observeGit(slug: string, rid: string, listener: Listener) {
       try {
         const value = await api.getGitObservation(slug, rid)
         for (const target of next.listeners) target.value(value)
-        if (!value.freshness?.watched) next.lastWatch = -Infinity
+        if (value.freshness?.watched === false) next.lastWatch = -Infinity
         if (value.freshness?.watched && next.listeners.size && performance.now() - next.lastWatch >= 30_000) {
           next.lastWatch = performance.now()
           await api.watchGit(slug, rid)
