@@ -13,8 +13,10 @@
  * §2 the same allocation under NO ceiling FINISHES and reports what it held —
  *    the launcher itself does not kill a healthy child (anti-vacuity: without
  *    this, §1 would pass against a launcher that kills everything)
- * §3 a 30 s sleeper under a 2 s run limit exits 124 within a few seconds and
- *    leaves NO surviving process — the limit terminates the tree, not a parent
+ * §3 a 10 s sleeper that spawned a detached 40 s child, under a 2 s run limit,
+ *    exits 124 within a few seconds and leaves NO surviving process — the
+ *    limit terminates the tree, not a parent (the child outlives the parent
+ *    so the survivor count has something to find if the tree kill is gone)
  *
  * Windows only, and it says so: on any other platform every case is SKIPPED
  * with the reason, never passed, because the launcher does not run there.
@@ -25,7 +27,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -45,11 +47,20 @@ function launch(limitMb: number, timeoutSec: number, probeArgs: string[]) {
   const marker = `contain-${process.pid}-${Date.now()}`
   writeFileSync(argFile, [PROBE, ...probeArgs, `--marker=${marker}`].join('\n') + '\n')
   const started = Date.now()
+  // ⚠ output goes to a FILE, not a pipe. A pipe is held open by every process
+  // that inherited it — including a detached grandchild the launcher failed to
+  // kill — so spawnSync would not return until that orphan died on its own,
+  // and the survivor count in §3 would then always run against an empty room
+  // (redteam-opus R1). With a file, spawnSync returns when the LAUNCHER exits,
+  // and whatever it left behind is still there to be counted.
+  const outFile = path.join(dir, 'out.txt')
+  const fd = openSync(outFile, 'w')
   const r = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', LAUNCHER, '-LimitMB', String(limitMb), '-TimeoutSec', String(timeoutSec),
     '-WorkDir', path.join(TESTS, '..'), '-Exe', process.execPath, '-ArgFile', argFile],
-  { encoding: 'utf8', timeout: 60_000 })
-  return { ...r, marker, elapsedMs: Date.now() - started, out: `${r.stdout}\n${r.stderr}` }
+  { stdio: ['ignore', fd, fd], timeout: 60_000 })
+  closeSync(fd)
+  return { ...r, marker, elapsedMs: Date.now() - started, out: readFileSync(outFile, 'utf8') }
 }
 
 test('§0 the launcher and the probe exist where run.mjs looks for them', { skip }, () => {
@@ -89,13 +100,17 @@ test('§3 a sleeper with a detached child past a 2 s run limit exits 124 promptl
   const self = nodeCount(path.basename(process.argv[1] ?? 'orgtree-tests'))
   assert.ok(Number(self) >= 1, `the survivor query cannot see a running node.exe: ${self}`)
 
-  const r = launch(512, 2, ['sleep', '30000'])
+  const r = launch(512, 2, ['sleep', '10000'])
+  // survivors FIRST: the launched parent AND its detached child (which sleeps
+  // 4x longer, so it is still alive on its own here) both carry the marker;
+  // the child is what a parent-only kill would leave behind, and this is the
+  // assertion the run limit exists for — it speaks before the timing one
+  const left = nodeCount(r.marker)
+  assert.equal(left, '0', `a process from the terminated job survived (count=${left})`)
   assert.equal(r.status, 124, `expected the limiter's 124, got ${r.status}\n${r.out}`)
   assert.match(r.out, /\[joblimit\] RUN LIMIT/, r.out)
   assert.doesNotMatch(r.out, /slept/, `the sleeper finished, so nothing was terminated:\n${r.out}`)
+  // an orphan holding the inherited stdio would make the launcher block for
+  // the orphan's whole life: its own failure mode, pinned by the clock
   assert.ok(r.elapsedMs < 15_000, `terminated far too late: ${r.elapsedMs} ms`)
-  // survivors: the launched parent AND its detached child both carry the
-  // marker; the child is what a parent-only kill would leave behind
-  const left = nodeCount(r.marker)
-  assert.equal(left, '0', `a process from the terminated job survived (count=${left})`)
 })

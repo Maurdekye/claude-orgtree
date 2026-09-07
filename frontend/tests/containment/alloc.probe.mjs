@@ -10,7 +10,7 @@
 //                                      (`sleep-child <ms>`) carrying the same
 //                                      trailing --marker= argument, then sit
 //                                      for <ms>; print "slept", exit 0
-//   node alloc.probe.mjs sleep-child <ms>   the child: sit for <ms>, exit 0
+//   node alloc.probe.mjs sleep-child <ms>   the child: sit for 4 x <ms>, exit 0
 //
 // The detached child is the point of the sleep mode: `node --test` has
 // children, and killing only the launched parent leaves them running. A
@@ -31,7 +31,12 @@ if (mode === 'sleep' || mode === 'sleep-child') {
       { detached: true, stdio: 'ignore' })
     child.unref()
   }
-  setTimeout(() => { console.log(mode === 'sleep' ? 'slept' : 'child slept'); process.exit(0) }, Number(arg))
+  // the child sleeps 4x LONGER than its parent: a survivor check that runs
+  // after the parent is gone must find a child that is still alive on its own,
+  // or it is counting an empty room (redteam-opus R1: at 1x the orphan had
+  // already exited by itself before any count ran)
+  setTimeout(() => { console.log(mode === 'sleep' ? 'slept' : 'child slept'); process.exit(0) },
+    mode === 'sleep-child' ? Number(arg) * 4 : Number(arg))
 } else {
   const mb = Number(mode)
   const held = []

@@ -153,8 +153,10 @@ print("\n@@RESULT@@" + json.dumps(out))
 
 def child_env(root: str, backend: str = "sqlite", migrate: str | None = None,
               parent_has_migrate: bool = False) -> dict[str, str]:
-    """EXACTLY the runner's rule (tools/run_tests.py): every ORGTREE_*
-    variable stripped, then only what the case sets. `parent_has_migrate`
+    """The runner's rule (tools/run_tests.py), one notch stricter: every
+    ORGTREE_* variable stripped (the runner exempts its own ORGTREE_TEST_*
+    knobs, which this gate never needs), then only what the case sets.
+    `parent_has_migrate`
     plants the opt-in in the PARENT'S view first, to prove the strip is what
     the child sees and not the shell it was launched from."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("ORGTREE_")}

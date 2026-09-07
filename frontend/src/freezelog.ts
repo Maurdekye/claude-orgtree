@@ -13,7 +13,9 @@
 //              the attribution the browser gives
 //   visibility document.visibilityState changed — the time a hidden tab spent
 //              hidden is NOT a freeze and is never measured; the interval from
-//              the change to the first frame after it IS, and says so
+//              the change to the first frame after it IS, and says so, and so
+//              is a long interval from the last frame to the moment the tab
+//              went hidden (a freeze the user switched away from)
 //   lifecycle  pagehide / pageshow / freeze / resume (Page Lifecycle API):
 //              the events around a tab being discarded or restored
 //   start      the recorder was installed — one per page load, so a reload
@@ -247,6 +249,15 @@ export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
     last = now()
   }
   const onVisibility = (): void => {
+    // going HIDDEN: the interval since the last frame was a VISIBLE interval,
+    // so if it is long it was a real freeze — one the user switched away from
+    // mid-block, which no frame will ever measure because the tab is hidden by
+    // the time the next one could run. Measure it here, on the hide side only
+    // (on the show side the interval is the hidden time itself).
+    if (doc.visibilityState === 'hidden') {
+      const gap = now() - last
+      if (gap >= threshold) record('gap', `${Math.round(gap)} ms before the tab was hidden`, gap)
+    }
     record('visibility', doc.visibilityState)
     mark(`visibility ${doc.visibilityState}`)
   }

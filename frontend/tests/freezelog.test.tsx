@@ -18,6 +18,8 @@
  * §2c a refused write keeps the newest few, never nothing
  * §3 the hidden interval is never measured; returning-to-first-frame is, attributed
  * §3b a lifecycle event starts an attributed interval too
+ * §3c a frame delivered while hidden only resets the interval start
+ * §3d a freeze the user switched away from mid-block is measured on the hide side
  * §4 lifecycle events (pagehide/pageshow/freeze/resume) are recorded
  * §5 stop() detaches: no frames and no events are recorded afterwards
  * §6 corrupt storage reads as empty rather than throwing
@@ -59,8 +61,12 @@ function rig(opts: { thresholdMs?: number; cap?: number } = {}) {
     pending = null
     cb?.(t)
   }
+  // time passes and NO frame is delivered — what a browser does while the
+  // tab is hidden (redteam-opus R2: a rig that ticks a frame while hidden
+  // refreshes `last` itself and hides a missing reset)
+  const advance = (ms: number) => { t += ms }
   active.push(stop)
-  return { tick, stop, hasPendingFrame: () => pending !== null }
+  return { tick, advance, stop, hasPendingFrame: () => pending !== null }
 }
 
 test.beforeEach(() => {
@@ -161,15 +167,16 @@ test('§2c when storage refuses the write, the newest few entries are kept rathe
 test('§3 the hidden interval is never a gap; the interval from returning to the first frame is, and says so', () => {
   const r = rig({ thresholdMs: 250 })
   const doc = document as unknown as { visibilityState: string }
+  r.tick(16)
   Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
   document.dispatchEvent(new Event('visibilitychange'))
-  r.tick(5000)   // a frame while hidden (browsers paint none): must not measure
+  r.advance(3_600_000)   // an hour in the background: NO frames are painted while hidden
   Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   document.dispatchEvent(new Event('visibilitychange'))
   let log = readFreezeLog()
   assert.deepEqual(log.slice(1).map((e) => `${e.kind}:${e.detail}`), ['visibility:hidden', 'visibility:visible'],
     `nothing may be measured across a hidden tab, got ${log.map((e) => e.detail).join(' | ')}`)
-  r.tick(3000)   // first frame after coming back: three seconds late IS a freeze, attributed
+  r.tick(3000)   // first frame after coming back: three seconds late IS a freeze, attributed — and it is 3 s, not an hour
   log = readFreezeLog()
   const back = log[log.length - 1]!
   assert.equal(back.kind, 'gap')
@@ -180,6 +187,40 @@ test('§3 the hidden interval is never a gap; the interval from returning to the
   const next = readFreezeLog().pop()!
   assert.equal(next.detail, '400 ms between frames', 'an ordinary gap afterwards is unattributed')
   assert.equal(doc.visibilityState, 'visible')
+  r.stop()
+})
+
+test('§3c a frame that arrives while hidden only resets the interval start', () => {
+  const r = rig({ thresholdMs: 250 })
+  r.tick(16)
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+  r.tick(5000)   // not something a browser does, but if it did: no gap
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+  r.tick(16)
+  assert.deepEqual(readFreezeLog().map((e) => e.kind), ['start', 'visibility', 'visibility'])
+  r.stop()
+})
+
+test('§3d a freeze the user switched away from is measured on the hide side', () => {
+  const r = rig({ thresholdMs: 250 })
+  r.tick(16)
+  r.advance(5000)   // the page blocks for five seconds; mid-block the user switches tabs
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+  const e = readFreezeLog()
+  assert.deepEqual(e.slice(1).map((x) => `${x.kind}:${x.detail}`), ['gap:5000 ms before the tab was hidden', 'visibility:hidden'])
+  assert.equal(e[1]!.ms, 5000)
+  // and a short visible interval before hiding records nothing extra
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+  r.tick(16)
+  r.tick(16)
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+  assert.deepEqual(readFreezeLog().slice(3).map((x) => x.kind), ['visibility', 'visibility'])
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   r.stop()
 })
 

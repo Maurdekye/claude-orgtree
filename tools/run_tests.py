@@ -67,8 +67,9 @@ SAFETY
 ------
 `:7360` and the live orgs are the operator's running deployment. The runner
 refuses to start a suite whose source names that port, strips every `ORGTREE_*`
-variable out of the child environment so no suite can inherit a pointer at the
-real data directory, and never assigns a port itself.
+variable out of the child environment (except the frontend runner's own
+`ORGTREE_TEST_*` knobs, none of which names a data root) so no suite can
+inherit a pointer at the real data directory, and never assigns a port itself.
 
 DID IT FINISH? — the one question this runner used to be unable to answer
 -------------------------------------------------------------------------
