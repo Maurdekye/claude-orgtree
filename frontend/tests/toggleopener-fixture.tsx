@@ -1,3 +1,6 @@
+// Idiom coverage only: this fixture exercises PinFrame's pinned visibility
+// inversion, not production App/OrgCanvas wiring. Production wiring is
+// verified separately with the built App probe.
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { commitModalRect, isModalPinned, PinFrame } from '../src/canvas/modalpin'

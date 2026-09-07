@@ -1,6 +1,8 @@
 import functools,http.server,json,threading
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+# Idiom coverage only; this copied-handler fixture is not production wiring.
+# Production behavior is checked by the built-App probe.
 OUT=Path(__file__).resolve().parents[1]/'node_modules/.orgtree-toggle'; OUT.mkdir(exist_ok=True)
 class H(http.server.SimpleHTTPRequestHandler):
  def log_message(self,*a): pass
