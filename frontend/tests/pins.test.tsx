@@ -326,7 +326,7 @@ uiTest('mosaic Shift bypass, moving away, clicking and resizing keep free placem
   assert.ok(snap, 'positive control: normal drag snaps')
   await drag(title, { x: 440, y: 112 }, { x: 440, y: 112 })
   assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.snap, snap)
-  await drag(pinWin(el, 'cto')!.querySelector('.pinwin-rs.se')!, { x: 740, y: 340 }, { x: 770, y: 360 })
+  await drag(el.querySelector('.pinwin-resize-frame[data-id="cto"] .pinwin-rs.se')!, { x: 740, y: 340 }, { x: 770, y: 360 })
   assert.equal(readPins('mine').find((p) => p.id === 'cto')!.snap, null, 'resize detaches metadata')
   await drag(title, { x: 440, y: 112 }, { x: 620, y: 350 })
   assert.equal(readPins('mine').find((p) => p.id === 'cto')!.snap, null, 'drag away releases')
@@ -602,20 +602,20 @@ uiTest('§B5 drag and resize are 1:1 with the pointer in viewport px, and commit
   assert.deepEqual(cam(el), c0, 'dragging the window did not pan the canvas')
   assert.equal(stored().length, writes0)
   // resize from the south-east corner
-  const se = w.querySelector('.pinwin-rs.se') as HTMLElement
+  const se = w.nextElementSibling!.querySelector('.pinwin-rs.se') as HTMLElement
   await drag(se, { x: 800, y: 800 }, { x: 900, y: 860 })
   const r2 = winRect(pinWin(el, 'cto')!)
   assert.equal(r2.w, r1.w + 100); assert.equal(r2.h, r1.h + 60)
   assert.equal(r2.x, r1.x); assert.equal(r2.y, r1.y)
   // from the north-west corner: x/y move, w/h shrink
-  const nw = w.querySelector('.pinwin-rs.nw') as HTMLElement
+  const nw = w.nextElementSibling!.querySelector('.pinwin-rs.nw') as HTMLElement
   await drag(nw, { x: 100, y: 100 }, { x: 110, y: 115 })
   const r3 = winRect(pinWin(el, 'cto')!)
   assert.equal(r3.x, r2.x + 10); assert.equal(r3.y, r2.y + 15)
   assert.equal(r3.w, r2.w - 10); assert.equal(r3.h, r2.h - 15)
   // the size floor pins the OPPOSITE edge: shrinking far past the minimum
   // from the west must not walk the window across the screen
-  const west = w.querySelector('.pinwin-rs.w') as HTMLElement
+  const west = w.nextElementSibling!.querySelector('.pinwin-rs.w') as HTMLElement
   await drag(west, { x: 100, y: 100 }, { x: 100 + 5000, y: 100 })
   const r4 = winRect(pinWin(el, 'cto')!)
   assert.equal(r4.w, PIN_MIN_W)
@@ -648,7 +648,7 @@ uiTest('§B5b drag and resize clamp every edge to the measured viewport', async 
   assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 700 && r.y + r.h <= 500,
     `drag stayed inside viewport: ${JSON.stringify(r)}`)
 
-  const se = w.querySelector('.pinwin-rs.se') as HTMLElement
+  const se = w.nextElementSibling!.querySelector('.pinwin-rs.se') as HTMLElement
   await drag(se, { x: 100, y: 100 }, { x: 5000, y: 5000 })
   r = winRect(pinWin(el, 'cto')!)
   assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 700 && r.y + r.h <= 500,
@@ -892,7 +892,7 @@ uiTest('clamp measures the padding box: a bordered viewport keeps the flush wind
   assert.deepEqual([r.x + r.w, r.y + r.h], [1298, 848],
     `bordered viewport: right/bottom must be 1298/848, got ${r.x + r.w}/${r.y + r.h}`)
   // and a resize gesture commits the same bound
-  const se = pinWin(rig.el, 'cto')!.querySelector('.pinwin-rs.se') as HTMLElement
+  const se = rig.el.querySelector('.pinwin-resize-frame[data-id="cto"] .pinwin-rs.se') as HTMLElement
   await inAct(() => { se.dispatchEvent(pointer('pointerdown', 1290, 840)) })
   await inAct(() => { se.dispatchEvent(pointer('pointermove', 2000, 2000)) })
   await inAct(() => { se.dispatchEvent(pointer('pointerup', 2000, 2000)) })

@@ -136,6 +136,26 @@ function preservePosition(root: HTMLElement) {
   }
 }
 
+// One compact notice stack per owning document; notices never occupy the
+// departed surface's place in the application's layout.
+const noticeHosts = new WeakMap<Document, HTMLElement>()
+function DetachedNotice({ home, children }: { home: Document; children: ReactNode }) {
+  let host = noticeHosts.get(home)
+  if (!host) {
+    host = home.createElement('div'); host.className = 'popout-notices'
+    noticeHosts.set(home, host)
+  }
+  const target = host
+  useLayoutEffect(() => {
+    if (!target.isConnected) home.body.appendChild(target)
+    return () => {
+      // React removes this portal's children during the same commit.
+      queueMicrotask(() => { if (!target.childElementCount) target.remove() })
+    }
+  }, [home, target])
+  return createPortal(<div className="popout-placeholder" onPointerDown={stop} onClick={stop}>{children}</div>, target)
+}
+
 /** Stable portal target, physically adopted between documents. React never
  * receives a different target and never owns/removes the hand-built shell. */
 export function MovableSurface({ kind, title, org = null, editable = true, children,
@@ -321,11 +341,11 @@ export function MovableSurface({ kind, title, org = null, editable = true, child
   }, [owner, detached, parent, kind, org, editable])
   return <>
     <div ref={placeholder} className="movable-anchor">
-      {detached && !anchor && <div className="popout-placeholder">
+      {detached && !anchor && <DetachedNotice home={placeholder.current?.ownerDocument ?? initialOwner.current}>
         <span>{title} is in another window.</span>
         <button onClick={() => child.current?.focus()}>Show window</button>
         <button onClick={redock}>Return here</button>
-      </div>}
+      </DetachedNotice>}
     </div>
     {ready && createPortal(<SurfaceContext.Provider value={{ document: owner, overlays: parts.overlays, detached, open, redock, error }}>
       <div className="movable-events" onPointerDown={detached ? stop : undefined}

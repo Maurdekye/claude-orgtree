@@ -5424,16 +5424,16 @@ label.set-row { cursor: pointer; }
   flex: 1; min-height: 0; display: flex; flex-direction: column; height: 100%;
 }
 /* resize handles: 8 invisible strips/corners on the edges */
-.pinwin-rs { position: absolute; z-index: 1; touch-action: none; }
+.pinwin-rs { position: absolute; z-index: 7; touch-action: none; pointer-events: auto; }
 .pinwin-rs.n, .pinwin-rs.s { left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
 .pinwin-rs.e, .pinwin-rs.w { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
 .pinwin-rs.n { top: -2px; }  .pinwin-rs.s { bottom: -2px; }
 .pinwin-rs.e { right: -2px; } .pinwin-rs.w { left: -2px; }
-.pinwin-rs.ne, .pinwin-rs.nw, .pinwin-rs.se, .pinwin-rs.sw { width: 12px; height: 12px; }
-.pinwin-rs.ne { top: -2px; right: -2px; cursor: nesw-resize; }
-.pinwin-rs.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
-.pinwin-rs.nw { top: -2px; left: -2px; cursor: nwse-resize; }
-.pinwin-rs.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+.pinwin-rs.ne, .pinwin-rs.nw, .pinwin-rs.se, .pinwin-rs.sw { width: 24px; height: 24px; }
+.pinwin-rs.ne { top: -16px; right: -16px; cursor: nesw-resize; }
+.pinwin-rs.sw { bottom: -16px; left: -16px; cursor: nesw-resize; }
+.pinwin-rs.nw { top: -16px; left: -16px; cursor: nwse-resize; }
+.pinwin-rs.se { bottom: -16px; right: -16px; cursor: nwse-resize; }
 /* the unpin MINIMISE ghost: chrome only, flies from the window to the card
    (viewport px both ends) and is clipped by .viewport's overflow when the
    card is off-screen — on purpose; see pins.tsx */
@@ -5604,16 +5604,17 @@ label.set-row { cursor: pointer; }
 .settings .modalpin-btn { font-size: 15px; padding: 2px; border-radius: 3px; }
 .settings .modalpin-bar.on .modalpin-btn { font-size: 14px; }
 /* resize handles: the agent window's eight strips, same geometry */
-.modalpin-rs { position: absolute; z-index: 6; touch-action: none; }
+.overlay.overlay-pinned > .modalpin-resize-frame { position: absolute; pointer-events: none; z-index: 7; }
+.modalpin-rs { position: absolute; z-index: 7; touch-action: none; pointer-events: auto; }
 .modalpin-rs.n, .modalpin-rs.s { left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
 .modalpin-rs.e, .modalpin-rs.w { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
 .modalpin-rs.n { top: -2px; }  .modalpin-rs.s { bottom: -2px; }
 .modalpin-rs.e { right: -2px; } .modalpin-rs.w { left: -2px; }
-.modalpin-rs.ne, .modalpin-rs.nw, .modalpin-rs.se, .modalpin-rs.sw { width: 12px; height: 12px; }
-.modalpin-rs.ne { top: -2px; right: -2px; cursor: nesw-resize; }
-.modalpin-rs.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
-.modalpin-rs.nw { top: -2px; left: -2px; cursor: nwse-resize; }
-.modalpin-rs.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+.modalpin-rs.ne, .modalpin-rs.nw, .modalpin-rs.se, .modalpin-rs.sw { width: 24px; height: 24px; }
+.modalpin-rs.ne { top: -16px; right: -16px; cursor: nesw-resize; }
+.modalpin-rs.sw { bottom: -16px; left: -16px; cursor: nesw-resize; }
+.modalpin-rs.nw { top: -16px; left: -16px; cursor: nwse-resize; }
+.modalpin-rs.se { bottom: -16px; right: -16px; cursor: nwse-resize; }
 /* ONE TITLE, NOT TWO (Astra 2026-09-06). A pinned window names itself in its
    title bar, and every one of these panels also opens with its own <h3> saying
    the same words — so pinned, the panel's own title heading stands down.
@@ -5846,3 +5847,21 @@ html.mobile .popout-button { display: none; }
    extent and grows to fill any extra viewport area. */
 .git-workspace.modalpin-win .git-viewport,
 .popout-mount .git-workspace .git-viewport { min-width: 0; min-height: 0; }
+
+/* Detached controls belong to the owning window, outside application flow. */
+.popout-notices { position: fixed; left: 12px; bottom: 12px; z-index: 35;
+  display: flex; flex-direction: column; gap: 6px; width: max-content;
+  max-width: calc(100vw - 24px); max-height: min(40vh, 360px); overflow-y: auto;
+  pointer-events: none; }
+.popout-notices:empty { display: none; }
+.popout-notices > .popout-placeholder { pointer-events: auto; min-width: 0;
+  padding: 6px 8px; gap: 6px; border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 2px 8px #0003; }
+.popout-notices .popout-placeholder > span { min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.popout-notices .popout-placeholder > button { flex: none; }
+
+.pinwin-resize-frame { position: absolute; pointer-events: none; }
+/* The draggable outer identity keeps navigation. Only the duplicate identity
+   disappears here; returning or detaching restores the desk's own header. */
+.pinwin-body .cc-head-left > .tier, .pinwin-body .cc-head-left > .cc-name { display: none; }

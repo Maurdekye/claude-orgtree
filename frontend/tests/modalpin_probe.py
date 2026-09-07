@@ -504,7 +504,7 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         # gallery is `.settings.wide` — 96vw by 88vh — so a pinned one nearly
         # fills the browser window and can barely be dragged anywhere: a drag
         # check against it would measure the clamp and call it a drag.
-        page.drag(".gallery-modal .modalpin-rs.se", -560, -380)
+        page.drag(".gallery-modal + .modalpin-resize-frame .modalpin-rs.se", -560, -380)
         small = page.box(GALLERY)
         obs["shrunk"] = small
         if small["w"] > 900 or small["h"] > 600:
@@ -555,14 +555,14 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         # ---------------------------------------------------------- resize
         page.drag(BAR, -200, -150)
         r0 = page.box(GALLERY)
-        page.drag(".gallery-modal .modalpin-rs.se", 60, 40)
+        page.drag(".gallery-modal + .modalpin-resize-frame .modalpin-rs.se", 60, 40)
         r1 = page.box(GALLERY)
         obs["resize_se"] = {"from": r0, "to": r1}
         if not (near(r1["w"], r0["w"] + 60, 4) and near(r1["h"], r0["h"] + 40, 4)):
             bad(f"resize: the SE corner did not grow the window ({r0} -> {r1})")
         # the west edge dragged far past the minimum must pin the EAST edge
         east = r1["x"] + r1["w"]
-        page.drag(".gallery-modal .modalpin-rs.w", 3000, 0)
+        page.drag(".gallery-modal + .modalpin-resize-frame .modalpin-rs.w", 3000, 0)
         r2 = page.box(GALLERY)
         obs["resize_w"] = r2
         if not near(r2["x"] + r2["w"], east, 4):
@@ -640,7 +640,7 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         # not the question — so the press point is asserted to be clear.
         page.drag(SECOND_WIN + " .modalpin-bar", -3000, 3000)
         page.click(PIN_BTN)
-        page.drag(".gallery-modal .modalpin-rs.se", -560, -380)
+        page.drag(".gallery-modal + .modalpin-resize-frame .modalpin-rs.se", -560, -380)
         page.drag(BAR, 3000, -3000)
         g = page.box(GALLERY)
         sec = page.box(SECOND_WIN)

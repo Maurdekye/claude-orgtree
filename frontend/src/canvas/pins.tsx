@@ -605,6 +605,8 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
           onLineage={() => onLineage(pin.id)} onConfig={() => onConfig(pin.id)}
           onJump={onJump} />
       </div>
+    </div>
+    <div className="pinwin-resize-frame" style={style} data-id={pin.id}>
       {EDGES.map((edge) => (
         <div key={edge} className={'pinwin-rs ' + edge}
           onPointerDown={(e) => begin(e, { kind: 'size', sx: e.clientX, sy: e.clientY, o: rect, edge })}

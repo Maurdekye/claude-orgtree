@@ -486,10 +486,11 @@ function PinFrameInner({ kind, title, panel, overlayClass, close, children,
           )}
         </div>
         {children}
-        {/* AFTER the children on purpose: appending or removing a trailing
-            sibling cannot move any child's position in the element list, so
-            toggling the handles never remounts the surface. */}
-        {pinned && EDGES.map((edge) => (
+      </div>
+      {/* Outside the scrolling panel: all handles stay at the visible frame
+          even when the content scrolls. The content keeps its mounted place. */}
+      {pinned && <div className="modalpin-resize-frame" style={style}>
+        {EDGES.map((edge) => (
           <div key={edge} className={'modalpin-rs ' + edge}
             onPointerDown={rect
               ? (e) => begin(e, { kind: 'size', sx: e.clientX, sy: e.clientY, o: rect, edge })
@@ -497,7 +498,7 @@ function PinFrameInner({ kind, title, panel, overlayClass, close, children,
             onPointerMove={move} onPointerUp={end}
             onPointerCancel={cancel} onLostPointerCapture={cancel} />
         ))}
-      </div>
+      </div>}
     </div>
   )
 }
