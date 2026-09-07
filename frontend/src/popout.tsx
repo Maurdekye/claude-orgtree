@@ -113,6 +113,7 @@ function restoreWhenStyled(frame: Window, current: () => boolean, restore: () =>
     }
   }
   doc.addEventListener('load', ready, true); doc.addEventListener('error', error, true)
+  // Capture is required: the surface's React boundary stops bubbling input.
   for (const event of ['pointerdown', 'keydown', 'wheel', 'beforeinput']) doc.addEventListener(event, input, true)
   ready()
   return cleanup

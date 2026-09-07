@@ -4,6 +4,9 @@ import path from 'node:path'
 const out = path.resolve('node_modules/.orgtree-gitpanels')
 const mutation = process.argv[2]
 const mutations = {
+  'no-observer-initial-update': ['src/GitWorkspace.tsx', '    observer.observe(element); update()', '    observer.observe(element)'],
+  'restored-reset-publish': ['src/GitWorkspace.tsx', '      initialPosition.current = false', '      setView({ top: vp.scrollTop, left: vp.scrollLeft, width: vp.clientWidth, height: vp.clientHeight }); initialPosition.current = false'],
+  'no-initial-centering': ['src/GitWorkspace.tsx', '      vp.scrollLeft = Math.max(0, layout.trunkX - vp.clientWidth / 2)', '      vp.scrollLeft = 0'],
   'measure-before-ref': ['src/GitWorkspace.tsx', '    <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />', ''],
   'close-pinned-navigation': ['src/git/panels.tsx', 'closeIfCentred(panel.kind, () => close(panel.id))', 'close(panel.id)'],
   'leaked-pin': ['src/git/panels.tsx', 'if (panel?.extra) unpinModal(panel.kind)', 'void panel'],

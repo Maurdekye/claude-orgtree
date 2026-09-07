@@ -19,7 +19,8 @@ assert Path(gw.__file__).resolve().is_relative_to(ROOT)
 def run():
     out = ROOT / 'frontend/node_modules/.orgtree-gitpanels'
     assert (out / 'gitpanels-fixture.js').is_file(), 'INERT: build the fixture first'
-    a, b = Fixture(), Fixture()
+    a, b, sparse_repo = Fixture(), Fixture(), Fixture()
+    sparse_id = gw.register(a.slug, str(sparse_repo.clone))['id']
     a.commit(a.clone, 'alpha.txt', 'alpha\n'); a.history(150)
     b.commit(b.clone, 'beta.txt', 'beta\n'); b.history(160)
     second = gw.register(a.slug, str(b.clone))['id']
@@ -33,7 +34,7 @@ def run():
     app = FastAPI(); app.include_router(gitapi.router)
     client = TestClient(app)
     requests, errors, results, aborted = [], [], [], []
-    held_snapshot = dict(rid=None, release=threading.Event(), entered=threading.Event())
+    held_snapshot = dict(rid=None, release=threading.Event(), entered=threading.Event(), fail=True)
     body = 'Typed message expands with the window. ' * 80
     event = dict(v=1, variant='ordinary.message', actor=dict(kind='user', id='user'), object=None, engine_authored=False, body=body)
     messages = [dict(role='user', text=body, seq=1, segments=[dict(kind='mail', rows=[dict(id='width-row', at='2026-09-07T00:00:00Z', **{'from':'user'}, kind='message', body=body, ev=event)])]),
@@ -58,7 +59,8 @@ def run():
                 held_snapshot['entered'].set()
                 if not held_snapshot['release'].wait(15):
                     self.reply({'detail':'INERT held refresh was not released'},503);return
-                self.reply({'detail':'fixture refresh unavailable'},503);return
+                if held_snapshot['fail']:
+                    self.reply({'detail':'fixture refresh unavailable'},503);return
             response = client.request(self.command, self.path, content=content, headers={'content-type':'application/json'})
             if path.endswith(('/observation','/watch','/snapshot','/history')): entry['response']=response.json()
             self.reply(response.content, response.status_code)
@@ -74,6 +76,43 @@ def run():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(channel='msedge', env={**BROWSER_ENV, 'ORGTREE_DATA': str(DATA)})
+            # First graph publication in a fresh child: no prior scroll can supply view size.
+            # Hold the real initial response until the surface and owner viewport exist.
+            pristine=[]
+            gitsettings.change(lambda d:d['selected_by_org'].update({a.slug:sparse_id}))
+            for child_width,child_height in [(2400,1400),(800,900)]:
+                held_snapshot.update(rid=sparse_id,fail=False)
+                held_snapshot['release'].clear();held_snapshot['entered'].clear()
+                fresh=browser.new_context(viewport=dict(width=1800,height=1000))
+                fresh_page=fresh.new_page();fresh_page.on('pageerror',lambda e:errors.append(str(e)))
+                fresh_page.goto(f'http://127.0.0.1:{server.server_port}')
+                fresh_page.get_by_role('button',name='Open Git repositories',exact=True).click()
+                assert held_snapshot['entered'].wait(10),'INERT initial graph response hold'
+                with fresh_page.expect_popup() as opened:
+                    fresh_page.get_by_role('button',name='Open in new window',exact=True).click()
+                pristine_child=opened.value
+                pristine_child.set_viewport_size(dict(width=child_width,height=child_height))
+                pristine_child.wait_for_function('[...document.querySelectorAll("link[rel=stylesheet]")].every(e=>e.sheet)')
+                pristine_child.evaluate("""() => { window.initialGraphScrolls=[]; document.addEventListener("scroll",e=>{if(e.target.matches?.(".git-viewport"))initialGraphScrolls.push([e.target.scrollLeft,e.target.scrollTop])},true) }""")
+                held_snapshot['release'].set()
+                pristine_child.locator('.git-node').first.wait_for()
+                pristine_child.evaluate('() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+                dims=pristine_child.locator('.git-viewport').evaluate("""e=>{const c=e.querySelector(".git-canvas"),end=e.querySelector(".git-history-end");return {width:e.clientWidth,height:e.clientHeight,canvasWidth:c.getBoundingClientRect().width,canvasHeight:c.getBoundingClientRect().height,left:e.scrollLeft,top:e.scrollTop,trunk:parseFloat(end.style.left)+80,scrolls:window.initialGraphScrolls}}""")
+                assert dims['height']>570 and dims['canvasHeight']==dims['height'],('pristine sparse child must fill before any pan',dims)
+                expected=max(0,dims['trunk']-dims['width']/2)
+                assert abs(dims['left']-expected)<2 and dims['top']==0,('pristine initial trunk centring',dims,expected)
+                if child_width==2400:
+                    assert dims['scrolls']==[] and expected==0,('INERT fresh wide graph was scrolled',dims)
+                    assert dims['canvasWidth']==dims['width'],('pristine wide canvas',dims)
+                else: assert expected>200,('INERT centring needs nonzero pan',dims)
+                pristine.append(dims);fresh.close()
+            held_snapshot.update(rid=None,fail=True)
+            gitsettings.change(lambda d:d['selected_by_org'].update({a.slug:a.rid}))
+            results.append(dict(pristine_initial_geometry=pristine))
+            held_snapshot['release'].clear();held_snapshot['entered'].clear()
+            if '--pristine-only' in sys.argv:
+                assert not errors,errors
+                browser.close();print(json.dumps(dict(passed=results,errors=errors,data=str(DATA)),indent=2));return
             context = browser.new_context(viewport=dict(width=1800,height=1000))
             context.set_default_timeout(15000)
             page = context.new_page(); page.on('pageerror',lambda e:errors.append(str(e)))
