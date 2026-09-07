@@ -5797,7 +5797,11 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .movable-anchor, .movable-surface, .movable-content, .movable-overlays,
 .movable-events, .desk-slot { display: contents; }
 .desk-bare { display: contents; }
-.popout-button { cursor: pointer; font-size: 18px; line-height: 1; padding: 3px 7px; }
+.popout-button, .settings .popout-button {
+  background: none; border: none; padding: 0; color: var(--dim);
+  cursor: pointer; font-size: 18px; line-height: 1; flex: none;
+}
+.popout-button:hover, .settings .popout-button:hover { color: var(--ink-strong); background: none; }
 .popout-placeholder, .popout-error, .popout-restart, .popout-dependency {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   background: var(--bg, #171717); color: var(--ink); font-size: 12px;
