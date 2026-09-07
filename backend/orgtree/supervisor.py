@@ -7135,15 +7135,52 @@ def _fold_back_undelivered(slug: str, nid: str,
 # queue, and that suite exists to prove the iterative drain does not wedge on
 # one. A fix that quietly removes another suite's ability to reach the state it
 # guards is worse than the duplication it saves.
-def _mark_ping(carrier: str | dict[str, Any]) -> dict[str, Any]:
-    """Tag a queue carrier as a mail pointer, preserving any journal tokens."""
+def _mark_ping(carrier: str | dict[str, Any], reason: str | None = None
+               ) -> dict[str, Any]:
+    """Tag a queue carrier as a mail pointer, preserving any journal tokens.
+
+    `reason` is the sending site's stated reason for the nudge (one of the
+    `context.drive_mail_pointer` literals); it rides the carrier as `ping_reason`
+    so composition can put it on the typed drive segment. A site that states
+    none leaves the field absent, and the segment carries reason=null."""
+    tag: dict[str, Any] = {"ping": True}
+    if reason:
+        tag["ping_reason"] = reason
     if isinstance(carrier, dict):
-        return {**carrier, "ping": True}
-    return {"ping": True, "text": carrier}
+        return {**carrier, **tag}
+    return {**tag, "text": carrier}
 
 
 def _carrier_is_ping(carrier: Any) -> bool:
     return isinstance(carrier, dict) and bool(carrier.get("ping"))
+
+
+def _carrier_ping_reason(carrier: Any) -> str | None:
+    """The stated reason on a ping carrier, or None (unstated / not a ping)."""
+    if not _carrier_is_ping(carrier):
+        return None
+    r = carrier.get("ping_reason")
+    return str(r) if r else None
+
+
+def _ping_drive(org: Org, nid: str, text: str, reason: str | None
+                ) -> dict[str, Any]:
+    """The typed event of a mail-pointer nudge, minted at COMPOSITION (the two
+    sites that turn a ping carrier into an envelope: `_envelope` and the turn
+    start in `_run_turn`).
+
+    ⚠ THE DEFECT THIS EXISTS FOR (user, 2026-09-07). The nudge text —
+    "(orgtree) You have new mail above…" — is machine context: it tells the
+    agent to read the block above it and says nothing to a human. Without a
+    typed event the composition filed it as a plain `text` segment, and the
+    human transcript rendered the sentence as if someone had written it. The
+    leaf `context.drive_mail_pointer` is model_only in every field, so the
+    frontend drops the whole `drive` segment by variant (HUMAN_HIDDEN_VARIANTS)
+    — structurally, never by matching the words. The agent's text is untouched:
+    `text` on the event is the nudge verbatim, and the envelope still carries it.
+    """
+    return events.mint("context.drive_mail_pointer", _SYSTEM_ACTOR, _node_ref(org, nid),
+                       text=text, reason=reason)
 
 
 def _carrier_owes_mail(carrier: Any) -> bool:
@@ -7275,9 +7312,15 @@ def _envelope(slug: str, nid: str, text: str,
               via: str = "steer", *, base_view: str = "",
               view_out: list[str] | None = None,
               spans_out: list[list[dict[str, Any]]] | None = None,
-              segments_out: list[list[dict[str, Any]]] | None = None
+              segments_out: list[list[dict[str, Any]]] | None = None,
+              ping: bool = False, ping_reason: str | None = None
               ) -> tuple[str, str | None, list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
+
+    `ping`: `text` is a mail POINTER (a `_mark_ping` carrier) — it is composed
+    as a typed `drive` segment (`context.drive_mail_pointer`, see `_ping_drive`)
+    rather than a plain `text` segment; `ping_reason` is the site's stated
+    reason for it, if any.
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
     (the caller confirms it once the text actually reaches the agent).
@@ -7301,9 +7344,11 @@ def _envelope(slug: str, nid: str, text: str,
             return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
-        segments = _segments_for(mail, pending, text)
+        drive = _ping_drive(org, nid, text, ping_reason) if ping else None
+        segments = _segments_for(mail, pending, text, drive=drive)
         if pending or mail:
-            tok = _journal_drain(org, nid, mail, pending, via, segments=segments)
+            tok = _journal_drain(org, nid, mail, pending, via, drive=drive,
+                                 segments=segments)
             store.save_org(org)
     if segments_out is not None:
         segments_out.append(segments)
@@ -9432,7 +9477,8 @@ def _idle_docket_reminder_pass(
         return
     now = time.time() if now is None else now
     wake_fn = wake or (lambda slug, nid, text: send_message(
-        slug, nid, text, mail_ping=True, idle_only=True))
+        slug, nid, text, mail_ping=True, idle_only=True,
+        ping_reason="reminder"))
     for row in store.list_orgs():
         slug = row["slug"]
         try:
@@ -9878,7 +9924,8 @@ def _working_checkup_pass(
         return
     now = time.time() if now is None else now
     wake_fn = wake or (lambda slug, nid, text: send_message(
-        slug, nid, text, mail_ping=True, idle_only=True))
+        slug, nid, text, mail_ping=True, idle_only=True,
+        ping_reason="checkup"))
     for row in store.list_orgs():
         slug = row["slug"]
         try:
@@ -13924,6 +13971,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
     # a site that answered for itself stayed switched on and silently killed
     # the canary (caught 2026-08-28, and the reason this comment exists).
     is_ping = _carrier_is_ping(text)
+    ping_reason = _carrier_ping_reason(text)
     dropped_here = False
     # a replayed retry carrier brings the ORIGINAL message along (resume_frozen
     # sets it), so a second death wraps that and not the previous banner
@@ -14096,13 +14144,22 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 pending = None if is_cmd \
                     else (org.d.get("notices") or {}).pop(nid, None)
                 mail = [] if is_cmd else org.take_mail(nid)
+                # a ping carrier composes its nudge as a typed `drive` segment
+                # (`_ping_drive`) — unless it already OWNS a batch (`toks`: a
+                # steer carrier folded into the queue at turn exit), whose
+                # text is the full envelope and whose journal row already
+                # carries the typed composition
+                turn_drive = (_ping_drive(org, nid, text, ping_reason)
+                              if is_ping and not is_cmd and not toks else None)
                 view_segments = None if is_cmd else _segments_for(
-                    mail, pending, text if isinstance(text, str) else None)
+                    mail, pending, text if isinstance(text, str) else None,
+                    drive=turn_drive)
                 if pending or mail:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
                     # die with the turn — the journal folds it back
                     toks.append(_journal_drain(org, nid, mail, pending, "turn",
+                                               drive=turn_drive,
                                                segments=view_segments))
                     store.save_org(org)
             if cache_forecast_event is not None:
@@ -15475,6 +15532,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                             if nprobe_token:
                                 probe_token = nprobe_token
                             nping = _carrier_is_ping(nxt)
+                            nping_reason = _carrier_ping_reason(nxt)
                             ntoks, nimgs, ncmd, nusage_org = [], [], False, None
                             nview = ""
                             # a slash command and a bare carrier both compose
@@ -15492,10 +15550,18 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 nviews: list[str] = []
                                 nspans_out: list[list[dict[str, Any]]] = []
                                 nseg_out: list[list[dict[str, Any]]] = []
+                                # ⚠ `not ntoks`: a steer carrier folded into
+                                # the queue already HOLDS its enveloped text
+                                # and its journal token — its typed drive was
+                                # minted by the envelope that drained it, and
+                                # minting again here would wrap the whole
+                                # [MAIL] block into a hidden drive segment.
                                 nxt, ntok, nimgs = _envelope(
                                     slug, nid, nxt, via="turn",
                                     base_view=nview, view_out=nviews,
-                                    spans_out=nspans_out, segments_out=nseg_out)
+                                    spans_out=nspans_out, segments_out=nseg_out,
+                                    ping=nping and not ntoks,
+                                    ping_reason=nping_reason)
                                 nview = nviews[0] if nviews else nview
                                 nspans = nspans_out[0] if nspans_out else []
                                 nsegs = nseg_out[0] if nseg_out else None
@@ -20123,7 +20189,8 @@ def send_message(slug: str, nid: str, text: str,
                  mail_ping: bool = False,
                  idle_only: bool = False,
                  view: str | None = None,
-                 sender: str = "") -> dict[str, Any]:
+                 sender: str = "",
+                 ping_reason: str | None = None) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -20154,7 +20221,10 @@ def send_message(slug: str, nid: str, text: str,
     rather than shown (see `_mark_ping`), which is what stops the phantom
     wake. Leave it False for anything that still reads correctly with an empty
     mailbox — a replayed message, a restart notice — or that text will be
-    silently swallowed.
+    silently swallowed. `ping_reason` names WHY this pointer was sent (a
+    `context.drive_mail_pointer` reason literal); it rides the carrier and is
+    recorded on the typed drive segment composition mints for it. Unstated
+    (None) is recorded as null — never inferred.
 
     idle_only=True is the automatic working-checkup admission shape. It uses
     this ordinary turn path but refuses, rather than queues or steers, if any
@@ -20236,7 +20306,8 @@ def send_message(slug: str, nid: str, text: str,
             st["busy"] = True
         threading.Thread(
             target=_run_turn, daemon=True,
-            args=(slug, nid, _mark_ping({"text": text, "view": view or ""})
+            args=(slug, nid, _mark_ping({"text": text, "view": view or ""},
+                                        ping_reason)
                   if mail_ping else {"text": text, "view": view or ""}),
         ).start()
         return {"accepted": True, "queued": 0, "idle_only": True}
@@ -20245,7 +20316,8 @@ def send_message(slug: str, nid: str, text: str,
     if maybe_steer:
         eviews: list[str] = []
         etext, tok, _ = _envelope(
-            slug, nid, text, base_view=view or "", view_out=eviews)  # ⚠ outside _state_lock (DOC_LOCK order)
+            slug, nid, text, base_view=view or "", view_out=eviews,
+            ping=mail_ping, ping_reason=ping_reason)  # ⚠ outside _state_lock (DOC_LOCK order)
         if mail_ping and tok is None:
             # the box was already empty — this pointer has nothing to point at,
             # and injecting it would put a bare banner into a working agent's
@@ -20257,7 +20329,7 @@ def send_message(slug: str, nid: str, text: str,
         carrier = ({"toks": [tok], "text": etext, "view": eview}
                    if tok or eview else etext)
         if mail_ping:
-            carrier = _mark_ping(carrier)
+            carrier = _mark_ping(carrier, ping_reason)
         if sender and isinstance(carrier, dict):
             # D-236 provenance. Only a DICT carrier is stamped: the bare-string
             # shape (empty mailbox, no view) reaches the queue fold as authored
@@ -20287,7 +20359,7 @@ def send_message(slug: str, nid: str, text: str,
             queued: str | dict[str, Any] = (
                 {"text": text, "view": view or ""}
                 if view is not None and isinstance(text, str) else text)
-            st["queue"].append(_mark_ping(queued) if mail_ping else queued)
+            st["queue"].append(_mark_ping(queued, ping_reason) if mail_ping else queued)
             return {"accepted": True, "queued": len(st["queue"]),
                     "process_control": True}
         if st["busy"]:
@@ -20302,7 +20374,7 @@ def send_message(slug: str, nid: str, text: str,
             queued: str | dict[str, Any] = (
                 {"text": text, "view": view or ""}
                 if view is not None and isinstance(text, str) else text)
-            st["queue"].append(_mark_ping(queued) if mail_ping else queued)
+            st["queue"].append(_mark_ping(queued, ping_reason) if mail_ping else queued)
             return {"accepted": True, "queued": len(st["queue"])}
         if wake:
             st["busy"] = True
@@ -20323,7 +20395,7 @@ def send_message(slug: str, nid: str, text: str,
         {"text": text, "view": view or ""}
         if view is not None and isinstance(text, str) else text)
     threading.Thread(target=_run_turn, daemon=True,
-                     args=(slug, nid, _mark_ping(start_carrier)
+                     args=(slug, nid, _mark_ping(start_carrier, ping_reason)
                            if mail_ping else start_carrier)).start()
     return {"accepted": True, "queued": 0}
 
