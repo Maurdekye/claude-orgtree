@@ -62,9 +62,10 @@ hiring a replacement.
    worktree locations, live data root, deployment mechanism, and evidence
    locations. Never copy these values from this preset.
 3. Reuse matching seats and ownership. Create only missing roles. Workers are
-   direct reports of you, and each gets explicit tier (Astra for coordinator
-   and Feature Astra on the normal weekly lane, Fable, Opus, Flash, or Luna on
-   the gpt-reserve lane), grant, folder grants, tools, visibility, permission
+   direct reports of you, and each gets an explicit provider/tier route:
+   Astra for the coordinator and Feature Astra on normal weekly Codex, Fable
+   on Claude Fable, Opus on Claude Opus, Flash on Antigravity Flash, and Luna
+   on Codex gpt-reserve. Also specify grant, folder grants, tools, visibility, permission
    mode, effort, complete role charter, direct user/sibling audiences, and
    kickoff. Embed the common rules and the complete role instructions in each
    hire; do not rely on this preset remaining in their context.
