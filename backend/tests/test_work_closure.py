@@ -544,20 +544,49 @@ check("CONTROL: a superseded item still never archives by itself, however old",
 
 
 def attention_keeps_a_dropped_item_visible() -> None:
+    """THE RETAINED EXCEPTION (coordinator qualification 2026-09-07): "at once"
+    is not unconditional — an item that HOLDS attention stays on the main list
+    whatever its status. A drop that passes attention=True therefore stays
+    visible (counted as attention, never as active) at age 0 and at any age,
+    while its unflagged twin is archived at age 0."""
     slug = fixture()
     quiet = item(slug, "Ended quietly", status="in_progress")
     loud = item(slug, "Ended with a flag", status="in_progress")
     upd(slug, quiet, status="dropped", dropped_reason=WHY_CANCELLED)
     upd(slug, loud, status="dropped", dropped_reason=WHY_FAILED,
         attention=True, attention_reason="I ended this; confirm that is right")
-    at = max(backdate(slug, quiet, 3601), backdate(slug, loud, 3601))
-    lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
-    assert [r["slug"] for r in lst["archived"]] == [quiet], lst["archived"]
-    assert [r["slug"] for r in lst["items"]] == [loud], lst["items"]
+    for at in (_time.time(), max(backdate(slug, quiet, 3601), backdate(slug, loud, 3601))):
+        lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
+        assert [r["slug"] for r in lst["archived"]] == [quiet], lst["archived"]
+        assert [r["slug"] for r in lst["items"]] == [loud], lst["items"]
+        assert lst["items"][0]["attention_sources"] == ["manual"]
+        assert lst["counts"] == {"attention": 1, "active": 0, "archived": 1, "backlogged": 0}, lst["counts"]
 
 
-check("a dropped item holding an attention flag stays visible while its "
-      "unflagged twin archives", attention_keeps_a_dropped_item_visible)
+check("RETAINED EXCEPTION: a dropped item holding an attention flag stays visible at "
+      "age 0 and later, counted as attention; its unflagged twin archives at once",
+      attention_keeps_a_dropped_item_visible)
+
+
+def a_drop_clears_a_flag_it_does_not_restate() -> None:
+    """The drop update is an ordinary update: the manual flag is restated by
+    every update, so a drop that does not pass attention=True clears a flag set
+    earlier — and the item is then archived at once."""
+    slug = fixture()
+    wid = item(slug, "Flagged, then dropped", status="in_progress")
+    upd(slug, wid, attention=True, attention_reason="need a decision")
+    assert raw(slug, wid)["manual_attention"], "fixture: the flag is set"
+    upd(slug, wid, status="dropped", dropped_reason=WHY_CANCELLED)
+    it = raw(slug, wid)
+    assert it["manual_attention"] is None, "the drop did not clear the flag"
+    assert any("cleared_set_rev" in str(h.get("changes")) for h in it["history"]), \
+        "the clearing is recorded in history"
+    lst = store.load_org(slug).work_list(USER, include_archived=True)
+    assert [r["slug"] for r in lst["archived"]] == [wid] and lst["items"] == []
+
+
+check("a drop that does not restate the flag clears it (recorded), and the item is "
+      "archived at once", a_drop_clears_a_flag_it_does_not_restate)
 
 
 print("\n§3  dropped is never Done")

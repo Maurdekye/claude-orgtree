@@ -640,6 +640,35 @@ check("the physical move happens on the next write, records kept; reopen returns
       physical_move_on_next_write_and_reopen)
 
 
+def a_question_holds_a_dropped_item_visible():
+    """THE RETAINED EXCEPTION for the other attention source: a drop touches no
+    ask, so an OPEN question attached to the item keeps it on the main list
+    (counted as attention) until the asker withdraws it or the user answers —
+    then the derived read archives it at once, no clock involved."""
+    slug = fresh_org()
+    wid = create(slug)
+    st, js = agent(slug, "boss", "orgtree_ask", question="user, keep this?", work_item=wid)
+    assert st == 200 and js.get("asked"), js
+    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["ending it"],
+       working_on_next=[], dropped_reason="cancelled: the user is being asked whether to keep it")
+    js = listing(slug, archived=True)
+    assert [x["slug"] for x in js["items"]] == [wid] and js["archived"] == [], \
+        "a dropped item with an open attached question is shown, never archived"
+    row = js["items"][0]
+    assert row["status"] == "dropped" and row["attention_sources"] == ["question"]
+    assert js["counts"] == {"attention": 1, "active": 0, "archived": 0, "backlogged": 0}, js["counts"]
+    # the asker withdraws → attention-free → archived at once (derived, no wait)
+    st, js = agent(slug, "boss", "orgtree_withdraw_ask")
+    assert st == 200, js
+    js = listing(slug, archived=True)
+    assert js["items"] == [] and [x["slug"] for x in js["archived"]] == [wid], js
+    assert js["archived"][0]["dropped_reason"].startswith("cancelled"), "reason kept"
+
+
+check("RETAINED EXCEPTION: an open attached question holds a dropped item visible; "
+      "withdrawing it archives the item at once", a_question_holds_a_dropped_item_visible)
+
+
 def attention_holds_an_item_active():
     slug = fresh_org()
     wid = create(slug)

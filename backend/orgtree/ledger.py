@@ -10099,6 +10099,18 @@ class Org:
     #: might still be looked at. `done` and `waiting` keep the hour unchanged.
     #: Because archival is DERIVED on read, an item dropped before this rule
     #: existed reads as archived at once too, and the next sweep moves it.
+    #:
+    #: ⚠ THE ONE RETAINED EXCEPTION IS ATTENTION, NOT TIME (coordinator
+    #: qualification 2026-09-07). `_work_archived` / `_work_sweep` still keep
+    #: an item that HOLDS ATTENTION on the main list whatever its status —
+    #: a manual flag or an open attached question — because the badge must
+    #: open onto a visible row (Astra 2026-09-05). So "at once" means "the
+    #: instant it is dropped AND attention-free": the drop update itself
+    #: clears a manual flag it does not restate (`work_update`, "the manual
+    #: flag is restated by every update"), a drop that passes attention=True
+    #: holds the row until the user dismisses or replies, and an open
+    #: attached question holds it until the asker withdraws or the user
+    #: answers — the drop touches no ask. Nothing waits on a clock.
     WORK_ARCHIVES_AT_ONCE: Final = ("dropped",)
 
     def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
@@ -10180,10 +10192,11 @@ class Org:
         # ⚠ THE OUTCOME IS RECORDED PER ITEM, not asserted once for the batch.
         # This line used to say "done for over an hour" for everything it
         # swept, which was true while `done` was the only status that archived
-        # itself; now that a cancelled or failed item ages out on the same
-        # clock, a single phrase would write "done" into the durable org log
-        # about work that was never completed. A waiting item ages out too, so
-        # the batch phrase cannot say "closed" either.
+        # itself; a cancelled or failed item is swept too (at once, since
+        # 2026-09-07 — no clock at all), so a single phrase would write "done"
+        # into the durable org log about work that was never completed. A
+        # waiting item ages out as well, so the batch phrase cannot say
+        # "closed" either.
         outcomes: dict[str, str] = {}
         for it in list(active):
             if self._work_eligible(it, now_ts) and not self._work_attention(it):
