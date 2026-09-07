@@ -19,7 +19,7 @@ import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { DocGalleryModal } from '../src/canvas/gallery'
+import { AgentGalleryView, DocGalleryModal } from '../src/canvas/gallery'
 import { activeDocCount } from '../src/canvas/shared'
 import type { DocCountNode } from '../src/canvas/shared'
 import type { DocRow } from '../src/api'
@@ -534,3 +534,83 @@ uiTest('§15b CONTROL — with no refs at all a document body is plain prose',
     assert.match(pane(el)?.textContent ?? '', /@item:org1\/the-plan/,
       'and the token is still readable as written')
   })
+
+const agentGallery = (nid: string, extra?: Partial<{
+  node: any
+  onFocusAgent: (id: string) => void
+  onReply: (node: string, text: string) => void
+  refs: any
+  onChanged: () => void
+}>) => (
+  <AgentGalleryView slug="org1" nid={nid} toast={noop}
+    node={extra?.node}
+    onFocusAgent={extra?.onFocusAgent}
+    onReply={extra?.onReply}
+    refs={extra?.refs}
+    onChanged={extra?.onChanged} />
+)
+
+uiTest('AgentGalleryView: lists only presentations for the specified agent in two-column mailer', async (mount) => {
+  mockDocs([
+    row({ id: 'd1', node: 'agent-1', title: 'agent1 report' }),
+    row({ id: 'd2', node: 'agent-2', title: 'agent2 report' }),
+  ])
+  const { el } = await mount(agentGallery('agent-1'))
+  await flush()
+  assert.equal(rows(el).length, 1)
+  assert.match(rows(el)[0]!.textContent ?? '', /agent1 report/)
+  assert.doesNotMatch(el.textContent ?? '', /agent2 report/)
+  assert.ok(el.querySelector('.mailer'))
+  assert.ok(el.querySelector('.mailer-list'))
+  assert.ok(el.querySelector('.mailer-read'))
+  assert.match(pane(el)?.textContent ?? '', /select a document to read it/)
+})
+
+uiTest('AgentGalleryView: selecting a row renders the document in DocPane', async (mount) => {
+  mockDocs([row({ id: 'd1', node: 'agent-1', title: 'agent1 report' })], { d1: '# Agent Notes\n\nSome findings here' })
+  const { el } = await mount(agentGallery('agent-1'))
+  await flush()
+  await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+  await flush()
+  assert.ok(rows(el)[0]!.classList.contains('on'))
+  assert.match(pane(el)?.textContent ?? '', /Some findings here/)
+  assert.equal(pane(el)?.querySelector('.doc-pane-title-row b')?.textContent, 'agent1 report')
+  assert.ok(pane(el)?.querySelector('.chip-x'), 'dismiss button is rendered')
+})
+
+uiTest('AgentGalleryView: dismissing a document removes it from the list', async (mount) => {
+  const calls = mockDocs([row({ id: 'd1', node: 'agent-1', title: 'agent1 report' })], { d1: 'body' })
+  let changed = false
+  const { el } = await mount(agentGallery('agent-1', { onChanged: () => { changed = true } }))
+  await flush()
+  await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+  await flush()
+  const btn = pane(el)?.querySelector('.doc-pane-title-row .chip-x') as HTMLElement
+  assert.ok(btn, 'dismiss button found')
+  await inAct(() => btn.click())
+  await flush()
+  const del = calls.filter((c) => c.method === 'DELETE')
+  assert.equal(del.length, 1)
+  assert.match(del[0]!.url, /\/documents\/d1$/)
+  assert.equal(rows(el).length, 0)
+  assert.match(el.textContent ?? '', /No presented documents/)
+  assert.ok(changed, 'onChanged was called')
+})
+
+uiTest('AgentGalleryView: HTML mockup renders as native link with MockupBadge', async (mount) => {
+  mockDocs([row({ id: 'd-html', node: 'agent-1', title: 'HTML mockup', format: 'html' })])
+  const { el } = await mount(agentGallery('agent-1'))
+  await flush()
+  const link = el.querySelector('a.doc-mockup') as HTMLAnchorElement
+  assert.ok(link, 'rendered as link')
+  assert.match(link.getAttribute('href') ?? '', /mockup/)
+  assert.ok(link.querySelector('.mockup-format'), 'renders MockupBadge')
+})
+
+uiTest('AgentGalleryView: renders empty state when agent has no presentations', async (mount) => {
+  mockDocs([])
+  const { el } = await mount(agentGallery('agent-1'))
+  await flush()
+  assert.match(el.textContent ?? '', /No presented documents/)
+  assert.equal(rows(el).length, 0)
+})

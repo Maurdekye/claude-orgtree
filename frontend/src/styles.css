@@ -3328,6 +3328,16 @@ span.ref-chip.ref-chip {
    top-left corner of an empty box */
 .docket-agent > .pad { padding: 12px 10px; line-height: 1.5; }
 
+/* the agent presentations view on the desk shares the docket panel's narrow-column
+   split and overflow clipping */
+.msgs.gallery-agent {
+  overflow: hidden; gap: 0; padding: 6px;
+}
+.gallery-agent .mailer-list { width: 52%; max-width: none; }
+.gallery-agent .mailer-read { padding: 8px 10px; }
+.gallery-agent > .pad { padding: 12px 10px; line-height: 1.5; }
+.gallery-agent .desk-presented-head { padding: 0 4px 4px; }
+
 /* vibrant orange badge WITHOUT the mail bell's pulse animation — the
    2026-08-04 ruling keeps the glow/pulse to that one bell alone */
 .eye-count.docket-attn { background: var(--accent); color: #fff; }

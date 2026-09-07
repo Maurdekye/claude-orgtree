@@ -46,6 +46,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { AgentDocketView, agentItems } from './docket'
+import { AgentGalleryView } from './gallery'
 import { GitContextButton } from '../git/GitContextButton'
 import { PresentationCard } from './docs'
 import { buildNodeFacts } from './docket'
@@ -2428,24 +2429,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         refs={deskRefs}
         onChanged={() => setWorkBump((n) => n + 1)} />}
       {view === 'presented' && (
-        <section className="desk-presented" aria-label={`presented documents for ${node.id}`}>
-          <div className="desk-presented-head">
-            <b>Presented</b>
-            <span className="dim">documents and HTML previews from {node.id}</span>
-          </div>
-          {(node.documents?.length ?? 0) === 0
-            ? <p className="dim desk-presented-empty">No presented documents.</p>
-            : <div className="desk-presented-list">
-                {node.documents!.map((d) => (
-                  <PresentationCard key={d.id} slug={slug} doc={d}
-                    className="doc-badge desk-presented-card"
-                    onOpen={onOpenDoc ?? (() => {})}>
-                    {d.format !== 'html' && <DocIcon fontSize="inherit" />}
-                    <span>{d.title}</span>
-                  </PresentationCard>
-                ))}
-              </div>}
-        </section>
+        <AgentGalleryView slug={slug} nid={node.id} node={node} toast={toast}
+          onFocusAgent={onJump} refs={deskRefs}
+          onChanged={() => refresh(true)} />
       )}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
           was named explicitly). `onJump` is the SAME callback NavChip and the

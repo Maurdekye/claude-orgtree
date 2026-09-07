@@ -26,7 +26,7 @@ import type { DocRow } from '../api'
 import { BASE, fileBase, getDocuments, mockupUrl } from '../api'
 import { sendLinkedReply } from '../events/reply'
 import type { ReplyTarget } from '../generated/events'
-import type { ToastFn } from '../types'
+import type { ToastFn, TreeNode } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, MockupBadge, MockupOpen, useDoc } from './docs'
 import { PinFrame } from './modalpin'
@@ -310,5 +310,121 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply,
           </>
         )}
     </>
+  )
+}
+
+export interface AgentGalleryViewProps {
+  slug: string
+  nid: string
+  node?: TreeNode | { id: string; documents?: any[] | null; state?: string; tier?: string | null }
+  toast: ToastFn
+  onFocusAgent?: (agentId: string) => void
+  onReply?: (node: string, text: string, target: ReplyTarget) => Promise<unknown> | void
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
+  onChanged?: () => void
+}
+
+/** The agent-scoped presentations view rendered on the agent desk.
+ *  Shares the org presentation layout (.mailer with left-hand list and
+ *  right-hand reading pane) and behaviors (inline markdown reading, HTML
+ *  mockup new-tab link, viewer dismiss, reply box, selection by ID),
+ *  limited strictly to presentations made by the selected agent. */
+export function AgentGalleryView({ slug, nid, node, toast, onFocusAgent, onReply,
+  refs, onChanged }: AgentGalleryViewProps) {
+  const data = usePolled(() => getDocuments(slug), [slug])
+  const [dismissed, setDismissed] = useState<string[]>([])
+  const fallbackRows: DocRow[] = useMemo(() => {
+    return (node?.documents ?? []).map((d) => ({
+      id: d.id,
+      node: nid,
+      title: d.title,
+      at: d.at,
+      format: d.format,
+      bytes: d.bytes,
+      evicted: false,
+      node_state: (node?.state as DocRow['node_state']) ?? 'live',
+      tier: node?.tier ?? null,
+    }))
+  }, [node, nid])
+
+  const rows = useMemo(() => {
+    const polled = data?.documents?.filter((r) => r.node === nid && !r.evicted)
+    const source = (polled && polled.length > 0) ? polled : (fallbackRows.length > 0 ? fallbackRows : (polled ?? []))
+    return source.filter((r) => !dismissed.includes(r.id))
+  }, [data, nid, fallbackRows, dismissed])
+
+  const [selId, setSelId] = useState<string | null>(null)
+  const cur = rows.find((r) => r.id === selId)
+
+  const paneRefs = useMemo(() => (refs && {
+    world: refs.world,
+    onOpen: (r: ResolvedRef) => {
+      if (r.ref.kind === 'doc' && rows.some((d) => d.id === r.ref.id)) {
+        setSelId(r.ref.id)
+        return
+      }
+      refs.onOpen?.(r)
+    },
+  }) || undefined, [refs, rows])
+
+  return (
+    <section className="msgs gallery-modal gallery-agent desk-presented"
+      aria-label={`presented documents for ${nid}`}
+      onClick={openLightboxIfEligibleImage}>
+      <div className="gallery-head desk-presented-head">
+        <b>Presented</b>
+        <span className="dim">documents and HTML previews from {nid}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="dim pad desk-presented-empty">No presented documents.</div>
+      ) : (
+        <div className="mailer">
+          <div className="mailer-list">
+            {rows.map((r) => (
+              <GalleryEntry key={r.id} slug={slug} row={r}
+                className={'mailrow doc-gallery-row desk-presented-card'
+                  + (isHired(r) ? ' active' : ' past')
+                  + (r.id === selId ? ' on' : '')
+                  + (r.evicted ? ' evicted' : '')
+                  + (r.format === 'html' ? ' doc-mockup' : '')}
+                title={[
+                  r.evicted
+                    ? 'content evicted — later presentations pushed this card off the list'
+                    : `read “${r.title}”`,
+                  STATE_WHY[r.node_state],
+                ].filter(Boolean).join(' · ')}
+                onClick={() => setSelId(r.id === selId ? null : r.id)}>
+                <div className="l1">
+                  <span className="mfrom">{r.title || '(untitled)'}</span>
+                  <span className="mtime">{ago(r.at)}</span>
+                </div>
+                <div className="l2">
+                  <TierChip tier={r.tier} />
+                  {r.node || '?'}
+                  {r.format === 'html' && <MockupBadge />}
+                  {r.evicted && <span className="badge evicted">content evicted</span>}
+                </div>
+              </GalleryEntry>
+            ))}
+          </div>
+          <div className="mailer-read">
+            {cur ? (
+              <DocPane key={cur.id} slug={slug} row={cur} toast={toast}
+                onDismissed={() => {
+                  setDismissed((d) => [...d, cur.id])
+                  setSelId(null)
+                  onChanged?.()
+                }}
+                close={() => {}}
+                onFocusAgent={onFocusAgent}
+                onReply={onReply}
+                refs={paneRefs} />
+            ) : (
+              <div className="dim pad mailer-none">select a document to read it</div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }

@@ -992,11 +992,15 @@ test('Presented desk tab lists the selected agent documents and opens markdown',
   assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /Agent preview/)
   const html = view.el.querySelector<HTMLElement>('.desk-presented-card.doc-mockup')
   assert.ok(html, 'HTML preview does not use the existing mockup card path')
-  if (html.tagName === 'A') assert.match((html as HTMLAnchorElement).getAttribute('href') ?? '', /mockup/)
-  const markdown = view.el.querySelector<HTMLButtonElement>('.desk-presented-card')
+  assert.ok(view.el.querySelector('.desk-presented .mailer'))
+  assert.ok(view.el.querySelector('.desk-presented .mailer-list'))
+  assert.ok(view.el.querySelector('.desk-presented .mailer-read'))
+  assert.match(view.el.querySelector('.mailer-read')?.textContent ?? '', /select a document to read it/)
+  const markdown = view.el.querySelector<HTMLElement>('.desk-presented-card')
   assert.ok(markdown, 'markdown document is not actionable')
   await act(async () => { markdown!.click() })
-  assert.deepEqual(opened, ['doc-agent-md'])
+  assert.ok(markdown!.classList.contains('on'))
+  assert.match(view.el.querySelector('.mailer-read')?.textContent ?? '', /Agent report/)
   await view.render(
     <DeskChat node={node({ id: 'agent', documents: [] })}
       map={new Map([['agent', node({ id: 'agent', documents: [] })]])}
