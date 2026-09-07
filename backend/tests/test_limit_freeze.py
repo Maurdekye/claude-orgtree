@@ -1463,15 +1463,18 @@ def _sec_reset_timing_body() -> None:
         None if limits.reset_for("usage limit reached") == (None, "")
         else (_ for _ in ()).throw(AssertionError("lane band not applied"))))
 
-    # a named lane whose own reset is not believable must not sink the
-    # answer — the ruling is "always a timestamp", and another lane's is
-    # right there
+    # a named lane whose own reset is not believable: until 2026-09-07 the
+    # answer fell through to another lane inside its reach ("always a
+    # timestamp"). The user's matching rule of 2026-09-07 14:56Z — cached
+    # usage matched to the limit TYPE the message named — retired that
+    # borrowing (coordinator decision 15:32Z, literal): the named lane
+    # answers or nothing does, and the caller's probe floor re-asks soon.
     _readout(("session", "session", 99, "critical", -600, True, None),
              ("weekly_all", "weekly", 70, "normal", 4 * 3600, False, None))
-    check("reset_for · a stale named lane falls through to a believable one",
-          lambda: (
-        None if limits.reset_for("session limit reached")[1]
-        == "usage:weekly_all"
+    check("reset_for · a stale named lane does NOT borrow another lane's "
+          "reset (user rule 2026-09-07: the cache is matched to the named "
+          "type)", lambda: (
+        None if limits.reset_for("session limit reached") == (None, "")
         else (_ for _ in ()).throw(AssertionError(
             limits.reset_for("session limit reached")))))
 
@@ -2973,22 +2976,40 @@ def _sec_reset_timing_body() -> None:
             supervisor._fallback_window_until(now + 5 * 3600, now,
                                               trusted=False) - now))))
 
-    # ── a NAMED lane bands the epoch too ────────────────────────────────────
-    check("band · 'your session limit …|<epoch 8 days out>' is two pieces of "
-          "evidence contradicting each other — the lane wins", lambda: (
+    # ── a NAMED lane no longer bands a TRUSTED explicit epoch ──────────────
+    # Until 2026-09-07 "your session limit …|<epoch 8 days out>" was read as
+    # two pieces of evidence contradicting each other and the lane won. The
+    # user's message-first ruling (14:56Z; coordinator decision 15:36Z)
+    # retires that: a trusted explicit timestamp keeps only the global
+    # guards (not past, not beyond MAX_HORIZON). The UNTRUSTED case below
+    # keeps the band — that exemption still rests on provenance.
+    check("stated · 'your session limit …|<epoch 8 days out>' takes the "
+          "epoch — the stated time wins over the inferred lane (2026-09-07)",
+          lambda: (
         None if supervisor._parse_limit_reset_ts(
             "you have hit your session limit|%d" % (int(now) + 8 * 86400),
-            "session", now=now) is None
-        else (_ for _ in ()).throw(AssertionError("epoch beat its own lane"))))
-    check("band · …and through the seam the freeze site uses, not just the "
-          "parser (the lane has to be DERIVED from that wording)", lambda: (
+            "session", now=now) is not None
+        else (_ for _ in ()).throw(AssertionError("the lane cut the epoch"))))
+    check("stated · …and through the seam the freeze site uses", lambda: (
         None if supervisor._limit_reset_ts(
             "you have hit your session limit|%d" % (int(now) + 8 * 86400))[1]
-        != "text"
+        == "text"
         else (_ for _ in ()).throw(AssertionError(
             supervisor._limit_reset_ts(
                 "you have hit your session limit|%d"
                 % (int(now) + 8 * 86400))))))
+    check("stated · …but the GLOBAL guard stands: nine days out is not a "
+          "reset, lane or no lane", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "you have hit your session limit|%d" % (int(now) + 9 * 86400),
+            "session", now=now) is None
+        else (_ for _ in ()).throw(AssertionError("believed nine days"))))
+    check("stated · …and an UNTRUSTED epoch beside a lane word is still "
+          "banded", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "you have hit your session limit|%d" % (int(now) + 8 * 86400),
+            "session", now=now, trusted=False) is None
+        else (_ for _ in ()).throw(AssertionError("untrusted epoch escaped"))))
     check("band · …while an epoch with no lane word beside it is still taken "
           "at face value", lambda: (
         None if supervisor._parse_limit_reset_ts(
@@ -3142,11 +3163,20 @@ def _sec_reset_timing_body() -> None:
             limits.reset_for("You've hit your session limit")))))
     _readout(("session", "session", 99, "critical", -600, True, None),
              ("weekly_all", "weekly", 65, "normal", 3 * 3600, False, None))
-    check("cap · …but another lane INSIDE the named lane's reach is a fine "
-          "answer", lambda: (
-        None if limits.reset_for("You've hit your session limit")[1]
+    check("cap · …and another lane INSIDE the named lane's reach is not an "
+          "answer either (2026-09-07: the named type is matched or nothing "
+          "is — the borrowing this once allowed is retired)", lambda: (
+        None if limits.reset_for("You've hit your session limit") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("You've hit your session limit")))))
+    # …while an UNNAMED limit still takes the soonest eligible lane
+    check("cap · …an unnamed limit still takes the soonest eligible lane "
+          "(the 2026-08-18 shortest rule, kept by the 2026-09-07 decision)",
+          lambda: (
+        None if limits.reset_for("Claude AI usage limit reached")[1]
         == "usage:weekly_all"
-        else (_ for _ in ()).throw(AssertionError("over-tight cap"))))
+        else (_ for _ in ()).throw(AssertionError(
+            limits.reset_for("Claude AI usage limit reached")))))
 
     # ---- classify does not read a model ID as a tier limit ----------------
     for _blob, _want in (

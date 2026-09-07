@@ -1,10 +1,13 @@
 """Reset priority — the time IN THE LIMIT MESSAGE comes first, for every
 provider; cached usage only when the message carries none, and then matched
 to model, account lane and limit type (user ruling 2026-09-07 14:56Z;
-coordinator decisions 15:03Z: an unnamed type keeps the 2026-08-18 shortest
-rule, a named type takes matched evidence only and never silently borrows
-another lane's reset; a message/provider deadline outranks the roster mark in
-the API projection).
+coordinator decisions 15:03Z, 15:32Z and 15:36Z: an unnamed type keeps the
+2026-08-18 shortest rule; a named type takes matched evidence only and never
+borrows another lane's reset, not even as a probe; a trusted explicit
+timestamp — epoch or dated — keeps only the global guards and is never cut
+down by an inferred lane; a stated zone is honoured or the form declined; a
+message/provider deadline outranks the roster in the API projection whatever
+the roster says; the Claude readout describes Claude tiers only).
 
 Every check here FAILED on main 7a210e8 before the correction (the audit's
 G1–G7, feature-fable/reset-priority/audit.md) and each sits beside a positive
@@ -26,10 +29,9 @@ control proving the instrument can tell the two answers apart:
     §6  the API projection shows a message/provider deadline over the roster
         mark, and still falls back to the roster without one (G7)
 
-Not covered here, said plainly: the Luna double-rejection branch (G6) is
-reached only through the codex wrapper's two-leg re-drive; its precedence is
-the same `reset_from` mechanism §5 measures, but the branch itself has no
-end-to-end control in this suite.
+    §7  the Luna double rejection — the ACTUAL selection path in
+        `_codex_leg` with both legs rejecting — takes each leg's stated reset
+        for its own pool ahead of the cached board (G6)
 
 Hermetic: reuses test_limit_freeze's rig (throwaway ORGTREE_DATA + HOME, the
 node stand-in CLI, a synthetic usage readout); no network, no real CLI. §3
@@ -47,6 +49,7 @@ import sys
 import time
 import traceback
 from typing import Any
+from zoneinfo import ZoneInfo as _zi
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # ⚠ FIRST: this establishes the throwaway ORGTREE_DATA/HOME and the stand-in
@@ -137,23 +140,132 @@ def sec_parser() -> None:
     check("the long form (full month, 'on', 24-hour clock) reads too",
           _long_form)
 
-    def _banded() -> None:
-        # the banded parser refuses a dated time past its lane, like every
-        # other prose form — a session limit does not lift in nine days
+    def _dated_text(at: dt.datetime, lead: str = "Try again at") -> str:
+        return (f"{lead} {at.strftime('%b')} {at.day}, {at.year} "
+                f"{at.strftime('%I:%M %p').lstrip('0')}")
+
+    def _stated_fact() -> None:
+        # a dated time ~19 h out, for an UNNAMED and for a SESSION-named
+        # limit: until 2026-09-07 the lane band declined both and the freeze
+        # fell through to the cache (redteam F1); the stated time now wins
+        # and only the global guards remain (coordinator decision 15:36Z)
+        later = dt.datetime.fromtimestamp(now + 19 * 3600).replace(
+            second=0, microsecond=0)
+        for kind, text in ((None, "You've hit your usage limit. "
+                                  + _dated_text(later) + "."),
+                           ("session", "You've hit your session limit. "
+                                       + _dated_text(later) + ".")):
+            fixture(limits.classify(text)[0] == kind, f"classify: {text}")
+            near(supervisor._parse_limit_reset_ts(text, kind, now),
+                 later.timestamp(), f"{kind}: the stated time, 19 h out")
+            ts, src = supervisor._limit_reset_ts(text)
+            eq(src, "text", f"{kind}: through the freeze seam")
+            near(ts, later.timestamp(), f"{kind}: the stated time")
+        # the global guards stand: nine days out, and the past
         far = dt.datetime.fromtimestamp(now + 9 * 86400)
-        text = (f"You've hit your session limit. Try again at "
-                f"{far.strftime('%b')} {far.day}, {far.year} "
-                f"{far.strftime('%I:%M %p').lstrip('0')}")
+        text = "You've hit your session limit. " + _dated_text(far)
         fixture(supervisor._parse_limit_reset_ts_raw(text, now)[0] is not None,
-                "the raw parse must see the date for the band to matter")
+                "the raw parse must see the date for the guard to matter")
         eq(supervisor._parse_limit_reset_ts(text, "session", now), None,
-           "a dated reset nine days out for a session limit")
-        # …and inside the lane it stands
-        near(supervisor._parse_limit_reset_ts(
-            f"You've hit your session limit. Try again at {stated}.",
-            "session", now), soon.timestamp(), "inside the lane")
-    check("the dated form is banded by the lane like the other prose forms",
-          _banded)
+           "nine days out is not a reset")
+        past = dt.datetime.fromtimestamp(now - 3600)
+        eq(supervisor._parse_limit_reset_ts(
+            "usage limit. " + _dated_text(past), None, now), None, "the past")
+        # …and an UNTRUSTED blob keeps the lane band (provenance, not form)
+        eq(supervisor._parse_limit_reset_ts(
+            "You've hit your session limit. " + _dated_text(later),
+            "session", now, trusted=False), None, "untrusted stays banded")
+    check("a stated dated time ~19 h out is honoured for an unnamed AND a "
+          "session-named limit; nine days / the past / untrusted are refused",
+          _stated_fact)
+
+    def _codex_specimen() -> None:
+        # the real app-server wording, measured 2026-09-06: what does the
+        # lane classifier make of it, and does the whole seam honour it?
+        specimen = ("You've hit your usage limit. Try again at Sep 6th, 2026 "
+                    "10:33 AM.")
+        eq(limits.classify(specimen), (None, None),
+           "the specimen names no lane (so no lane could have banded it)")
+        # the same shape, re-dated ~19 h ahead so it is a live reset
+        later = dt.datetime.fromtimestamp(now + 19 * 3600).replace(
+            second=0, microsecond=0)
+        live = "You've hit your usage limit. " + _dated_text(later) + "."
+        ts, src = supervisor._provider_limit_until(live, None, now)
+        eq(src, "text", "the codex freeze reads the message")
+        near(ts, later.timestamp(), "…at the stated instant")
+    check("the real codex specimen names no lane and freezes on its stated "
+          "time", _codex_specimen)
+
+    def _zones() -> None:
+        utc = dt.timezone.utc
+        at = dt.datetime.fromtimestamp(now + 19 * 3600, utc).replace(
+            second=0, microsecond=0)
+        clock = at.strftime('%I:%M %p').lstrip('0')
+        base = f"Try again at {at.strftime('%b')} {at.day}, {at.year} {clock}"
+        # a stated zone is READ in that zone (coordinator correction 3;
+        # redteam F3 measured "(UTC)" and "UTC+3" read as local)
+        for suffix, want in ((" (UTC)", at), (" UTC", at), (" Z", at),
+                             (" UTC+3", at - dt.timedelta(hours=3)),
+                             (" GMT-05:30", at + dt.timedelta(hours=5,
+                                                              minutes=30)),
+                             (" +02:00", at - dt.timedelta(hours=2)),
+                             (" (Asia/Jerusalem)",
+                              at.astimezone(_zi("Asia/Jerusalem")).replace(
+                                  tzinfo=None) and None)):
+            ts, how = supervisor._parse_limit_reset_ts_raw(base + suffix, now)
+            eq(how, "date", f"form for {suffix!r}")
+            if want is not None:
+                near(ts, want.timestamp(), f"instant for {suffix!r}")
+            else:
+                # an IANA zone: the wall clock in THAT zone
+                local = dt.datetime(at.year, at.month, at.day, at.hour,
+                                    at.minute, tzinfo=_zi("Asia/Jerusalem"))
+                near(ts, local.timestamp(), "Asia/Jerusalem wall clock")
+        # an unsupported zone DECLINES rather than reads as local
+        for suffix in (" PST", " IDT", " (Mars/Olympus)", " (CEST)"):
+            eq(supervisor._parse_limit_reset_ts_raw(base + suffix, now),
+               (None, ""), f"unsupported zone {suffix!r} declines")
+        # …and the bare-clock claude wording gets the same treatment
+        ts, how = supervisor._parse_limit_reset_ts_raw(
+            "You've hit your limit · resets 12:40am (Asia/Jerusalem)", now)
+        eq(how, "clock", "the measured claude wording")
+        ref = dt.datetime.fromtimestamp(now, _zi("Asia/Jerusalem"))
+        want = ref.replace(hour=0, minute=40, second=0, microsecond=0)
+        if want <= ref:
+            want += dt.timedelta(days=1)
+        near(ts, want.timestamp(), "12:40am IN Asia/Jerusalem")
+        eq(supervisor._parse_limit_reset_ts_raw("resets 12:40am PST", now),
+           (None, ""), "an abbreviation on the clock form declines")
+        # control: prose after the clock is not a zone
+        ts2, how2 = supervisor._parse_limit_reset_ts_raw(
+            "resets 12:40am today and more", now)
+        eq(how2, "clock", "'today' is not a zone")
+        near(ts2, dt.datetime.fromtimestamp(now).replace(
+            hour=0, minute=40, second=0, microsecond=0).timestamp()
+            + (86400 if dt.datetime.fromtimestamp(now).hour > 0
+               or dt.datetime.fromtimestamp(now).minute >= 40 else 0),
+            "read as local")
+    check("a stated zone is honoured (UTC/GMT/Z/offset/IANA) or the form "
+          "declines (abbreviations, unknown names) — never read as local",
+          _zones)
+
+    def _hours() -> None:
+        at = dt.datetime.fromtimestamp(now + 19 * 3600)
+        head = f"Try again at {at.strftime('%b')} {at.day}, {at.year} "
+        for bad in ("13:33 AM", "13:33 PM", "0:10 AM", "25:33"):
+            eq(supervisor._parse_limit_reset_ts_raw(head + bad, now),
+               (None, ""), f"{bad!r} declines")
+        for bad in ("13:40pm", "0:40am"):
+            eq(supervisor._parse_limit_reset_ts_raw("resets " + bad, now),
+               (None, ""), f"clock {bad!r} declines")
+        # controls: the edges that are real times
+        for good, h in (("12:33 AM", 0), ("12:33 PM", 12), ("1:05 pm", 13),
+                        ("23:33", 23)):
+            ts, how = supervisor._parse_limit_reset_ts_raw(head + good, now)
+            eq(how, "date", f"{good!r} reads")
+            eq(dt.datetime.fromtimestamp(ts).hour, h, f"{good!r} hour")
+    check("an impossible clock hour declines instead of shifting (13 AM); "
+          "12 AM/PM and 24-hour edges read correctly", _hours)
 
     def _not_a_reset() -> None:
         eq(supervisor._parse_limit_reset_ts_raw(
@@ -226,21 +338,41 @@ def sec_matching() -> None:
           "unnamed cache answer is a bounded probe — the borrowing is never "
           "silent", _schedule_kinds)
 
-    def _named_no_match_is_visible() -> None:
-        # a "session" limit whose session entry is stale: the answer falls
-        # through to the weekly lane inside the session reach, and the
-        # record SAYS so (probe), instead of presenting it as session's reset
+    def _named_no_match() -> None:
+        # a "session" limit whose session entry is stale, with the weekly
+        # lane right there inside the session reach: NOT borrowed (the user's
+        # matching rule, literal — coordinator 15:32Z); the seam falls to
+        # nothing and the freeze takes its probe floor
         readout(("session", -600, True, None),
                 ("weekly_all", 3 * 3600, False, None))
-        ts, src = limits.reset_for("You've hit your session limit", now,
-                                   tier="haiku")
-        eq(src, "usage:weekly_all", "the borrowed lane is named as itself")
-        eq(supervisor._usage_schedule_kind(
-            "You've hit your session limit", src), "probe",
-           "…and scheduled as a probe")
-    check("a named type with no matching evidence borrows explicitly: the "
-          "lane is recorded as itself and the schedule is a probe",
-          _named_no_match_is_visible)
+        eq(limits.reset_for("You've hit your session limit", now, tier="haiku"),
+           (None, ""), "no matching evidence → no cache answer")
+        eq(supervisor._limit_reset_ts("You've hit your session limit",
+                                      tier="haiku"), (None, ""),
+           "…through the seam")
+        # control: the same board answers an UNNAMED limit (shortest eligible)
+        eq(limits.reset_for("Claude AI usage limit reached", now,
+                            tier="haiku")[1], "usage:weekly_all",
+           "an unnamed limit still takes the soonest eligible lane")
+    check("a named type with no matching cache evidence gets NO cache answer "
+          "— the floor, not another lane's reset", _named_no_match)
+
+    def _claude_only() -> None:
+        # the Claude readout describes Claude tiers only (coordinator
+        # decision 15:36Z on redteam F5): a codex or other tier gets nothing
+        # from it, however the message reads
+        readout(("session", 3600, True, None),
+                ("weekly_all", 2 * 3600, False, None))
+        for tier in ("luna", "gpt-reserve", "agy", "or-x"):
+            eq(limits.reset_for("Claude AI usage limit reached", now,
+                                tier=tier), (None, ""), f"{tier}: unnamed")
+            eq(limits.reset_for("You've hit your session limit", now,
+                                tier=tier), (None, ""), f"{tier}: named")
+        eq(limits.CLAUDE_TIERS, accounts.TIERS, "the tier list is the roster's")
+        # control: a Claude tier is answered
+        eq(limits.reset_for("You've hit your session limit", now,
+                            tier="sonnet")[1], "usage:session", "sonnet")
+    check("the Claude readout never answers a non-Claude tier", _claude_only)
 
 
 # ══════════════════════════════════════════════════════════════════════ §3
@@ -405,14 +537,26 @@ def sec_codex() -> None:
         eq((ts, kind, src), (now + 3 * 3600, "observed-deadline",
                              codex_route.SRC_BOARD),
            "no notification → the board, and it says so")
-        # an exhausted notification WITHOUT a reset is a probe, not patched
-        # over with the board's number
+        # an exhausted notification WITHOUT a reset is "no time in the
+        # message": the matching pool's cached reset answers (coordinator
+        # correction 4), and says it came from the board
         blank = {"codex": {"limitName": "", "rateLimitReachedType": "usage",
                            "primary": {"usedPercent": 100}}}
         eq(codex_route.failure_deadline(direct, board, blank, plan, now=now),
-           (None, "probe", ""), "an unknown stated reset is not the board's")
+           (now + 3 * 3600, "observed-deadline", codex_route.SRC_BOARD),
+           "no stated reset → the board for the same pool")
+        # …and with no board either, the floor (probe)
+        eq(codex_route.failure_deadline(direct, {"available": False}, blank,
+                                        plan, now=now),
+           (None, "probe", ""), "nothing anywhere → probe")
+        # …and the board for ANOTHER pool never answers this pool
+        other = {**board, "limits": [window(codex_route.RESERVE_MODEL, 100,
+                                            iso(now + 3 * 3600))]}
+        eq(codex_route.failure_deadline(direct, other, blank, plan, now=now),
+           (None, "probe", ""), "the reserve board is not plan's reset")
     check("control · the board answers only when the notification carries "
-          "no reset, with its own provenance", _board_when_absent)
+          "no reset — for the same pool, with its own provenance",
+          _board_when_absent)
 
     def _luna_per_pool() -> None:
         luna = codex_route._route_for(  # pyright: ignore[reportPrivateUsage]
@@ -520,14 +664,141 @@ def sec_projection() -> None:
             api._rederive_freeze_reset(n, dict(unavailable))
             near(n["frozen"]["until_ts"], roster_later,
                  f"{src}/{ts}: the roster mark")
-        n = node_with("text", "observed-deadline", stated)
+        # without a message deadline, capacity available elsewhere still
+        # says so (unchanged)
+        n = node_with("usage:session", "probe", stated)
         api._rederive_freeze_reset(
             n, {"haiku": {"account": "primary", "available": True,
                           "refresh_at": None}})
         eq(n["frozen"]["until_ts"], None,
-           "capacity available elsewhere still says so (unchanged)")
+           "no message deadline + capacity available → the roster's word")
     check("control · without an applicable message deadline the roster "
           "answers, as before", _roster_when_absent)
+
+    def _available_does_not_erase() -> None:
+        # coordinator correction 2: a future message deadline SURVIVES a
+        # resolver that reports capacity available (another account, an
+        # unmarked fallback) — routing is a separate fact and must not erase
+        # the stated time
+        for src in ("text", "provider"):
+            n = node_with(src, "observed-deadline", stated)
+            api._rederive_freeze_reset(
+                n, {"haiku": {"account": "primary", "available": True,
+                              "refresh_at": None}})
+            near(n["frozen"]["until_ts"], stated,
+                 f"{src}: the stated time survives 'available'")
+            if not str(n["frozen"]["until"]).startswith("capacity resets "):
+                raise AssertionError(n["frozen"]["until"])
+    check("a text/provider deadline is not erased by a roster that says "
+          "capacity is available elsewhere", _available_does_not_erase)
+
+
+# ══════════════════════════════════════════════════════════════════════ §7
+
+def sec_luna_two_legs() -> None:
+    print("\n§7 the Luna double rejection takes each leg's stated reset (G6)")
+    now = time.time()
+    R, P = codex_route.RESERVE_POOL, codex_route.PLAN_POOL
+
+    def route(pool: str) -> codex_route.Route:
+        return codex_route._route_for(  # pyright: ignore[reportPrivateUsage]
+            "luna", pool, "acct-A", reason="test", evidence="synthetic")
+
+    def rejection(pool: str, other: str, *, stated: float | None,
+                  cached: float | None) -> supervisor._CodexRouteRejected:
+        """A terminal usage rejection on `pool`, as `_codex_leg_attempt`
+        raises it: `stated` = this leg's own notification reset (None = the
+        notification carried none); `cached` = what the board said."""
+        ev = {"snap_exhausted": stated is not None, "snap_reset": stated,
+              "board_fresh": cached is not None, "board_complete": True,
+              "cap_state": "exhausted" if cached is not None else "usable",
+              "cap_reset": cached, "served": pool, "code": "usage_limit",
+              "usage_prose": False}
+        cls = {"kind": codex_route.KIND_USAGE_LIMIT, "code": "usage_limit",
+               "rejected": True, "attributed": pool, "redrive": True,
+               "pool_state": "exhausted", "why": f"{pool} exhausted (test)",
+               "reset_ts": stated if stated is not None else cached}
+        return supervisor._CodexRouteRejected(
+            route(pool), cls, "usage limit", "sid-test", route(other),
+            evidence=ev)
+
+    def drive(first: supervisor._CodexRouteRejected,
+              second: supervisor._CodexRouteRejected,
+              board_resets: dict[str, float]) -> supervisor._ProviderTurnFailed:
+        """Run the REAL `_codex_leg` with both attempts rejecting, and a
+        cached board that says `board_resets` per pool."""
+        slug, nid = rig.probe_org()
+        org = store.load_org(slug)
+        legs = iter((first, second))
+
+        def attempt(*a, **k):
+            raise next(legs)
+
+        def board():
+            return {"available": True, "account": "acct-A", "age": 0.0,
+                    "stale": False, "complete": True, "limits": [
+                        {"model": (codex_route.RESERVE_MODEL if p == R
+                                   else None),
+                         "percent": 100.0, "is_active": True,
+                         "resets_at": codex_route._iso(t),  # pyright: ignore[reportPrivateUsage]
+                         "observed_at": now}
+                        for p, t in board_resets.items()]}
+        saved = (supervisor._codex_leg_attempt, supervisor.codex_limits.snapshot)
+        supervisor._codex_leg_attempt = attempt
+        supervisor.codex_limits.snapshot = board
+        try:
+            supervisor._codex_leg(slug, nid, org, {}, "go", [])
+        except supervisor._ProviderTurnFailed as e:
+            return e
+        finally:
+            supervisor._codex_leg_attempt, supervisor.codex_limits.snapshot = saved
+        raise AssertionError("both legs rejected and nothing was raised")
+
+    def _stated_over_board() -> None:
+        # both legs STATE a reset (reserve 4 h, plan 2 h); the cached board
+        # says 6 h and 8 h. Until 2026-09-07 this path woke off the board
+        # alone (snapshots were not passed): 6 h. Now: the earliest stated
+        # reset, plan's 2 h, and the freeze knows it is a message value.
+        e = drive(rejection(R, P, stated=now + 4 * 3600, cached=now + 8 * 3600),
+                  rejection(P, R, stated=now + 2 * 3600, cached=now + 6 * 3600),
+                  {R: now + 8 * 3600, P: now + 6 * 3600})
+        near(e.reset_ts, now + 2 * 3600, "plan's STATED reset, the earliest")
+        eq((e.reset_from, e.schedule_kind), ("message", "probe"),
+           "a stated value, and a probe (both pools are out)")
+    check("both legs state a reset: the earliest stated one wins over a "
+          "later cached board", _stated_over_board)
+
+    def _per_pool() -> None:
+        # reserve's notification states 4 h; plan's carried NO reset but the
+        # board holds 2 h for plan: per pool message-first, then the
+        # earliest — plan's cached 2 h, marked as a board value
+        e = drive(rejection(R, P, stated=now + 4 * 3600, cached=None),
+                  rejection(P, R, stated=None, cached=now + 2 * 3600),
+                  {R: now + 4 * 3600, P: now + 2 * 3600})
+        near(e.reset_ts, now + 2 * 3600, "plan's cached reset (no stated one)")
+        eq(e.reset_from, "board", "…and it says so")
+        # the other way round: reserve stated 2 h, plan cached 4 h → stated
+        e = drive(rejection(R, P, stated=now + 2 * 3600, cached=None),
+                  rejection(P, R, stated=None, cached=now + 4 * 3600),
+                  {R: now + 2 * 3600, P: now + 4 * 3600})
+        near(e.reset_ts, now + 2 * 3600, "reserve's stated reset")
+        eq(e.reset_from, "message", "…a message value")
+    check("a pool whose notification carried no time takes its OWN cached "
+          "reset; the earliest pool wins with its own provenance", _per_pool)
+
+    def _control_board_only() -> None:
+        # neither leg stated or cached anything: the board fallback in the
+        # handler answers (the path is live), else the floor
+        e = drive(rejection(R, P, stated=None, cached=None),
+                  rejection(P, R, stated=None, cached=None),
+                  {R: now + 5 * 3600, P: now + 3 * 3600})
+        near(e.reset_ts, now + 3 * 3600, "the board's earliest pool")
+        eq(e.reset_from, "board", "a board value")
+        e = drive(rejection(R, P, stated=None, cached=None),
+                  rejection(P, R, stated=None, cached=None), {})
+        eq(e.reset_ts, None, "nothing anywhere → the freeze takes its floor")
+    check("control · with nothing stated the handler's board fallback answers, "
+          "and with nothing at all the floor", _control_board_only)
 
 
 def main() -> None:
@@ -542,6 +813,7 @@ def main() -> None:
                      " G1 is then covered only by §4's pass-level control")
     sec_codex()
     sec_projection()
+    sec_luna_two_legs()
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:
         print(f"\nFAIL  {label}\n{tb}")

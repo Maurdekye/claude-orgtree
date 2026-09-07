@@ -792,22 +792,36 @@ def recovery_deadline(tier: str, data: Mapping[str, Any] | None,
     return max(cast("list[float]", resets))
 
 
+#: the tiers this readout can describe — `accounts.TIERS`, restated here
+#: because `accounts` imports this module (the value is pinned by a test)
+CLAUDE_TIERS = ("haiku", "sonnet", "opus", "fable")
+
+
 def lane_applies(lim: Mapping[str, Any], tier: str) -> bool:
     """Does this readout lane describe `tier`'s quota at all? — the MODEL half
     of the user's matching rule (2026-09-07: cached usage is consulted only
     when the message carries no time, and then "matched to model, account
     lane and limit type").
 
-    `session` is shared by every tier. `weekly_all` is the pooled
+    `session` is shared by every Claude tier. `weekly_all` is the pooled
     haiku/sonnet/opus bucket and says nothing about Fable's own weekly pool;
-    a `weekly_scoped` lane belongs to the model it names. An unknown or
-    empty tier applies no filter — the callers that do not know the node's
-    model keep today's behaviour, and a filter that guessed would be a
-    guard that reads correctly and means nothing.
+    a `weekly_scoped` lane belongs to the model it names.
+
+    ⚠ CLAUDE TIERS ONLY (coordinator decision 2026-09-07 15:36Z). This
+    readout describes the host's CLAUDE subscription; a codex, antigravity
+    or OpenRouter tier is never answered from it, however the lane is
+    named — lending the Claude weekly lane to a non-Claude wall is the
+    wrong-account parking bug with a new provider on the front. An EMPTY
+    tier applies no filter: that is the shape of a caller that does not
+    know the node's model, and every product caller now passes one (the
+    freeze stamp, the roster mark, the correction pass); the empty form is
+    kept for the pure-function tests and is documented rather than trusted.
     """
     tier = str(tier or "").lower()
     if not tier:
         return True
+    if tier not in CLAUDE_TIERS:
+        return False
     kind = str(lim.get("kind") or "")
     model = str(lim.get("model") or "").lower()
     if kind == "session":
@@ -840,13 +854,14 @@ def reset_for(blob: str, now: float | None = None,
     type of limit is not known, default to the shortest one, so that it can
     be checked sooner"):
 
-      1. if the prose names a lane, that lane answers — scoped lanes matched
-         on the model name. When the named lane has no believable entry the
-         answer falls through to another lane inside the named lane's reach
-         (below) — and that answer is an ESTIMATE, not the named lane's
-         reset: `supervisor._usage_schedule_kind` schedules it as a bounded
-         `probe`, never as an observed deadline, so the borrowing is never
-         silent (coordinator decision 2026-09-07 15:03Z).
+      1. if the prose names a lane, THAT LANE ANSWERS OR NOTHING DOES —
+         scoped lanes matched on the model name. Until 2026-09-07 a named
+         lane with no believable entry fell through to another lane inside
+         its reach ("a stale named lane falls through to a believable one");
+         the user's matching rule — cached usage matched to the limit TYPE
+         the message named — forbids that borrowing, even labelled as an
+         estimate (coordinator decision 15:32Z, literal). The caller then
+         takes its bounded probe floor, which re-asks in minutes.
       2. otherwise take the SOONEST reset on the board, `is_active` or not,
          and never one further out than the SESSION lane. Being active makes a
          lane the likely culprit but does not earn a longer window: this
@@ -904,14 +919,13 @@ def reset_for(blob: str, now: float | None = None,
         hit = _soonest([x for x in lims if str(x.get("kind") or "") == kind
                         and (model is None
                              or model in str(x.get("model") or "").lower())])
-        # ⚠ The fall-through exists because the named lane may be ABSENT from
-        # the readout (an older upstream shape, an account with no scoped
-        # pool) — but it is capped by the named lane's own length, and that
-        # cap is the whole point. Without it, a stale cache whose `session`
-        # entry has expired answers a SESSION limit with the weekly lane's
-        # reset, six days out, and the org's key bills every turn for six days
-        # (redteam 2026-08-18 — a critical finding against the first cut).
-        hit = hit or _soonest(_within(lims, now, kind))
+        # ⚠ NO FALL-THROUGH (2026-09-07). The older cut borrowed another
+        # lane inside the named lane's reach when the named entry was
+        # absent or stale — capped, so the 2026-08-18 six-day key-billing
+        # window could not recur — but the user's rule matches the cache to
+        # the named TYPE, and a lane of another type is not that evidence.
+        # `None` here is the honest answer; the caller's probe floor re-asks
+        # in minutes, and the correction pass re-reads the board.
     else:
         # ⚠ and the SAME cap on the unnamed branch, which is the one ruling ③
         # is actually about. Capping only the named fall-through left the

@@ -353,8 +353,11 @@ def failure_deadline(route: Route, board: dict[str, Any], snapshots: Any,
     when the message carries none). Until then this took `max()` of the two,
     so a board read minutes earlier could push the wake PAST the reset the
     provider had just stated for this very turn. The board is consulted only
-    when the notification carried no usable reset — and then only for the
-    account and pool captured by the route, never another namespace's.
+    when the notification carried no usable reset — an exhausted window
+    WITHOUT a `resetsAt` is exactly "no time in the message", so the
+    matching pool's cached reset answers then (coordinator correction
+    15:32Z) — and then only for the account and pool captured by the route,
+    never another namespace's. Nothing anywhere → the caller's probe floor.
 
     A single served pool recovers only after the latest exhausted constraint
     in that pool. Luna can use either pool, so its earlier per-pool deadline
@@ -383,10 +386,11 @@ def failure_deadline(route: Route, board: dict[str, Any], snapshots: Any,
         candidates: list[tuple[float, str]] = []
         for p in (RESERVE_POOL, PLAN_POOL):
             exhausted, snap = snapshots_pool_reset(snapshots, p, sent_pool=pool)
-            if exhausted:
-                if snap is not None:
-                    candidates.append((snap, SRC_NOTIFICATION))
-                continue        # exhausted with no reset: unknown, not patched
+            if exhausted and snap is not None:
+                candidates.append((snap, SRC_NOTIFICATION))
+                continue
+            # no stated time for this pool (no notification, or one without
+            # a reset): the cached board for the same pool
             if not limits:
                 continue
             cap = pool_capacity(limits, p)
@@ -400,13 +404,12 @@ def failure_deadline(route: Route, board: dict[str, Any], snapshots: Any,
     if not pool:
         return None, "probe", ""
     exhausted, snap = snapshots_pool_reset(snapshots, pool, sent_pool=pool)
-    if exhausted:
+    if exhausted and snap is not None:
         # the notification is the message: an exhausted window with a reset
-        # answers outright, one without a reset is a probe — never patched
-        # over with the board's number
-        if snap is not None:
-            return snap, "observed-deadline", SRC_NOTIFICATION
-        return None, "probe", ""
+        # answers outright
+        return snap, "observed-deadline", SRC_NOTIFICATION
+    # no stated time (no notification, or an exhausted window without one):
+    # the cached board for this account and pool, then the floor
     cap = pool_capacity(limits, pool, now=now) if board_ok else None
     if not cap or cap.get("reset_unknown"):
         return None, "probe", ""

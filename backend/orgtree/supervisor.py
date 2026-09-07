@@ -4242,6 +4242,62 @@ r_DATE = (r"(?:reset\w*|try again)\s*(?:at\s+|on\s+)?"
           r"(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(?:at\s+)?"
           r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
 _DATE_RE = re.compile(r_DATE, re.IGNORECASE)
+# An explicit zone right after a stated clock: "(UTC)", "(Asia/Jerusalem)",
+# "UTC", "GMT+3", "UTC-05:30", "Z", "+03:00", or an abbreviation such as
+# "PST" (the measured claude wording is "resets 12:40am (Asia/Jerusalem)").
+_ZONE_RE = re.compile(
+    r"\s*(?:\(\s*(?P<paren>[^)]{1,40}?)\s*\)"
+    r"|(?P<utc>UTC|GMT|(?-i:Z))(?P<utcoff>[+-]\d{1,2}(?::?\d{2})?)?(?![\w/])"
+    r"|(?P<off>[+-]\d{2}:?\d{2})(?!\d)"
+    # an abbreviation is UPPER CASE and ends in T (PST, IDT, CEST): a lower
+    # or mixed-case word after the clock ("resets 1:40pm today") is prose,
+    # not a zone, and must not decline the time
+    r"|(?-i:(?P<abbr>[A-Z]{1,4}T))(?![\w/]))", re.IGNORECASE)
+_UTC_OFFSET_RE = re.compile(
+    r"^(?:UTC|GMT|Z)?\s*(?:(?P<sign>[+-])(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?)?$",
+    re.IGNORECASE)
+
+
+def _zone_after(blob: str, at: int) -> tuple[_dtm.tzinfo | None, bool]:
+    """The zone a stated clock ending at `at` is written in →
+    `(tzinfo, declined)`. `(None, False)` = no zone stated (the machine's
+    own); `(None, True)` = a zone IS stated and cannot be honoured, so the
+    time must be DECLINED rather than read as local (coordinator correction
+    2026-09-07 15:32Z: "support the explicit zone or decline that form").
+
+    Honoured: UTC/GMT/Z with an optional ±H[H][:MM] offset, a bare ±HH:MM
+    offset, and an IANA name (`Asia/Jerusalem`, via zoneinfo). Declined: an
+    abbreviation ("PST", "IDT" — ambiguous by construction) and an IANA name
+    the zone database does not know."""
+    m = _ZONE_RE.match(blob, at)
+    if not m:
+        return None, False
+    text = (m.group("paren") or "").strip()
+    if m.group("utc") is not None:
+        text = (m.group("utc") or "") + (m.group("utcoff") or "")
+    elif m.group("off") is not None:
+        text = m.group("off")
+    elif m.group("abbr") is not None:
+        text = m.group("abbr")
+    if not text:
+        return None, False
+    om = _UTC_OFFSET_RE.match(text)
+    if om and (om.group("sign") or text.upper().rstrip() in ("UTC", "GMT", "Z")):
+        hours = int(om.group("h") or 0)
+        mins = int(om.group("m") or 0)
+        if hours > 14 or mins > 59:
+            return None, True
+        delta = _dtm.timedelta(hours=hours, minutes=mins)
+        if om.group("sign") == "-":
+            delta = -delta
+        return _dtm.timezone(delta), False
+    if "/" in text:
+        try:
+            import zoneinfo
+            return zoneinfo.ZoneInfo(text), False
+        except Exception:                                  # noqa: BLE001
+            return None, True
+    return None, True
 
 
 def _parse_limit_reset_ts_raw(blob: str,
@@ -4267,27 +4323,42 @@ def _parse_limit_reset_ts_raw(blob: str,
             hour = int(m.group(4))
             ampm = (m.group(6) or "").lower()
             if ampm:
+                # "13:33 AM" is not a time; decline it rather than shift it
+                # twelve hours (redteam 2026-09-07 F2)
+                if not 1 <= hour <= 12:
+                    return None, ""
                 hour = hour % 12 + (12 if ampm == "pm" else 0)
+            tz, declined = _zone_after(blob, m.end())
+            if declined:
+                return None, ""
             t = _dtm.datetime(int(m.group(3)), month, int(m.group(2)),
-                              hour, int(m.group(5) or 0))
+                              hour, int(m.group(5) or 0), tzinfo=tz)
             return t.timestamp(), "date"
         except (ValueError, OverflowError, OSError):
             pass    # "Feb 30th" is not a date; fall through to the other forms
     m = re.search(r"(?:reset\w*|try again)\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?"
                   r"\s*(am|pm)\b", blob, re.IGNORECASE)
     if m:
-        import datetime as _dt
+        if not 1 <= int(m.group(1)) <= 12:
+            return None, ""                 # "13:40pm" is not a clock
+        # the measured claude wording names its zone — "resets 12:40am
+        # (Asia/Jerusalem)" — and until 2026-09-07 it was read in the
+        # machine's zone, right only where the two coincide. An honoured
+        # zone reads the clock IN that zone; an unsupported one declines.
+        tz, declined = _zone_after(blob, m.end())
+        if declined:
+            return None, ""
         # ⚠ ONE clock for the roll and for the band above it: reading
         # `datetime.now()` here while the caller banded against an injected
         # `now` compared two different clocks, and a test straddling the named
         # hour flipped the result by 24 h (redteam 2026-08-18).
-        ref = (_dt.datetime.now() if now is None
-               else _dt.datetime.fromtimestamp(now))
+        base = time.time() if now is None else now
+        ref = _dtm.datetime.fromtimestamp(base, tz)     # tz None = local
         h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
         t = ref.replace(hour=h, minute=int(m.group(2) or 0),
                         second=0, microsecond=0)
         if t <= ref:
-            t += _dt.timedelta(days=1)
+            t += _dtm.timedelta(days=1)
         return t.timestamp(), "clock"
     m = re.search(r"try again in\s+(\d+)\s*(hour|minute|min\b|h\b|m\b)",
                   blob, re.IGNORECASE)
@@ -4341,19 +4412,27 @@ def _parse_limit_reset_ts(blob: str, kind: str | None = None,
     # every wording that omits the word "session" (redteam 2026-08-18). The
     # `epoch` form is exempt: there the CLI is stating a fact, not guessing.
     lane = limits.lane_horizon(kind if kind else "session")
-    # ⚠ the epoch exemption rests on PROVENANCE, not on the form: it holds
-    # because the CLI is stating a fact. `trusted=False` marks a blob that
-    # came from the agent's own final answer (the clean-result limit gate) —
-    # there a 40-character message carrying "…limit reached|<epoch 8 days
-    # out>" was enough to open a week-long key-billing window on the org's own
-    # key (redteam 2026-08-18). Untrusted text is banded like any guess.
-    # The epoch exemption covers the case it was written for — the CLI
-    # stating a machine fact with no lane word beside it. When the SAME text
-    # names a lane, the two are evidence about each other: "your session limit
-    # …|<epoch 8 days out>" is self-contradicting, and taking the epoch there
-    # priced 7 days of key billing against a 5-hour wall (redteam 2026-08-18,
-    # and it is what `docs/ARCHITECTURE.md` already promised).
-    horizon = (limits.MAX_HORIZON if how == "epoch" and trusted and not kind
+    # ⚠ AN EXPLICIT TIMESTAMP IS A STATED FACT (user ruling 2026-09-07
+    # 14:56Z, coordinator decision 15:36Z): an `epoch` the CLI wrote or a
+    # `date` the provider spelled out keeps ONLY the global guards — not in
+    # the past, not past `MAX_HORIZON` (eight days, the longest real lane
+    # plus slack) — and is never cut down by a lane inferred from the
+    # wording beside it. This DELIBERATELY retires the 2026-08-18 rule that
+    # "your session limit …|<epoch 8 days out>" was self-contradicting and
+    # the lane won: under the message-first ruling the stated time wins,
+    # and a session-named wall whose provider states a reset 19 hours out
+    # is scheduled at 19 hours, not handed to the cache (redteam 2026-09-07
+    # F1 measured exactly that fall-through). `docs/ARCHITECTURE.md` should
+    # read the same way.
+    #
+    # The exemption still rests on PROVENANCE: `trusted=False` marks a blob
+    # that came from the agent's own final answer (the clean-result limit
+    # gate) — there a 40-character message carrying "…limit reached|<epoch 8
+    # days out>" was enough to open a week-long key-billing window on the
+    # org's own key (redteam 2026-08-18). Untrusted text is banded like any
+    # guess, lane word or not. A `clock` (no date) and a `relative` form are
+    # the provider PHRASING a time and keep the lane band.
+    horizon = (limits.MAX_HORIZON if how in ("epoch", "date") and trusted
                else min(_TEXT_HORIZON.get(how, limits.MAX_HORIZON), lane))
     if not now - 60.0 < ts <= now + horizon:
         return None
@@ -11277,13 +11356,35 @@ class _CodexRouteRejected(Exception):
 
     def __init__(self, route: codex_route.Route,
                  cls: codex_route.FailureClass, blob: str,
-                 journal_sid: str, other: codex_route.Route) -> None:
+                 journal_sid: str, other: codex_route.Route,
+                 evidence: codex_route.Evidence | None = None) -> None:
         super().__init__(cls["why"])
         self.route = route
         self.cls = cls
         self.blob = blob
         self.journal_sid = journal_sid
         self.other = other
+        # the typed evidence the classification was decided on — it says
+        # whether `cls["reset_ts"]` came from THIS TURN's notification (the
+        # message) or from the cached board, which `cls` alone cannot
+        self.evidence = evidence
+
+    def stated_reset(self) -> float | None:
+        """The reset the provider STATED for this leg's pool in this turn's
+        own notification, or None when the notification carried none."""
+        ev = self.evidence
+        if not ev or not ev.get("snap_exhausted"):
+            return None
+        ts = ev.get("snap_reset")
+        return float(ts) if isinstance(ts, (int, float)) else None
+
+    def cached_reset(self) -> float | None:
+        """The reset the cached board held for this leg's pool, when the
+        notification carried none."""
+        if self.stated_reset() is not None:
+            return None
+        ts = self.cls.get("reset_ts")
+        return float(ts) if isinstance(ts, (int, float)) else None
 
 
 def _codex_account_namespace() -> str:
@@ -11438,18 +11539,23 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                       trec=trec)
         except _CodexRouteRejected as rj2:
             _note(rj2, retrying=False)
-            # ⚠ THE REJECTIONS' OWN RESETS FIRST (user ruling 2026-09-07):
-            # each leg's classification carries the reset the app-server
-            # stated for that pool (`reset_ts`, from the turn's notification),
-            # and this used to ignore both and wake off the cached board
-            # alone. Both pools are out, so the earliest STATED reset is the
-            # probe time; the board is asked only when neither leg stated one.
-            _stated = [float(t) for t in (rj.cls.get("reset_ts"),
-                                           rj2.cls.get("reset_ts"))
-                       if isinstance(t, (int, float))
-                       and not isinstance(t, bool)]
-            if _stated:
+            # ⚠ THE LEGS' OWN RESETS FIRST, PER LEG (user ruling 2026-09-07,
+            # coordinator correction 15:32Z): each leg carries the reset the
+            # app-server stated for ITS pool in that leg's own notification
+            # (`stated_reset`), and this used to ignore both and wake off
+            # the cached board alone. Both pools are out, so the wake is the
+            # earliest known reset across the two pools — a stated one for a
+            # pool outranks a cached one for the same pool, and the board is
+            # consulted only for a pool whose notification carried no time.
+            _legs = (rj, rj2)
+            _stated = [t for t in (leg.stated_reset() for leg in _legs)
+                       if t is not None]
+            _cached = [t for t in (leg.cached_reset() for leg in _legs)
+                       if t is not None]
+            if _stated and (not _cached or min(_stated) <= min(_cached)):
                 wake, _from = min(_stated), "message"
+            elif _cached:
+                wake, _from = min(_cached), "board"
             else:
                 board = codex_limits.snapshot()
                 wake, _kind, _src = codex_route.failure_deadline(
@@ -12988,7 +13094,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             # keep the receipt below and take the ordinary failure path.
             with jlock:
                 _jsid = str(jstate["sid"] or "")
-            raise _CodexRouteRejected(route, fcls, blob, _jsid, other)
+            raise _CodexRouteRejected(route, fcls, blob, _jsid, other,
+                                      evidence=_fev)
         # every other failure: the receipt is persisted (no mark — nothing
         # here is evidence about a POOL the node chose; a rerouted
         # rejection's wall is already on the shared board, attributed to
