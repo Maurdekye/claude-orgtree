@@ -5819,6 +5819,17 @@ html.mobile .popout-button { display: none; }
 
 .popout-draft-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* Docket overview follows its own panel width, including pinned/popout homes.
+   Display-only hiding preserves the selected item and any draft on widening. */
+.docket-modal { container: docket / inline-size; }
+@container docket (max-width: 640px) {
+  .docket-modal .mailer > .mailer-read { display: none; }
+  .docket-modal .mailer > .mailer-list {
+    width: 100%; max-width: none; min-width: 0; flex: 1;
+    border-right: 0;
+  }
+}
+
 .popout-recovery { flex-direction: column; }
 .popout-recovery .desk-body { flex: 1; min-height: 0; width: 100%; }
 
