@@ -13,39 +13,49 @@ with sync_playwright() as p:
     page = browser.new_page(viewport={"width": 800, "height": 600})
     page.set_content(HTML.format(CSS.read_text(encoding="utf-8")))
     page.eval_on_selector("#pin", "e => e.classList.add('overlay-pinned')")
-    page.eval_on_selector("#pin", "e => e.style.zIndex = '29'")
+    page.eval_on_selector("#pin", "e => e.style.zIndex = '21'")
     result = page.evaluate("""() => {
-      const plain = document.querySelector('#plainbtn'); let clicks = 0;
-      plain.onclick = () => clicks++;
-      const firstTarget = document.elementFromPoint(40, 40); firstTarget.click();
-      const first = {target:firstTarget.id, clicks};
-      // Raising the pinned window within its band must not overtake ordinary overlays.
-      document.querySelector('#pin').style.zIndex = '29';
-      const raisedTarget = document.elementFromPoint(40, 40); raisedTarget.click();
-      const raised = {target:raisedTarget.id, clicks};
-      document.querySelector('#nested').style.display = 'block';
-      let nestedClicks = 0;
-      document.querySelector('#nestedbtn').onclick = () => nestedClicks++;
-      const nestedTarget = document.elementFromPoint(40, 40); nestedTarget.click();
-      return {first, raised, nestedTarget:nestedTarget.id,
-              nestedClicks,
-              plainZ:getComputedStyle(document.querySelector('#plain')).zIndex,
-              nestedZ:getComputedStyle(document.querySelector('#nested .overlay')).zIndex,
+      window.plainClicks = 0;
+      document.querySelector('#plainbtn').onclick = () => window.plainClicks++;
+      return {plainZ:getComputedStyle(document.querySelector('#plain')).zIndex,
               pinZ:getComputedStyle(document.querySelector('#pin')).zIndex};
     }""")
-    assert result["first"] == {"target": "plainbtn", "clicks": 1}, result
-    assert result["raised"] == {"target": "plainbtn", "clicks": 2}, result
-    assert result["nestedTarget"] == "nestedbtn", result
-    assert result["nestedClicks"] == 1, result
-    assert result["plainZ"] == "30" and result["nestedZ"] == "31" and result["pinZ"] == "29", result
+    page.mouse.click(40, 40)
+    result["first"] = page.evaluate("""() => ({target:document.elementFromPoint(40,40).id,
+                                                   clicks:window.plainClicks})""")
+    page.eval_on_selector("#pin", "e => e.style.zIndex = '29'")
+    page.mouse.click(40, 40)
+    result["raised"] = page.evaluate("""() => ({target:document.elementFromPoint(40,40).id,
+                                                    clicks:window.plainClicks,
+                                                    pinZ:getComputedStyle(document.querySelector('#pin')).zIndex})""")
+    nested = page.evaluate("""() => {
+      document.querySelector('#nested').style.display = 'block';
+      window.nestedClicks = 0;
+      document.querySelector('#nestedbtn').onclick = () => window.nestedClicks++;
+      return {nestedZ:getComputedStyle(document.querySelector('#nested .overlay')).zIndex,
+              plainZ:getComputedStyle(document.querySelector('#plain')).zIndex,
+              pinZ:getComputedStyle(document.querySelector('#pin')).zIndex};
+    }""")
+    page.mouse.click(40, 40)
+    nested.update(page.evaluate("""() => ({nestedTarget:document.elementFromPoint(40,40).id,
+                                             nestedClicks:window.nestedClicks})"""))
+    result["nested"] = nested
     page.evaluate("document.querySelector('#nested').remove()")
     old = page.evaluate("""() => {
       document.querySelector('#plain').style.zIndex = '20';
       return {target:document.elementFromPoint(40,40).id,
               plainZ:getComputedStyle(document.querySelector('#plain')).zIndex};
     }""")
-    assert old["target"] != "plainbtn" and old["plainZ"] == "20", old
+    assert old["target"] == "pinbtn" and old["plainZ"] == "20", old
     result["oldZControl"] = old
+    page.eval_on_selector("#plain", "e => e.style.zIndex = '30'")
+    result["restored"] = page.evaluate("""() => ({plainZ:getComputedStyle(document.querySelector('#plain')).zIndex,
+                                                     pinZ:getComputedStyle(document.querySelector('#pin')).zIndex})""")
+    assert result["first"] == {"target": "plainbtn", "clicks": 1}, result
+    assert result["raised"] == {"target": "plainbtn", "clicks": 2, "pinZ": "29"}, result
+    assert result["nested"] == {"nestedTarget": "nestedbtn", "nestedClicks": 1,
+                                 "nestedZ": "31", "plainZ": "30", "pinZ": "29"}, result
+    assert result["restored"] == {"plainZ": "30", "pinZ": "29"}, result
     page.screenshot(path=str(Path(__file__).parents[2] / "stack-browser-evidence.png"))
     browser.close()
 print(json.dumps(result, sort_keys=True))
