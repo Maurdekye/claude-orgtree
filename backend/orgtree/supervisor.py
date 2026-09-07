@@ -4387,9 +4387,6 @@ def _parse_limit_reset_ts_raw(blob: str,
     return None, ""
 
 
-# How far out each prose form may plausibly point, before the lane band. An
-# `epoch` is the CLI's own machine value and answers for itself; the other two
-# are the CLI phrasing a guess, and a guess is bounded by the lane.
 # How far out each prose form may plausibly point — the form's OWN bound,
 # which for a TRUSTED message is the only bound (user ruling 2026-09-07; see
 # `_parse_limit_reset_ts`): an epoch, a dated time and a relative duration
@@ -20926,6 +20923,13 @@ def _provider_limit_until(blob: str, reset_ts: float | None,
          collapses to "usage" (turnread) or treats as a cached lane (api).
       4. the blind `PROBE_FLOOR`, honestly short so capacity is re-asked soon.
 
+    `reset_from` is EXACT: only `"message"` earns first place and only
+    `"board"` earns the cached fallback. Any other value (a caller that
+    forgot, a future provenance nobody taught this function) gets the prose
+    if it parses and the floor otherwise — never a manufactured attribution.
+    The default is `"message"` for the callers that state a value for the
+    turn (antigravity's wall duration, the codex notification).
+
     ⚠ THE MACHINE VALUE IS BANDED LIKE ANY OTHER, against the same horizon a
     prose `epoch` gets. It arrives over the same wire as everything else here
     and a reshaped or absurd field must not be able to park an agent past the
@@ -20934,12 +20938,18 @@ def _provider_limit_until(blob: str, reset_ts: float | None,
     now = time.time() if now is None else now
     banded = (reset_ts is not None
               and now < reset_ts <= now + limits.MAX_HORIZON)
-    if banded and reset_from != "board":
+    # `== "message"`, fail-closed: an unknown provenance must not land in
+    # first place in the one function whose job is ranking provenance
+    # (redteam 2026-09-07 robustness note on f9e2ac4)
+    if banded and reset_from == "message":
         return cast("float", reset_ts), "provider"
     ts, src = _limit_reset_ts(blob, subscription=False)
     if ts is not None:
         return ts, (src or "text")
-    if banded:
+    # …and only `"board"` earns the cached fallback: an UNKNOWN provenance
+    # manufactures neither attribution — the prose was tried, the floor
+    # follows (coordinator review 2026-09-07 16:24Z)
+    if banded and reset_from == "board":
         return cast("float", reset_ts), "usage:board"
     return now + PROBE_FLOOR, "probe"
 

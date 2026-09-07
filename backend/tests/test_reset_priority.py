@@ -663,6 +663,26 @@ def sec_codex() -> None:
         eq((ts, kind, src), (now + 4 * 3600, "probe",
                              codex_route.SRC_NOTIFICATION),
            "the stated reserve reset, not the board's 5 h")
+        # M7 (redteam on f9e2ac4): the SAME pool's board EARLIER than its own
+        # stated reset — the one direction where "message first" is
+        # load-bearing per pool. Reserve states 4 h; the board says reserve
+        # 1 h and plan 6 h. The stated 4 h must win for reserve (the board's
+        # 1 h for the same pool is not offered), and the answer is reserve's
+        # stated value, not plan's 6 h.
+        earlier = {**both, "limits": [
+            window(None, 100, iso(now + 6 * 3600)),
+            window(codex_route.RESERVE_MODEL, 100, iso(now + 3600))]}
+        ts, kind, src = codex_route.failure_deadline(
+            luna, earlier, snaps, codex_route.RESERVE_POOL, now=now)
+        eq((ts, kind, src), (now + 4 * 3600, "probe",
+                             codex_route.SRC_NOTIFICATION),
+           "a pool's stated reset is not undercut by its OWN earlier board")
+        # …and the single-route shape of the same case
+        eq(codex_route.failure_deadline(
+            direct, {**board, "limits": [window(None, 100, iso(now + 600))]},
+            snapshots, plan, now=now),
+           (now + 3600, "observed-deadline", codex_route.SRC_NOTIFICATION),
+           "single pool: stated 1 h over its own board's 10 min")
     check("Luna (both pools out): message first PER POOL, then the earliest "
           "pool", _luna_per_pool)
 
@@ -686,6 +706,24 @@ def sec_codex() -> None:
         ts, src = supervisor._provider_limit_until(
             "usage limit reached", None, now)
         eq((ts, src), (now + supervisor.PROBE_FLOOR, "probe"), "the floor")
+        # an UNKNOWN provenance manufactures neither attribution: prose if it
+        # parses, else the floor — never "provider", never "usage:board"
+        # (coordinator review 16:24Z; redteam robustness note)
+        ts, src = supervisor._provider_limit_until(
+            prose, now + 3 * 3600, now, reset_from="mystery")
+        eq(src, "text", "unknown provenance: the prose answers")
+        near(ts, now + 20 * 60, "…the prose's 20 minutes")
+        eq(supervisor._provider_limit_until(
+            "usage limit reached", now + 3 * 3600, now, reset_from="mystery"),
+           (now + supervisor.PROBE_FLOOR, "probe"),
+           "unknown provenance, no prose: the floor, not the board")
+        eq(supervisor._provider_limit_until(
+            "usage limit reached", now + 3 * 3600, now, reset_from=""),
+           (now + supervisor.PROBE_FLOOR, "probe"), "empty provenance too")
+        # …and the default is still the provider's own statement
+        eq(supervisor._provider_limit_until("usage limit reached",
+                                            now + 3600, now),
+           (now + 3600, "provider"), "default = message")
     check("provider freeze ranking: stated value > prose > board > floor",
           _board_below_prose)
 
