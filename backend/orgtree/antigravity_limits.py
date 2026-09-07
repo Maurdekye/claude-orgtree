@@ -618,6 +618,14 @@ def estimate(events: list[dict[str, Any]] | None = None,
                 "comparability": "unknown", "estimate": None}
     unsummable = int(_number(receipt.get("unsummable_receipts")) or 0)
     receipts_read = int(_number(receipt.get("receipts")) or 0)
+    # A zero total is meaningful only when at least one receipt actually
+    # contributed to the interval.  The collector's empty tally is also
+    # ``tokens: 0``; treating that as a measured zero is the false ~0 reading
+    # seen when a reset-to-wall interval contains no readable turns.
+    if "receipts" in receipt and receipts_read <= 0:
+        return {"available": False, "samples": 1,
+                "reason": "no receipts could be read for that interval",
+                "comparability": "unknown", "estimate": None}
     others = measurable[:-1]
     different = [w for w in others if _differs(chosen, w)]
     measured = [{"tokens": int(receipt["tokens"]),

@@ -375,6 +375,20 @@ def test_one_measurable_interval_is_reported_as_one_sample() -> None:
           "and every answer states that comparability is unknown")
 
 
+def test_empty_receipt_interval_is_not_reported_as_zero() -> None:
+    print("empty receipts are not zero spend")
+    t0 = 1_788_000_000.0
+    first = wall_event(t0, SHORT_WALL, wall_id="w1")
+    second = wall_event(float(first["resets_at"]) + 60, SHORT_WALL,
+                        wall_id="w2")
+    absent = agy.estimate([first, second], tokens_between=lambda s, e: {
+        "tokens": 0, "receipts": 0})
+    check(absent["available"] is False and absent["estimate"] is None,
+          "an empty tally refuses instead of displaying ~0 tokens")
+    genuine = agy.estimate([first, second], tokens_between=lambda s, e: {
+        "tokens": 0, "receipts": 1})
+    check(genuine["available"] is True and genuine["estimate"] == {"tokens": 0},
+          "a recorded zero receipt remains distinguishable and reportable")
 def test_more_windows_never_raise_the_confidence() -> None:
     print("confidence does not accrue")
     t = 1_788_000_000.0
@@ -534,6 +548,7 @@ for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_a_metric_that_was_never_recorded_is_not_invented,
            test_no_number_without_a_reset_started_interval,
            test_one_measurable_interval_is_reported_as_one_sample,
+           test_empty_receipt_interval_is_not_reported_as_zero,
            test_more_windows_never_raise_the_confidence):
     fn()
 
