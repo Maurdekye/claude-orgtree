@@ -11138,6 +11138,7 @@ class Org:
             it["accepted"] = None
             it["superseded_by"] = None
         changes: dict[str, Any] = {}
+        attention_warning: str | None = None
         was = it.get("status")
         if was in self.WORK_LEGACY_STATUSES:
             # THE ONE WRITE THAT CONVERTS A LEGACY ROW: this item's own next
@@ -11197,8 +11198,16 @@ class Org:
         # the manual flag is restated by every update
         prev = it.get("manual_attention")
         if attention is True:
-            reason = str(attention_reason or "").strip()[
-                :self.WORK_ATTENTION_REASON_MAX]
+            submitted_reason = str(attention_reason or "").strip()
+            over = max(0, len(submitted_reason) - self.WORK_ATTENTION_REASON_MAX)
+            if over:
+                attention_warning = (
+                    f"attention_reason was truncated to the supported "
+                    f"{self.WORK_ATTENTION_REASON_MAX}-character limit; "
+                    f"submitted text exceeds it by {over} character(s). "
+                    f"Shorten it by at least {over} character(s) to keep the "
+                    f"full message.")
+            reason = submitted_reason[:self.WORK_ATTENTION_REASON_MAX]
             last = (it.get("dismissals") or [])[-1:]
             if last and " ".join(str(last[0].get("reason") or "").lower().split()) \
                     == " ".join(reason.lower().split()):
@@ -11264,7 +11273,9 @@ class Org:
                 "manual_attention": bool(it.get("manual_attention")),
                 "note": ("the standing attention flag was CLEARED by this "
                          "update (pass attention=true to keep one)"
-                         if prev and attention is not True else None)}
+                         if prev and attention is not True else None),
+                **({"warnings": [attention_warning]} if attention_warning
+                   else {})}
 
     # ---- ASSIGNMENT. User ruling 2026-09-05 21:02: ASSIGNMENT IS OWNERSHIP —
     # the `owner` field is the ONE meaning behind the docket's Assignment line,

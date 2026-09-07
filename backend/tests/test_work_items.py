@@ -2231,10 +2231,27 @@ def the_attention_reason_holds_the_specifics_it_must_now_carry():
     assert got.count("\n") == 3, "the line structure the pane renders is kept verbatim"
     # CONTROL — the cap is real, so the assert above is not passing because
     # nothing truncates at all
-    ok(slug, "boss", "update", slug=wid, attention=True,
-       attention_reason="z" * (cap + 1),
-       done_so_far=["x"], working_on_next=["y"])
+    r = ok(slug, "boss", "update", slug=wid, attention=True,
+           attention_reason="z" * (cap + 1),
+           done_so_far=["x"], working_on_next=["y"])
     assert len(get_item(slug, wid)["manual_attention"]["reason"]) == cap
+    assert len(r["warnings"]) == 1
+    assert "500-character limit" in r["warnings"][0]
+    assert "exceeds it by 1" in r["warnings"][0]
+    r = ok(slug, "boss", "update", slug=wid, attention=True,
+           attention_reason="é" * (cap + 2),
+           done_so_far=["unicode over"], working_on_next=["y"])
+    assert "exceeds it by 2" in r["warnings"][0]
+    assert len(get_item(slug, wid)["manual_attention"]["reason"]) == cap
+    r = ok(slug, "boss", "update", slug=wid, attention=True,
+           attention_reason=chr(0xE9) * cap,
+           done_so_far=["unicode exact"], working_on_next=["y"])
+    assert "warnings" not in r
+    r = ok(slug, "boss", "update", slug=wid, attention=True,
+           attention_reason=chr(0xE9) * (cap - 1),
+           done_so_far=["unicode under"], working_on_next=["y"])
+    assert "warnings" not in r
+    assert len(get_item(slug, wid)["manual_attention"]["reason"]) == cap - 1
     # blank is still refused, and the refusal now says what the field must hold
     d = refused(slug, "boss", "update", slug=wid, attention=True,
                 attention_reason="   ", done_so_far=["x"], working_on_next=["y"])
