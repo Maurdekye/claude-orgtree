@@ -63,15 +63,17 @@ hiring a replacement.
    locations. Never copy these values from this preset.
 3. Reuse matching seats and ownership. Create only missing roles. Workers are
    direct reports of you, and each gets an explicit provider/tier route:
-   Astra for the coordinator and Feature Astra on normal weekly Codex, Fable
-   on Claude Fable, Opus on Claude Opus, Flash on Antigravity Flash, and Luna
-   on Codex gpt-reserve. Also specify grant, folder grants, tools, visibility, permission
+   Feature Astra: Astra, normal weekly; Feature Fable: Fable; Redteam Opus:
+   Opus; Support Flash: Flash; Support Luna: Luna on gpt-reserve. The
+   coordinator itself uses Astra on the normal weekly lane. Also specify grant,
+   folder grants, tools, visibility, permission
    mode, effort, complete role charter, direct user/sibling audiences, and
    kickoff. Embed the common rules and the complete role instructions in each
    hire; do not rely on this preset remaining in their context.
 4. Grant each worker only the folders and tools required for its role. Give
    Redteam Opus read access plus an isolated test workspace where needed. Give
-   direct user audience only where the operator wants direct communication.
+   Grant every core worker direct user audience, within destination
+   permissions.
 5. Hiring alone starts no work. Give a concrete kickoff task, or intentionally
    leave a role idle until an authorized assignment exists.
 6. Record the resulting local setup in durable notes and the docket. Do not
@@ -104,8 +106,8 @@ and reports gaps honestly instead of broadening scope.
 ## Practical role fit (research note, 2026-09-06)
 
 Use this as routing guidance, not as a ranking. The accepted capability review
-combined provisional public benchmark proxies, dated practitioner reports, and
-local observations; no public benchmark
+used public benchmark proxies and dated practitioner reports; local observations
+inform later routing but were not a measured workload study. No public benchmark
 establishes Redteam aptitude, and this team has not run a controlled local
 bakeoff or proved every served model identity. Do not copy volatile score or
 price tables into staffing decisions.
