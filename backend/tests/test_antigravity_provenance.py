@@ -2,6 +2,19 @@
 
 The numeric payload fields are from the 1.1.27 embedded protobuf descriptors.
 Both the fake child process and inspection operate only in this suite's home.
+
+PRODUCTION SHAPE OF THE WIRE (measured, redteam-opus 2026-09-07): the CLI
+streams the final response as the stored body plus exactly one trailing
+"\n" it does not store - 39 of 39 retained turns, never an exact match. The
+first cut of this suite streamed what it stored, so the exact-equality guard
+passed here and could never pass in production. `wire()` now streams
+body + "\n" for the final step, and the tolerance is pinned from both sides:
+exact and one-LF fire; two LFs, a leading LF, CRLF, a trailing space and any
+other single-byte change decline (test_final_text_tolerance_*).
+
+Every outcome is also asserted through the retained log line (`_emit`): the
+reason codes name the predicate that fired or declined, and every line is
+checked content-free (no prompt, response or error text).
 """
 from __future__ import annotations
 
@@ -84,7 +97,8 @@ def wire(rows):
         body = {"step_index": row[0], "conversation_id": CID, "state": "DONE",
                 "step_type": {14: "user_input", 15: "agent_response", 101: "system_message", 132: "tool"}[row[1]]}
         if row[1] == 15:
-            body["text_delta"] = "Working." if row[0] == 5 else ANSWER
+            # the final response streams with the CLI's one trailing LF
+            body["text_delta"] = "Working." if row[0] == 5 else ANSWER + "\n"
             body["usage"] = {"input_tokens": 100, "output_tokens": 5, "cache_read_tokens": 20}
         events.append({"event": "step_update", "step_update": body})
     return events
@@ -152,6 +166,39 @@ class ProvenanceTests(unittest.TestCase):
     def reconcile(self):
         return p.reconcile(self.boundary, PROMPT, CID, self.result, self.events)
 
+    def logged(self, call):
+        """Run `call` collecting the retained lines; every line content-free."""
+        lines = []
+        with patch.object(p, "_emit", lines.append):
+            value = call()
+        for line in lines:
+            for secret in (PROMPT, ANSWER, QUOTA, "Working.", "Earlier"):
+                self.assertNotIn(secret, line, "a retained line carried conversation text")
+            self.assertTrue(line.isascii(), line)
+        return value, lines
+
+    def declines(self, reason, **detail):
+        value, lines = self.logged(self.reconcile)
+        self.assertIsNone(value)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith(f"reconcile: declined reason={reason}"), lines[0])
+        for key, expected in detail.items():
+            self.assertIn(f" {key}={expected} ", lines[0] + " ", lines[0])
+        return lines[0]
+
+    def fires(self, **detail):
+        value, lines = self.logged(self.reconcile)
+        self.assertEqual(value, {"kind": "historical_cli_quota_error", "historical_step": 1,
+                                 "boundary_step": 2, "final_step": 7})
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("reconcile: fired historical=1 boundary=2 final=7"), lines[0])
+        for key, expected in detail.items():
+            self.assertIn(f" {key}={expected} ", lines[0] + " ", lines[0])
+        return value
+
+    def final_delta(self, text):
+        self.events[-1]["step_update"]["text_delta"] = text
+
     def close_turn(self, turn):
         turn.close()
         if turn.proc is not None:
@@ -161,8 +208,9 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_positive_read_only_and_descriptor_run_error(self):
         before = hashlib.sha256(self.path.read_bytes()).hexdigest()
-        self.assertEqual(self.reconcile(), {"kind": "historical_cli_quota_error", "historical_step": 1,
-                                          "boundary_step": 2, "final_step": 7})
+        # the production shape: the wire's final text is the stored body + "\n"
+        self.assertEqual(self.events[-1]["step_update"]["text_delta"], ANSWER + "\n")
+        self.fires(wire_tail="lf")
         self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
         with sqlite3.connect(self.path) as db:
             self.assertEqual(db.execute("SELECT error_details FROM steps WHERE idx=1").fetchone()[0], b"")
@@ -181,7 +229,7 @@ class ProvenanceTests(unittest.TestCase):
         result = turn.wait(timeout=10)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["stop_reason"], "end_turn")
-        self.assertEqual(result["agent_text"], "Working." + ANSWER)
+        self.assertEqual(result["agent_text"], "Working." + ANSWER + "\n")
         self.assertEqual(result["token_usage"]["input"], 200)
         self.assertEqual(result["token_usage"]["requests"], 2)
         self.assertEqual(result["result_provenance"]["boundary_step"], 2)
@@ -208,6 +256,145 @@ class ProvenanceTests(unittest.TestCase):
                 self.assertTrue(result["agent_text"], "INERT: failure must follow real partial output")
                 if scenario in ("fresh_identical", "fresh_distinct", "auth", "partial", "canceled", "timeout"):
                     self.assertEqual(result["stop_reason"], turn._result["error"])
+
+    def test_final_text_tolerance_fires_on_exact_and_on_exactly_one_lf(self):
+        self.final_delta(ANSWER)
+        self.fires(wire_tail="none")
+        self.final_delta(ANSWER + "\n")
+        self.fires(wire_tail="lf")
+        # the LF may arrive as its own delta, as the real CLI sends it
+        self.final_delta(ANSWER)
+        done = copy.deepcopy(self.events[-1])
+        self.events[-1]["step_update"]["state"] = "ACTIVE"
+        done["step_update"]["text_delta"] = "\n"
+        self.events.append(done)
+        self.fires(wire_tail="lf")
+
+    def test_final_text_tolerance_declines_everything_else(self):
+        for label, text in (("two LFs", ANSWER + "\n\n"), ("leading LF", "\n" + ANSWER),
+                            ("leading and trailing LF", "\n" + ANSWER + "\n"), ("CRLF", ANSWER + "\r\n"),
+                            ("CR", ANSWER + "\r"), ("trailing space", ANSWER + " "),
+                            ("LF then space", ANSWER + "\n "), ("space then LF", ANSWER + " \n"),
+                            ("one byte changed", ANSWER[:-1] + "!"), ("one byte changed then LF", ANSWER[:-1] + "!\n"),
+                            ("one byte dropped", ANSWER[:-1]), ("one byte added", ANSWER + "x"),
+                            ("LF then a byte", ANSWER + "\nx"), ("empty", ""), ("LF only", "\n")):
+            with self.subTest(label=label):
+                self.final_delta(text)
+                self.declines("final_text_mismatch", final=7, wire_bytes=len(text.encode()), stored_bytes=len(ANSWER))
+
+    def test_stored_body_with_trailing_lf_needs_the_same_on_wire(self):
+        # if the CLI ever stores the LF too, exact still fires and one MORE LF still declines
+        save(self.path, [step(7, 15, ANSWER + "\n")])
+        self.final_delta(ANSWER + "\n")
+        self.fires(wire_tail="none")
+        self.final_delta(ANSWER + "\n\n")
+        self.fires(wire_tail="lf")
+        self.final_delta(ANSWER + "\n\n\n")
+        self.declines("final_text_mismatch")
+        self.final_delta(ANSWER)
+        self.declines("final_text_mismatch")
+
+    def test_capture_says_why_it_has_no_evidence(self):
+        cases = (("no_conversation", lambda: p.capture(None, self.env)),
+                 ("no_conversation", lambda: p.capture("", self.env)),
+                 ("unqualified_conversation", lambda: p.capture("../../unqualified", self.env)),
+                 ("no_home", lambda: p.capture(CID, {})),
+                 ("no_database", lambda: p.capture("00000000-0000-0000-0000-000000000000", self.env)))
+        for reason, call in cases:
+            with self.subTest(reason=reason):
+                value, lines = self.logged(call)
+                self.assertIsNone(value)
+                self.assertEqual(lines, [f"capture: none reason={reason}"])
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps WHERE step_type=17")
+        value, lines = self.logged(lambda: p.capture(CID, self.env))
+        self.assertIsNone(value)
+        self.assertEqual(lines, ["capture: none reason=no_historical_quota_error boundary=7"])
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps")
+        value, lines = self.logged(lambda: p.capture(CID, self.env))
+        self.assertIsNone(value)
+        self.assertEqual(lines, ["capture: none reason=empty_store"])
+        other = "00000000-0000-0000-0000-000000000000"
+        p.conversation_path(other, self.env).write_bytes(b"not a database")
+        value, lines = self.logged(lambda: p.capture(other, self.env))
+        self.assertIsNone(value)
+        self.assertEqual(lines, ["capture: none reason=exception:DatabaseError"])
+
+    def test_capture_says_what_it_captured(self):
+        value, lines = self.logged(lambda: p.capture(CID, self.env))
+        self.assertIsNotNone(value)
+        self.assertEqual(lines, ["capture: captured boundary=7 historical_errors=1 newest_error_step=1"])
+
+    def test_reconcile_names_the_result_predicates(self):
+        value, lines = self.logged(lambda: p.reconcile(None, PROMPT, CID, self.result, self.events))
+        self.assertIsNone(value)
+        self.assertEqual(lines, ["reconcile: declined reason=no_boundary"])
+        self.result["status"] = "SUCCESS"
+        self.declines("result_not_error")
+        self.result["status"] = "ERROR"
+        self.result["error"] = "Authentication failed; please sign in."
+        self.declines("error_not_quota")
+        self.result["error"] = QUOTA.replace("1h56m58s", "5h0m0s")
+        self.declines("error_not_historical", historical_errors=1)
+        self.result["error"] = QUOTA
+        with patch.object(p, "MAX_EVENTS", 2):
+            self.declines("event_bound", events=5)
+
+    def test_reconcile_names_the_store_predicates(self):
+        save(self.path, [step(3, 14, "A different current prompt")])
+        self.declines("prompt_mismatch", step=3)
+        save(self.path, [step(3, 14)])
+        for row, reason, key in ((step(7, 15, state=2), "step_status", "status=2"),
+                                 (step(7, 15, stop=1), "final_stop_reason", "stop_reason=1"),
+                                 (step(7, 15, tools=True), "final_has_tool_call", "final=7"),
+                                 (step(7, 15, ""), "final_empty", "final=7"),
+                                 (step(7, 15, error=b"failure"), "step_error_details", "step=7"),
+                                 (step(7, 132), "final_not_response", "step_type=132")):
+            with self.subTest(reason=reason):
+                save(self.path, [row])
+                self.assertIn(key, self.declines(reason))
+        save(self.path, [step(7, 15), step(8, 17)])
+        self.declines("step_type", step=8, step_type=17)
+
+    def test_isolated_second_user_and_contiguity_controls(self):
+        # a SECOND user step inside the appended interval, everything else
+        # complete and on the wire: only the second-user rule may decline
+        rows = [step(3, 14), step(4, 101), step(5, 15, "Working.", tools=True), step(6, 132),
+                step(7, 14, "a second user message"), step(8, 15)]
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps WHERE idx>2")
+        save(self.path, rows)
+        self.events = wire(rows)
+        self.declines("second_user", step=7)
+        # contiguity: the interval must start right after the boundary...
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps WHERE idx>2")
+        save(self.path, self.rows)
+        self.events = wire(self.rows)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps WHERE idx=3")
+        self.declines("first_not_user", boundary=2, first=4)
+        # ...and have no hole
+        save(self.path, [step(3, 14)])
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steps WHERE idx=5")
+        self.declines("noncontiguous", boundary=2, rows=4, last=7)
+
+    def test_planner_step_without_wire_done_is_named_not_relaxed(self):
+        # The open unknown (Opus): a type-15 planner step with an empty body
+        # and a tool call journals no text, and it is NOT observed that the
+        # CLI emits a DONE for it. If it does not, this is the decline that
+        # will say so on the next live turn - by index, content-free.
+        save(self.path, [step(5, 15, "", tools=True)])
+        self.events = [e for e in self.events if e["step_update"]["step_index"] != 5]
+        self.declines("stored_steps_not_done_on_wire", steps="5")
+        # and an ACTIVE without DONE for it is named too
+        self.events = wire(self.rows)
+        for e in self.events:
+            if e["step_update"]["step_index"] == 5:
+                e["step_update"]["state"] = "ACTIVE"
+        self.declines("wire_steps_open", steps="5")
 
     def test_fresh_identical_error_in_payload_cannot_be_ignored(self):
         save(self.path, [step(8, 17)])

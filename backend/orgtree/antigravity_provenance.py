@@ -3,6 +3,25 @@
 Only a resumed conversation, captured BEFORE launch, can supply evidence.
 Missing/unsupported evidence preserves the CLI failure. No credentials or
 conversation writes. Field numbers come from agy 1.1.27's embedded descriptors.
+
+EVERY OUTCOME IS SAID OUT LOUD, content-free. The first production turn this
+ran on (2026-09-07 11:28Z) declined silently and cost a 7018 s wall before
+anyone could tell WHICH predicate said no: every decline was a bare
+`return None` and capture() swallowed five exception types. So capture() and
+reconcile() each emit exactly ONE line per turn through `_emit` (stderr, which
+the launcher retains as backend.err.log; ASCII only, see api.py's cp1252
+note): the outcome, a reason code, and step indices / counts. Never a prompt,
+a response, an error text or anything from the conversation. One line per
+turn is the whole budget; nothing is logged per wire event.
+
+THE ONE TOLERANCE, measured not assumed: the installed CLI streams the final
+response with exactly one trailing "\n" that it does not store (39 of 39
+retained turns in one conversation: wire == stored + "\n", never wire ==
+stored; redteam-opus, 2026-09-07). reconcile() therefore accepts the wire
+text when it equals the stored body OR the stored body plus exactly one
+"\n" - and nothing else. No rstrip, no strip: two newlines, a leading
+newline, "\r\n", a trailing space or any other single-byte difference still
+decline, and the suite proves each of those.
 """
 from __future__ import annotations
 
@@ -12,6 +31,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from typing import Any
 
 MAX_ROWS = 2048
@@ -21,6 +41,31 @@ MAX_BYTES = 8_388_608
 MAX_EVENTS = 16384
 QUOTA = re.compile(r"Individual quota reached\.[^\r\n]{0,400}\Z")
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+#: the CLI's own trailing newline on a streamed final response (see header)
+WIRE_TAIL = b"\n"
+
+
+def _emit(line: str) -> None:
+    """The retained channel: stderr -> backend.err.log. ASCII only."""
+    try:
+        print("[agy-provenance] " + line.encode("ascii", "replace").decode("ascii"),
+              file=sys.stderr, flush=True)
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+class _Decline(Exception):
+    """A predicate said no. `reason` is a content-free code; `detail` holds
+    only indices and counts - never text from the conversation or the wire."""
+
+    def __init__(self, reason: str, **detail: Any):
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = detail
+
+
+def _fmt(detail: dict[str, Any]) -> str:
+    return "".join(f" {k}={v}" for k, v in detail.items())
 
 
 def _varint(b: bytes, pos: int) -> tuple[int, int]:
@@ -174,16 +219,23 @@ class Boundary:
 
 
 def capture(cid: str | None, env: dict[str, str]) -> Boundary | None:
-    """Best effort, before Popen: never fail a turn for unavailable evidence."""
+    """Best effort, before Popen: never fail a turn for unavailable evidence.
+    Says once, content-free, whether evidence was captured and if not why."""
     reader = None
     try:
-        path = conversation_path(cid or "", env)
+        if not cid:
+            raise _Decline("no_conversation")
+        if not UUID.fullmatch(cid):
+            raise _Decline("unqualified_conversation")
+        path = conversation_path(cid, env)
         if path is None:
-            return None
+            raise _Decline("no_home")
+        if not path.is_file():
+            raise _Decline("no_database")
         reader = _Read(path, cid or "")
         last = reader.rows("ORDER BY idx DESC LIMIT 1")
         if len(last) != 1:
-            return None
+            raise _Decline("empty_store")
         errors = []
         for row in reader.rows("WHERE step_type=17 ORDER BY idx DESC LIMIT ?", (MAX_ERRORS,)):
             message = _quota_error(row)
@@ -191,8 +243,16 @@ def capture(cid: str | None, env: dict[str, str]) -> Boundary | None:
                 errors.append((row[0], message, _fingerprint(row)))
         boundary = Boundary(path, cid or "", reader.identity, last[0][0], _fingerprint(last[0]), tuple(errors))
         reader.close(); reader = None
-        return boundary if errors else None
-    except (OSError, sqlite3.Error, ValueError, IndexError, TypeError):
+        if not errors:
+            raise _Decline("no_historical_quota_error", boundary=boundary.index)
+        _emit(f"capture: captured boundary={boundary.index} historical_errors={len(errors)}"
+              f" newest_error_step={errors[0][0]}")
+        return boundary
+    except _Decline as d:
+        _emit(f"capture: none reason={d.reason}{_fmt(d.detail)}")
+        return None
+    except (OSError, sqlite3.Error, ValueError, IndexError, TypeError) as exc:
+        _emit(f"capture: none reason=exception:{type(exc).__name__}")
         return None
     finally:
         if reader is not None:
@@ -201,92 +261,133 @@ def capture(cid: str | None, env: dict[str, str]) -> Boundary | None:
 
 def reconcile(boundary: Boundary | None, prompt: str, cid: str | None,
               result: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return content-free correction evidence, or preserve the raw ERROR."""
+    """Return content-free correction evidence, or preserve the raw ERROR.
+    Every decline names its predicate in one retained line (see header)."""
     reader = None
     try:
-        if (boundary is None or cid != boundary.cid or result.get("conversation_id") != cid
-                or result.get("status") != "ERROR" or len(events) > MAX_EVENTS):
-            return None
+        if boundary is None:
+            raise _Decline("no_boundary")
+        if cid != boundary.cid or result.get("conversation_id") != cid:
+            raise _Decline("conversation_mismatch")
+        if result.get("status") != "ERROR":
+            raise _Decline("result_not_error")
+        if len(events) > MAX_EVENTS:
+            raise _Decline("event_bound", events=len(events))
         error = result.get("error")
         if not isinstance(error, str) or not QUOTA.fullmatch(error.strip()):
-            return None
+            raise _Decline("error_not_quota")
         matches = [e for e in boundary.errors if e[1] == error.strip()]
         if not matches:
-            return None
+            raise _Decline("error_not_historical", historical_errors=len(boundary.errors))
         old_index, _, old_hash = matches[0]
         reader = _Read(boundary.path, boundary.cid)
         if reader.identity != boundary.identity:
-            return None
+            raise _Decline("database_replaced")
         last = reader.rows("WHERE idx=?", (boundary.index,))
         old = reader.rows("WHERE idx=?", (old_index,))
-        if (len(last) != 1 or _fingerprint(last[0]) != boundary.fingerprint
-                or len(old) != 1 or _fingerprint(old[0]) != old_hash):
-            return None
+        if len(last) != 1 or _fingerprint(last[0]) != boundary.fingerprint:
+            raise _Decline("boundary_changed", boundary=boundary.index)
+        if len(old) != 1 or _fingerprint(old[0]) != old_hash:
+            raise _Decline("historical_changed", historical=old_index)
         rows = reader.rows("WHERE idx>? ORDER BY idx LIMIT ?", (boundary.index, MAX_ROWS + 1))
-        if (len(rows) < 2 or rows[0][1] != 14
-                or [r[0] for r in rows] != list(range(boundary.index + 1, boundary.index + 1 + len(rows)))):
-            return None
+        if len(rows) < 2:
+            raise _Decline("interval_too_short", boundary=boundary.index, rows=len(rows))
+        if rows[0][1] != 14:
+            raise _Decline("first_not_user", boundary=boundary.index, first=rows[0][0])
+        if [r[0] for r in rows] != list(range(boundary.index + 1, boundary.index + 1 + len(rows))):
+            raise _Decline("noncontiguous", boundary=boundary.index, rows=len(rows), last=rows[-1][0])
         payloads = []
         for i, row in enumerate(rows):
-            if row[1] not in (14, 15, 101, 132) or row[2] != 3 or row[4] or (i and row[1] == 14):
-                return None
+            if row[1] not in (14, 15, 101, 132):
+                raise _Decline("step_type", step=row[0], step_type=row[1])
+            if row[2] != 3:
+                raise _Decline("step_status", step=row[0], status=row[2])
+            if row[4]:
+                raise _Decline("step_error_details", step=row[0])
+            if i and row[1] == 14:
+                raise _Decline("second_user", step=row[0])
             payload = _payload(row)
             if payload.get(24):  # RunError oneof, independent of SQL step_type.
-                return None
+                raise _Decline("step_run_error", step=row[0])
             payloads.append(payload)
         user = _fields(_blob(payloads[0], 19))
         if _blob(user, 2).decode("utf-8") != prompt:
-            return None
+            raise _Decline("prompt_mismatch", step=rows[0][0])
         final = rows[-1]
         if final[1] != 15:
-            return None
+            raise _Decline("final_not_response", final=final[0], step_type=final[1])
         response = _fields(_blob(payloads[-1], 20))
         body = _blob(response, 8) or _blob(response, 1)
-        if not body.strip() or response.get(7) or _one(response, 12, 0) != 2:
-            return None
+        if not body.strip():
+            raise _Decline("final_empty", final=final[0])
+        if response.get(7):
+            raise _Decline("final_has_tool_call", final=final[0])
+        if _one(response, 12, 0) != 2:
+            raise _Decline("final_stop_reason", final=final[0], stop_reason=_one(response, 12, 0))
         states: dict[int, str] = {}
         texts: dict[int, str] = {}
         text_size = 0
         by_index = {r[0]: r[1] for r in rows}
         final_seen = False
+        seen = 0
         for event in events:
             if event.get("event") == "error":
-                return None
+                raise _Decline("wire_error_event", events=seen)
             if event.get("event") != "step_update":
                 continue
+            seen += 1
             step = event.get("step_update")
             if not isinstance(step, dict):
-                return None
+                raise _Decline("wire_malformed", events=seen)
             index = step.get("step_index")
-            if (type(index) is not int or index not in by_index or step.get("conversation_id") != cid
-                    or step.get("state") not in ("ACTIVE", "DONE")):
-                return None
+            if type(index) is not int or index not in by_index:
+                raise _Decline("wire_step_outside_interval", events=seen,
+                               step=index if type(index) is int else "?")
+            if step.get("conversation_id") != cid:
+                raise _Decline("wire_conversation_mismatch", step=index)
+            if step.get("state") not in ("ACTIVE", "DONE"):
+                raise _Decline("wire_step_state", step=index)
             kind = step.get("step_type")
             expected = {14: "user_input", 15: "agent_response", 132: "tool", 101: "system_message"}[by_index[index]]
             if kind != expected:
-                return None
+                raise _Decline("wire_step_type", step=index)
             states[index] = step["state"]
             if kind == "agent_response":
                 delta = step.get("text_delta", "")
                 if not isinstance(delta, str):
-                    return None
+                    raise _Decline("wire_text_malformed", step=index)
                 text_size += len(delta)
                 if text_size > MAX_BYTES:
-                    return None
+                    raise _Decline("wire_text_bound", step=index, text_size=text_size)
                 texts[index] = texts.get(index, "") + delta
             if index == final[0] and step["state"] == "DONE":
                 final_seen = True
-        if (not final_seen or any(state != "DONE" for state in states.values())
-                or texts.get(final[0], "").encode("utf-8") != body):
-            return None
+        if not final_seen:
+            raise _Decline("final_not_done_on_wire", final=final[0], events=seen)
+        open_steps = sorted(i for i, state in states.items() if state != "DONE")
+        if open_steps:
+            raise _Decline("wire_steps_open", steps=",".join(map(str, open_steps)))
+        # THE ONE TOLERANCE (header): the streamed final text must equal the
+        # stored body exactly, or the stored body plus exactly one "\n".
+        wire = texts.get(final[0], "").encode("utf-8")
+        if wire != body and wire != body + WIRE_TAIL:
+            raise _Decline("final_text_mismatch", final=final[0], wire_bytes=len(wire),
+                           stored_bytes=len(body))
         # Every emitted model/tool step must belong to this complete appended
         # interval, and each persisted model/tool step must have completed on wire.
-        if any(states.get(r[0]) != "DONE" for r in rows if r[1] in (15, 132)):
-            return None
+        unseen = sorted(r[0] for r in rows if r[1] in (15, 132) and states.get(r[0]) != "DONE")
+        if unseen:
+            raise _Decline("stored_steps_not_done_on_wire", steps=",".join(map(str, unseen)))
         reader.close(); reader = None
+        _emit(f"reconcile: fired historical={old_index} boundary={boundary.index} final={final[0]}"
+              f" events={seen} wire_tail={'lf' if wire != body else 'none'}")
         return {"kind": "historical_cli_quota_error", "historical_step": old_index,
                 "boundary_step": boundary.index, "final_step": final[0]}
-    except (OSError, sqlite3.Error, ValueError, IndexError, TypeError, KeyError):
+    except _Decline as d:
+        _emit(f"reconcile: declined reason={d.reason}{_fmt(d.detail)}")
+        return None
+    except (OSError, sqlite3.Error, ValueError, IndexError, TypeError, KeyError) as exc:
+        _emit(f"reconcile: declined reason=exception:{type(exc).__name__}")
         return None
     finally:
         if reader is not None:
