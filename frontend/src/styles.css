@@ -1028,8 +1028,8 @@ html.mobile .edge-jump { display: none; }
 @container (max-width: 599px) {
   .cc-head-left > .cc-name { min-width: 3ch; }
   .cc-head-right {
-    max-width: 100%; overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: thin;
+    max-width: 100%; flex-wrap: wrap; overflow: visible;
+    margin-inline-start: 0;
   }
 }
 .turn-status-banner {
