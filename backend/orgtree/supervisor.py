@@ -4249,10 +4249,22 @@ _ZONE_RE = re.compile(
     r"\s*(?:\(\s*(?P<paren>[^)]{1,40}?)\s*\)"
     r"|(?P<utc>UTC|GMT|(?-i:Z))(?P<utcoff>[+-]\d{1,2}(?::?\d{2})?)?(?![\w/])"
     r"|(?P<off>[+-]\d{2}:?\d{2})(?!\d)"
-    # an abbreviation is UPPER CASE and ends in T (PST, IDT, CEST): a lower
-    # or mixed-case word after the clock ("resets 1:40pm today") is prose,
-    # not a zone, and must not decline the time
-    r"|(?-i:(?P<abbr>[A-Z]{1,4}T))(?![\w/]))", re.IGNORECASE)
+    # a zone ABBREVIATION is a closed set (below), matched case-sensitively:
+    # the first cut took any short capitalised word ending in T, and "resets
+    # 1:40pm NEXT week" / "… BUT retry sooner" / "… NOT before then" all
+    # DECLINED the time — a false decline throws the message's time away,
+    # which is the inversion this whole change exists to stop (redteam
+    # 2026-09-07 R1). Prose after a clock, in any case, is not a zone.
+    r"|(?-i:(?P<abbr>[A-Z]{2,5}))(?![\w/]))", re.IGNORECASE)
+#: zone abbreviations that are RECOGNISED and DECLINED — none is honoured,
+#: because each names two offsets a year (or, for IST/CST, two continents),
+#: so reading one would be a guess dressed as a fact. Anything not listed is
+#: ordinary prose and leaves the time standing.
+_ZONE_ABBREVIATIONS = frozenset({
+    "PST", "PDT", "PT", "MST", "MDT", "MT", "CST", "CDT", "CT", "EST", "EDT",
+    "ET", "AST", "ADT", "AKST", "AKDT", "HST", "HDT", "BST", "IST", "IDT",
+    "CET", "CEST", "EET", "EEST", "WET", "WEST", "MSK", "JST", "KST", "AEST",
+    "AEDT", "ACST", "ACDT", "AWST", "NZST", "NZDT", "SAST", "SGT", "HKT"})
 _UTC_OFFSET_RE = re.compile(
     r"^(?:UTC|GMT|Z)?\s*(?:(?P<sign>[+-])(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?)?$",
     re.IGNORECASE)
@@ -4278,6 +4290,10 @@ def _zone_after(blob: str, at: int) -> tuple[_dtm.tzinfo | None, bool]:
     elif m.group("off") is not None:
         text = m.group("off")
     elif m.group("abbr") is not None:
+        # a bare capitalised word: a zone only if it is a KNOWN abbreviation
+        # — "NEXT", "BUT", "NOT" are sentences, not zones (redteam R1)
+        if m.group("abbr") not in _ZONE_ABBREVIATIONS:
+            return None, False
         text = m.group("abbr")
     if not text:
         return None, False
@@ -4297,7 +4313,9 @@ def _zone_after(blob: str, at: int) -> tuple[_dtm.tzinfo | None, bool]:
             return zoneinfo.ZoneInfo(text), False
         except Exception:                                  # noqa: BLE001
             return None, True
-    return None, True
+    # a parenthesised abbreviation, "(CEST)": recognised → declined;
+    # anything else in parentheses is a note, not a zone ("(estimated)")
+    return None, text.upper() in _ZONE_ABBREVIATIONS
 
 
 def _parse_limit_reset_ts_raw(blob: str,
@@ -4372,68 +4390,78 @@ def _parse_limit_reset_ts_raw(blob: str,
 # How far out each prose form may plausibly point, before the lane band. An
 # `epoch` is the CLI's own machine value and answers for itself; the other two
 # are the CLI phrasing a guess, and a guess is bounded by the lane.
+# How far out each prose form may plausibly point — the form's OWN bound,
+# which for a TRUSTED message is the only bound (user ruling 2026-09-07; see
+# `_parse_limit_reset_ts`): an epoch, a dated time and a relative duration
+# out to the longest real lane plus slack; a bare clock carries no date and
+# cannot honestly mean more than a day out, whatever the roll-to-tomorrow
+# arithmetic produces.
 _TEXT_HORIZON = {"epoch": limits.MAX_HORIZON, "clock": 24 * 3600.0,
-                 "relative": limits.MAX_HORIZON,
-                 # a dated clock is as exact as an epoch, but it is the
-                 # provider PHRASING a time rather than stating a machine
-                 # value, so it keeps the lane band like the other prose
-                 "date": limits.MAX_HORIZON}
+                 "relative": limits.MAX_HORIZON, "date": limits.MAX_HORIZON}
 
 
 def _parse_limit_reset_ts(blob: str, kind: str | None = None,
                           now: float | None = None,
                           trusted: bool = True) -> float | None:
-    """The prose reset time, BANDED — a number in the right place is not a
-    timestamp (user ruling 2026-08-18). Three bands, by the form the value
-    came in and the lane the error is about:
+    """The prose reset time, GUARDED — a number in the right place is not a
+    timestamp (user ruling 2026-08-18) — but for a TRUSTED message never cut
+    down by a lane inferred from the wording (user ruling 2026-09-07 14:56Z:
+    the time in the actual limit message comes first).
 
-    - an explicit epoch is the CLI's own machine value, trusted out to the
-      longest real lane. (The regex matches ANY long number after a pipe, and
-      an 11-digit one reads as a date in the fifth millennium — believe that
-      and `api_fallback` holds the key lane open for the rest of recorded
-      time, billing the org's key for every turn inside it.)
-    - a bare clock time carries no date: it cannot honestly mean more than a
-      day out, whatever the roll-to-tomorrow arithmetic produces.
-    - and NOTHING may exceed its own lane's length. Live-caught 2026-08-18:
-      "You've hit your session limit — resets 1:40pm", with 1:40pm already
-      past in local time, rolled to tomorrow and priced a 23-hour key-billing
-      window for a wall that lifts in five.
+    - every form must land in the future (a minute of slack) and inside its
+      OWN bound, `_TEXT_HORIZON`: an epoch, a dated time and a relative
+      duration out to `MAX_HORIZON` (eight days; the regex matches ANY long
+      number after a pipe, and an 11-digit one reads as a date in the fifth
+      millennium — believe that and `api_fallback` holds the key lane open
+      for the rest of recorded time), a bare clock within a day (it carries
+      no date, so it cannot honestly mean more).
+    - a TRUSTED message — the CLI's or the provider's own words — is not
+      clipped further by the lane the wording names or implies. "Try again
+      in 19 hours" on a session-named or unnamed wall means 19 hours; the
+      2026-08-18 rule that "nothing may exceed its own lane's length" is
+      retired for it (coordinator review 2026-09-07 16:01Z, after the same
+      retirement for epoch/date at 15:36Z). The live-caught case that
+      motivated the old rule — "your session limit — resets 1:40pm" with
+      1:40pm already past, rolling to tomorrow — now schedules at that clock
+      (within 24 h, the form's own bound), because the message said so; the
+      cost of being wrong is the `api_fallback` window, which
+      `_fallback_window_until` bounds independently.
+    - an UNTRUSTED blob (the agent's own final answer promoted by the
+      clean-result gate) keeps the lane band on every form: it names no
+      lane of its own (`_limit_reset_ts` classifies it as unnamed), so the
+      band is the session lane's — a 40-character sentence may not price a
+      week of the org's key (redteam 2026-08-18).
 
     Declining is cheap — the caller falls through to the account's own usage
-    readout, which is minute-exact."""
+    readout (matched to model, lane and type), then to the probe floor."""
     now = time.time() if now is None else now
     ts, how = _parse_limit_reset_ts_raw(blob, now)
     if ts is None:
         return None
-    # ⚠ An UNNAMED lane is the shortest lane, not the longest (user ruling
-    # 2026-08-18 — "if the type of limit is not known, default to the shortest
-    # one, so that it can be checked sooner"). `reset_for` honored that and
-    # this did not, so the live-caught 23-hour window survived intact for
-    # every wording that omits the word "session" (redteam 2026-08-18). The
-    # `epoch` form is exempt: there the CLI is stating a fact, not guessing.
-    lane = limits.lane_horizon(kind if kind else "session")
-    # ⚠ AN EXPLICIT TIMESTAMP IS A STATED FACT (user ruling 2026-09-07
-    # 14:56Z, coordinator decision 15:36Z): an `epoch` the CLI wrote or a
-    # `date` the provider spelled out keeps ONLY the global guards — not in
-    # the past, not past `MAX_HORIZON` (eight days, the longest real lane
-    # plus slack) — and is never cut down by a lane inferred from the
-    # wording beside it. This DELIBERATELY retires the 2026-08-18 rule that
-    # "your session limit …|<epoch 8 days out>" was self-contradicting and
-    # the lane won: under the message-first ruling the stated time wins,
-    # and a session-named wall whose provider states a reset 19 hours out
-    # is scheduled at 19 hours, not handed to the cache (redteam 2026-09-07
-    # F1 measured exactly that fall-through). `docs/ARCHITECTURE.md` should
-    # read the same way.
+    form = _TEXT_HORIZON.get(how, limits.MAX_HORIZON)
+    # ⚠ A TRUSTED MESSAGE'S TIME IS A STATED FACT, whatever its form (user
+    # ruling 2026-09-07 14:56Z; coordinator decisions 15:36Z for epoch/date,
+    # 16:01Z for relative/clock): only the form's own bound applies, never
+    # the lane inferred from the wording beside it. This DELIBERATELY
+    # retires the 2026-08-18 rule that "your session limit …|<epoch 8 days
+    # out>" was self-contradicting and the lane won, and its sibling that a
+    # session wall "resets 1:40pm" could not mean tomorrow: under the
+    # message-first ruling the stated time wins, and a session-named wall
+    # whose provider says "try again in 19 hours" is scheduled at 19 hours,
+    # not handed to the cache (redteam 2026-09-07 F1 measured exactly that
+    # fall-through for the dated form). `docs/ARCHITECTURE.md` reads the
+    # same way.
     #
-    # The exemption still rests on PROVENANCE: `trusted=False` marks a blob
-    # that came from the agent's own final answer (the clean-result limit
-    # gate) — there a 40-character message carrying "…limit reached|<epoch 8
-    # days out>" was enough to open a week-long key-billing window on the
-    # org's own key (redteam 2026-08-18). Untrusted text is banded like any
-    # guess, lane word or not. A `clock` (no date) and a `relative` form are
-    # the provider PHRASING a time and keep the lane band.
-    horizon = (limits.MAX_HORIZON if how in ("epoch", "date") and trusted
-               else min(_TEXT_HORIZON.get(how, limits.MAX_HORIZON), lane))
+    # The exemption rests on PROVENANCE: `trusted=False` marks a blob that
+    # came from the agent's own final answer (the clean-result limit gate) —
+    # there a 40-character message carrying "…limit reached|<epoch 8 days
+    # out>" was enough to open a week-long key-billing window on the org's
+    # own key (redteam 2026-08-18). Untrusted text is banded by the lane —
+    # the SHORTEST lane, since an untrusted blob may not name one (user
+    # ruling 2026-08-18: "if the type of limit is not known, default to the
+    # shortest one, so that it can be checked sooner").
+    horizon = (form if trusted
+               else min(form, limits.lane_horizon(kind if kind else "session")))
     if not now - 60.0 < ts <= now + horizon:
         return None
     return ts

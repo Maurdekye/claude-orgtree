@@ -225,6 +225,16 @@ def sec_parser() -> None:
         for suffix in (" PST", " IDT", " (Mars/Olympus)", " (CEST)"):
             eq(supervisor._parse_limit_reset_ts_raw(base + suffix, now),
                (None, ""), f"unsupported zone {suffix!r} declines")
+        # …but ORDINARY PROSE after the clock, in any case, is not a zone
+        # (redteam R1: "NEXT", "BUT", "NOT", "AT" were declining the time)
+        for tail in (" NEXT week", " BUT retry sooner", " NOT before then",
+                     " AT the earliest", " (estimated)", " WAIT for it",
+                     " THEN retry"):
+            ts, how = supervisor._parse_limit_reset_ts_raw(base + tail, now)
+            eq(how, "date", f"prose {tail!r} is not a zone")
+            want = dt.datetime(at.year, at.month, at.day, at.hour,
+                               at.minute).timestamp()       # local wall clock
+            near(ts, want, f"read as local for {tail!r}")
         # …and the bare-clock claude wording gets the same treatment
         ts, how = supervisor._parse_limit_reset_ts_raw(
             "You've hit your limit · resets 12:40am (Asia/Jerusalem)", now)
@@ -445,6 +455,59 @@ def sec_stamp() -> None:
     check("the roster mark records the message's time, not the cache's",
           _roster_mark)
 
+    def _relative_and_clock_forms() -> None:
+        # coordinator review 16:01Z: a trusted RELATIVE duration and a bare
+        # CLOCK are message times too. Until then `_parse_limit_reset_ts`
+        # clipped both to the inferred/named lane, so "try again in 19
+        # hours" on a session wall was parsed and discarded and the freeze
+        # took the cache's 3 h. Through the REAL stamp path, cache disagreeing.
+        readout(("session", cache_reset, True, None))
+        # relative, session-named
+        slug, nid = rig.probe_org()
+        rig.set_mode("iserror", limit_text="You've hit your session limit. "
+                                           "Try again in 19 hours.")
+        rig.run_turn(slug, nid, "go")
+        fz = rig.node(slug, nid).get("frozen") or {}
+        fixture(fz.get("limit") is True, f"the rig did not freeze: {fz}")
+        near(fz.get("until_ts"), time.time() + 19 * 3600,
+             "19 hours, as the message said — not the cache's 3 h", tol=30.0)
+        eq((fz.get("reset_src"), fz.get("schedule_kind")),
+           ("text", "observed-deadline"), "provenance")
+        # clock, unnamed, ~23 h ahead (the named hour is 1 h in the past, so
+        # it rolls to tomorrow — the live-caught 2026-08-18 shape, now the
+        # message's own answer)
+        at = dt.datetime.fromtimestamp(time.time() - 3600).replace(
+            second=0, microsecond=0)
+        clock = at.strftime("%I:%M%p").lstrip("0").lower()
+        slug, nid = rig.probe_org()
+        rig.set_mode("iserror", limit_text=f"You've hit your limit · resets {clock}")
+        rig.run_turn(slug, nid, "go")
+        fz = rig.node(slug, nid).get("frozen") or {}
+        fixture(fz.get("limit") is True, f"the rig did not freeze: {fz}")
+        near(fz.get("until_ts"), (at + dt.timedelta(days=1)).timestamp(),
+             "tomorrow at that clock, as the message said", tol=90.0)
+        eq(fz.get("reset_src"), "text", "provenance")
+    check("a trusted 'try again in 19 hours' and a bare clock ~23 h out are "
+          "stamped as said, not clipped to the lane and handed to the cache",
+          _relative_and_clock_forms)
+
+    def _untrusted_stays_banded() -> None:
+        # the SAME wordings from the agent's own answer: banded to the
+        # session lane, so the 19-hour claim is refused and the untrusted
+        # freeze gets the cache/floor path (redteam 2026-08-18 safeguard)
+        eq(supervisor._parse_limit_reset_ts(
+            "You've hit your session limit. Try again in 19 hours.", None,
+            trusted=False), None, "untrusted relative 19 h is banded")
+        eq(supervisor._parse_limit_reset_ts(
+            "usage limit reached — try again in 2 hours", None,
+            trusted=False) is not None, True,
+           "…while an untrusted 2 h is inside the band")
+        eq(supervisor._parse_limit_reset_ts(
+            "try again in 9 days", "weekly_all"), None,
+           "a trusted relative past the global bound is still refused")
+    check("control · untrusted relative/clock wordings keep the lane band; "
+          "the global bound holds for trusted ones", _untrusted_stays_banded)
+
 
 # ══════════════════════════════════════════════════════════════════════ §4
 
@@ -496,6 +559,21 @@ def sec_correction_pass() -> None:
         eq(fz["reset_src"], "usage:session", "provenance")
     check("control · the same pass moves a probe-floor freeze to the matched "
           "cached lane (the pass is live)", _control_moves)
+
+    def _relative_kept() -> None:
+        # the correction pass on a freeze stamped from "try again in 19
+        # hours": the re-read cache (session 3 h, active) must not move it
+        rel = "You've hit your session limit. Try again in 19 hours."
+        ts0 = now + 19 * 3600
+        slug, nid = _seed("text", "observed-deadline", ts0)
+        moved = supervisor._refresh_freeze_reset(
+            slug, nid, rel, ts0, None, subscription=True, trusted=True,
+            tier="haiku", stamped_kind="observed-deadline")
+        eq(moved, False, "the pass rewrote a relative-stamped freeze")
+        fz = rig.node(slug, nid)["frozen"]
+        near(fz["until_ts"], ts0, "until_ts", tol=5.0)
+    check("a freeze stamped from a relative duration is not rewritten by the "
+          "correction pass either", _relative_kept)
 
 
 # ══════════════════════════════════════════════════════════════════════ §5

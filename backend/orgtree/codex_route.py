@@ -382,7 +382,12 @@ def failure_deadline(route: Route, board: dict[str, Any], snapshots: Any,
         # both pools out: PER POOL the notification answers first and the
         # board only where the notification said nothing about that pool;
         # across pools the earliest known reset is the probe time (the first
-        # moment a re-probe could find capacity — `node_wake_epoch`'s rule)
+        # moment a re-probe could find capacity — `node_wake_epoch`'s rule).
+        # ⚠ the provenance returned is that of the WINNING candidate, not of
+        # the turn: when pool B's board reset is earlier than pool A's stated
+        # one the answer is B's, labelled SRC_BOARD, and A's stated time
+        # leaves the ranking — earlier and a `probe`, so one re-freeze at
+        # worst (redteam 2026-09-07 R4)
         candidates: list[tuple[float, str]] = []
         for p in (RESERVE_POOL, PLAN_POOL):
             exhausted, snap = snapshots_pool_reset(snapshots, p, sent_pool=pool)

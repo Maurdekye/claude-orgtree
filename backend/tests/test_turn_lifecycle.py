@@ -425,41 +425,58 @@ def hermetic() -> None:
             "Claude AI usage limit reached|99999999999") is None
         else (_ for _ in ()).throw(AssertionError("believed a junk epoch"))))
     # a bare clock time carries no date, so "resets 1:40pm" with 1:40pm
-    # already past rolls to tomorrow — 23 hours out. Legal for a weekly lane,
-    # impossible for a 5-hour session lane, and believing it priced a 23-hour
-    # key-billing window (live-caught 2026-08-18). Pinned against a `now`
-    # placed 23 h before whatever the roll produced, so the real clock at test
-    # time cannot decide the outcome.
+    # already past rolls to tomorrow — 23 hours out. Until 2026-09-07 that
+    # was refused for a 5-hour session lane (live-caught 2026-08-18: it
+    # priced a 23-hour key-billing window). The user's message-first ruling
+    # (2026-09-07 14:56Z; coordinator review 16:01Z) retires the lane clip
+    # for a TRUSTED message: the clock keeps its own 24 h bound and the
+    # stated time stands, lane or no lane; the untrusted case keeps the
+    # band. Pinned against a `now` placed 23 h before whatever the roll
+    # produced, so the real clock at test time cannot decide the outcome.
     _clockts, _how = supervisor._parse_limit_reset_ts_raw("resets 1:40pm")
     _now23 = _clockts - 23 * 3600
-    check("reset-ts · the clock form is reported as a guess", lambda: (
+    check("reset-ts · the clock form is reported as a clock", lambda: (
         None if _how == "clock"
         else (_ for _ in ()).throw(AssertionError(_how))))
-    check("reset-ts · 23 h out is refused for a 5-hour session lane", lambda: (
+    check("reset-ts · 23 h out STANDS for a session-named wall (2026-09-07: "
+          "the message's time is not clipped by the inferred lane)", lambda: (
         None if supervisor._parse_limit_reset_ts(
-            "resets 1:40pm", "session", now=_now23) is None
-        else (_ for _ in ()).throw(AssertionError("a 5-hour lane, 23 h out"))))
+            "resets 1:40pm", "session", now=_now23) == _clockts
+        else (_ for _ in ()).throw(AssertionError("the lane clipped it"))))
+    check("reset-ts · …but an UNTRUSTED 23 h clock is still refused for it",
+          lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "resets 1:40pm", "session", now=_now23, trusted=False) is None
+        else (_ for _ in ()).throw(AssertionError("untrusted escaped"))))
     check("reset-ts · the same guess stands for a weekly lane", lambda: (
         None if supervisor._parse_limit_reset_ts(
             "resets 1:40pm", "weekly_all", now=_now23) == _clockts
         else (_ for _ in ()).throw(AssertionError("weekly lane refused"))))
     check("reset-ts · 'try again in 2 hours' ≈ now+7200", lambda: _ts(
         "Try again in 2 hours", time.time() + 7100, time.time() + 7300))
-    # a clock time is a GUESS (it carries no date), so with no lane named it
-    # is banded by the SHORTEST lane — user ruling 2026-08-18. Inside that
-    # reach it stands; past it the account's usage readout is asked instead.
+    # a clock time carries no date; its own bound is a day. With no lane
+    # named a TRUSTED one stands out to that bound (2026-09-07); an untrusted
+    # one is banded by the SHORTEST lane (user ruling 2026-08-18).
     _soon = (time.strftime("%I:%M%p", time.localtime(time.time() + 3600))
              .lstrip("0").lower())
     check("reset-ts · a clock time inside the session lane lands in the "
           "future", lambda: _ts(
         "resets " + _soon, time.time(), time.time() + 6 * 3600 + 60))
-    check("reset-ts · …and one 23 h out is refused when no lane is named "
-          "(the shortest lane is the default)", lambda: (
+    check("reset-ts · …and one 23 h out STANDS when no lane is named "
+          "(2026-09-07: the message's own bound is a day)", lambda: (
         None if supervisor._parse_limit_reset_ts(
             "resets 1:40pm", None,
             now=supervisor._parse_limit_reset_ts_raw("resets 1:40pm")[0]
+            - 23 * 3600) == supervisor._parse_limit_reset_ts_raw(
+                "resets 1:40pm")[0]
+        else (_ for _ in ()).throw(AssertionError("23 h clipped, unnamed"))))
+    check("reset-ts · …while an UNTRUSTED unnamed 23 h clock is banded to the "
+          "shortest lane", lambda: (
+        None if supervisor._parse_limit_reset_ts(
+            "resets 1:40pm", None, trusted=False,
+            now=supervisor._parse_limit_reset_ts_raw("resets 1:40pm")[0]
             - 23 * 3600) is None
-        else (_ for _ in ()).throw(AssertionError("23 h on an unnamed lane"))))
+        else (_ for _ in ()).throw(AssertionError("untrusted escaped"))))
     check("reset-ts · no time at all → None", lambda: (
         None if supervisor._parse_limit_reset_ts("usage limit reached") is None
         else (_ for _ in ()).throw(AssertionError("invented a time"))))
