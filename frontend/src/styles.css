@@ -2760,7 +2760,7 @@ main.solo { width: 100%; }
 
 /* ---------------------------------------------------------------- overlays */
 .overlay {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 20;
+  position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 30;
   display: grid; place-items: center;
 }
 /* fixed height (user ruling), not max-height: the panel no longer resizes
@@ -5735,7 +5735,7 @@ label.set-row { cursor: pointer; }
    that opened BEHIND the window that raised it is the same defect as a dialog
    whose backdrop covers that window. Pinned, PinFrame's own inline z-index
    wins over this and the dialog joins the band like any other window. */
-.modalpin-over > .overlay { z-index: 30; }
+.modalpin-over > .overlay { z-index: 31; }
 /* the disk browser's mode tabs and close button, lifted out of its title h3 so
    a pinned window does not hide them with the duplicated heading. A row of its
    own under the title — the same shape the settings panels' tab strips already

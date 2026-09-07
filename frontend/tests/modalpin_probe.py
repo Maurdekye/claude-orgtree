@@ -153,7 +153,7 @@ MUTANTS: dict[str, tuple[str, str, str, str]] = {
         "nested: the dialog is trapped in its host's stacking context again"),
     "nested-dialog-sits-inside-the-pin-band": (
         "src/styles.css",
-        ".modalpin-over > .overlay { z-index: 30; }",
+        ".modalpin-over > .overlay { z-index: 31; }",
         ".modalpin-over > .overlay { z-index: 20; }",
         "nested: a dialog raised from a pinned window renders behind it"),
     # the measured defect itself, put straight back: a dialog raised from a
@@ -163,7 +163,7 @@ MUTANTS: dict[str, tuple[str, str, str, str]] = {
     # the gallery checks long before these ever run.)
     "a-pinned-dialog-still-dims-its-host": (
         "src/styles.css",
-        ".modalpin-over > .overlay { z-index: 30; }",
+        ".modalpin-over > .overlay { z-index: 31; }",
         ".modalpin-over > .overlay { z-index: 30;\n"
         "  background: rgba(0, 0, 0, .45) !important;\n"
         "  pointer-events: auto !important; }",

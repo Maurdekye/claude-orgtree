@@ -72,7 +72,7 @@ export const modalZIndex = (z: number): number =>
 /** one step above the whole pinned band, for a dialog raised FROM a pinned
  *  window (see ModalOverPins). Still below the disk browser's own centred
  *  layer (55), the folder picker (60), the lightbox (95) and toasts (100). */
-export const MODAL_OVER_PINS_Z = 30
+export const MODAL_OVER_PINS_Z = 31
 
 export const MODAL_PINS_KEY = 'orgtree-modal-pins'
 
