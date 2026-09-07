@@ -110,6 +110,25 @@ export function mailCorrections(profile:'operator'|'public') {
     assert.equal(body(view.el),'','arrival after an all-read opening does not auto-select')
   })
 
+  test(profile+' automatically viewed unread is marked only when leaving or closing',async t=>{
+    useFakeClock();const saved=globalThis.fetch;const reads:string[][]=[]
+    let pending=[oldest,newer]
+    globalThis.fetch=(async(input,init)=>{
+      if(String(input).endsWith('/inbox/read')) {
+        const ids=JSON.parse(String(init?.body)).ids as string[];reads.push(ids)
+        pending=pending.filter(m=>!ids.includes(m.id));return response({read:ids.length})
+      }
+      return response(String(input).endsWith('/inbox')?{pending,delivered:[],sent:[]}:{})
+    }) as typeof fetch
+    const open=()=> <InboxPanel slug="mine" tree={tree} toast={noop} close={noop} jumpTo={null}/>
+    const view=await mountView(open(),h=>h)
+    t.after(async()=>{await view.unmount();globalThis.fetch=saved;realClock()})
+    await flush();assert.match(body(view.el),/Meaningful original/);assert.deepEqual(reads,[])
+    await view.render(<span/>);await flush();assert.deepEqual(reads,[['original']],'close marks the automatically displayed original')
+    await view.render(open());await flush();assert.match(body(view.el),/Meaningful other/);assert.deepEqual(reads,[['original']],'reopen itself marks nothing')
+    await view.render(<span/>);await flush();assert.deepEqual(reads,[['original'],['other']],'second close marks only the next viewed message')
+  })
+
   test(profile+' status header keeps one linked self identity and distinct reported identities',async t=>{
     const f=JSON.parse(readFileSync(path.resolve(__SRC_DIR__,'../tests/fixtures/events/status.report.json'),'utf8'))
     for(const subject of ['alpha','beta']) {
