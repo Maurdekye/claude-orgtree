@@ -18,6 +18,8 @@
  * §4 lifecycle events (pagehide/pageshow/freeze/resume) are recorded
  * §5 stop() detaches: no frames and no events are recorded afterwards
  * §6 corrupt storage reads as empty rather than throwing
+ * §6b two tabs write their own rings: neither can drop the other's entry
+ * §6c retention: stale rings and rings beyond the 10 most recent are pruned at install
  * §7 the page: newest first, the empty state, Clear empties storage
  * §8 the path test: /debug/freezes with and without the kiosk prefix
  *
@@ -27,7 +29,8 @@ import { mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  FREEZE_LOG_CAP, FREEZE_LOG_KEY, clearFreezeLog, installFreezeLog, readFreezeLog,
+  FREEZE_LOG_CAP, FREEZE_LOG_PREFIX, FREEZE_LOG_TABS_KEPT, FREEZE_LOG_MAX_AGE_MS,
+  clearFreezeLog, freezeLogKey, installFreezeLog, pruneFreezeLog, readFreezeLog, readTabFreezeLog,
 } from '../src/freezelog'
 import FreezeLogPage, { isFreezeLogPath } from '../src/FreezeLogPage'
 
@@ -53,7 +56,7 @@ function rig(opts: { thresholdMs?: number; cap?: number } = {}) {
 
 test.beforeEach(() => {
   clearFreezeLog()
-  window.sessionStorage.removeItem('orgtree.freezes.tab')
+  window.sessionStorage.removeItem('orgtree.freezes-tab')
 })
 
 test('§0 install writes a start entry with the path and a tab id', () => {
@@ -144,12 +147,55 @@ test('§5 stop() detaches everything: frames and events after it record nothing'
 })
 
 test('§6 corrupt or foreign storage reads as empty and is overwritten, never thrown on', () => {
-  localStorage.setItem(FREEZE_LOG_KEY, '{not json')
+  localStorage.setItem(freezeLogKey('bad1'), '{not json')
   assert.deepEqual(readFreezeLog(), [])
-  localStorage.setItem(FREEZE_LOG_KEY, '{"a":1}')
+  localStorage.setItem(freezeLogKey('bad2'), '{"a":1}')
   assert.deepEqual(readFreezeLog(), [])
   const r = rig()
   assert.equal(readFreezeLog().length, 1)
+  r.stop()
+})
+
+test('§6b two tabs keep separate rings, and reading merges them by time', () => {
+  // tab A installs and records; then tab B (a different sessionStorage id)
+  // installs and records; A's entry must still be there afterwards
+  const a = rig({ thresholdMs: 100 })
+  a.tick(300)
+  const tabA = readFreezeLog()[0]!.tab
+  a.stop()
+  window.sessionStorage.removeItem('orgtree.freezes-tab')   // a new tab mints a new id
+  const b = rig({ thresholdMs: 100 })
+  b.tick(500)
+  b.stop()
+  const tabB = readTabFreezeLog(tabA).length ? readFreezeLog().find((e) => e.tab !== tabA)!.tab : ''
+  assert.notEqual(tabA, tabB)
+  assert.deepEqual(readTabFreezeLog(tabA).map((e) => e.kind), ['start', 'gap'], "tab A's ring is intact after tab B wrote")
+  assert.deepEqual(readTabFreezeLog(tabB).map((e) => e.kind), ['start', 'gap'])
+  assert.equal(readFreezeLog().length, 4, 'the merged view has both')
+  assert.equal(readTabFreezeLog(tabB).find((e) => e.kind === 'gap')!.ms, 500)
+  clearFreezeLog()
+  assert.equal(localStorage.getItem(freezeLogKey(tabA)), null, 'Clear removes every tab ring')
+  assert.equal(localStorage.getItem(freezeLogKey(tabB)), null)
+})
+
+test('§6c retention at install: rings older than 7 days go, only the 10 most recent tabs stay, the installing tab is never pruned', () => {
+  const now = Date.now()
+  const seed = (tab: string, at: number) =>
+    localStorage.setItem(freezeLogKey(tab), JSON.stringify([{ at, kind: 'start', detail: '/', vis: 'visible', tab }]))
+  seed('stale', now - FREEZE_LOG_MAX_AGE_MS - 1)
+  for (let i = 0; i < 12; i++) seed(`t${i}`, now - (i + 1) * 1000)   // t0 newest ... t11 oldest
+  pruneFreezeLog(localStorage, now, 'me')
+  const left = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)!)
+    .filter((k) => k.startsWith(FREEZE_LOG_PREFIX)).sort()
+  assert.ok(!left.includes(freezeLogKey('stale')), 'the stale ring is gone')
+  assert.equal(left.length, FREEZE_LOG_TABS_KEPT - 1, 'nine others stay beside the installing tab')
+  assert.ok(!left.includes(freezeLogKey('t9')) && !left.includes(freezeLogKey('t11')), 'the oldest were dropped')
+  assert.ok(left.includes(freezeLogKey('t0')) && left.includes(freezeLogKey('t8')))
+  // and install itself prunes: a fresh install with 12 rings present leaves 9 + its own
+  const r = rig()
+  const after = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)!)
+    .filter((k) => k.startsWith(FREEZE_LOG_PREFIX))
+  assert.equal(after.length, FREEZE_LOG_TABS_KEPT)
   r.stop()
 })
 
@@ -170,7 +216,7 @@ test('§7 the page lists entries newest first, shows an empty state, and Clear e
   const { act } = await import('react')
   const clear = Array.from(view.el.querySelectorAll('button')).find((b) => b.textContent === 'Clear')!
   await act(async () => { clear.click() })
-  assert.equal(localStorage.getItem(FREEZE_LOG_KEY), null, 'Clear removes the stored ring')
+  assert.equal(readFreezeLog().length, 0, 'Clear removes the stored rings')
   assert.ok(view.el.querySelector('[data-testid=freeze-empty]'), 'and the page shows the empty state')
 })
 

@@ -19,12 +19,20 @@
 //              after a crash shows as a new start with the previous tab's
 //              last entries still ahead of it
 //
-// WHERE IT LIVES: localStorage, not sessionStorage, deliberately. The crash
-// this exists to diagnose takes the tab with it, and sessionStorage dies with
-// the tab; localStorage survives the crash AND is readable from another tab,
-// which is what lets `/debug/freezes` show the log of a tab that is gone.
-// Each entry carries the tab it came from (a random id kept in sessionStorage,
-// so it IS per tab). Ring of the last 200 entries; each is a few dozen bytes.
+// WHERE IT LIVES: localStorage, ONE KEY PER TAB, deliberately.
+//   • Not sessionStorage: it is scoped to the tab, and after a GPU-process
+//     loss or a renderer crash whether it comes back depends on Chrome's
+//     session restore — sometimes it does, sometimes the tab is simply gone.
+//     localStorage is durable regardless, and is readable from ANOTHER tab,
+//     which is what lets `/debug/freezes` show the log of a tab that is gone.
+//   • One key per tab (`orgtree.freezes.<tab>`), never one shared ring: two
+//     open orgtree tabs each read-modify-write, and a shared key would let one
+//     tab's write silently drop the other's entry. The tab id is random, kept
+//     in sessionStorage so it is stable for that tab's life and nothing else's.
+// RETENTION, explicit: each tab's ring keeps its last 200 entries (a few dozen
+// bytes each); on every install the tab keys are pruned to the 10 most recent
+// by last entry, and any key whose newest entry is older than 7 days goes.
+// Reading merges every tab's ring by time. Clear removes every tab's key.
 //
 // COST: one requestAnimationFrame callback per painted frame that does a
 // subtraction and a compare, and a storage write only when something is
@@ -52,9 +60,13 @@ export interface FreezeEntry {
   heap_mb?: number
 }
 
-export const FREEZE_LOG_KEY = 'orgtree.freezes'
-const TAB_KEY = 'orgtree.freezes.tab'
+/** every tab's ring lives under this prefix + its tab id */
+export const FREEZE_LOG_PREFIX = 'orgtree.freezes.'
+export const freezeLogKey = (tab: string): string => FREEZE_LOG_PREFIX + tab
+const TAB_KEY = 'orgtree.freezes-tab'   // sessionStorage: this tab's id (not under the prefix)
 export const FREEZE_LOG_CAP = 200
+export const FREEZE_LOG_TABS_KEPT = 10
+export const FREEZE_LOG_MAX_AGE_MS = 7 * 24 * 3600 * 1000
 
 export interface FreezeLogOptions {
   /** frame gap at or above this is recorded (ms) */
@@ -79,12 +91,47 @@ function safeParse(raw: string | null): FreezeEntry[] {
   }
 }
 
+function tabKeys(storage: Storage): string[] {
+  const keys: string[] = []
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i)
+    if (k && k.startsWith(FREEZE_LOG_PREFIX)) keys.push(k)
+  }
+  return keys
+}
+
+/** Every tab's entries, merged and ordered by time (oldest first). */
 export function readFreezeLog(storage: Storage = localStorage): FreezeEntry[] {
-  return safeParse(storage.getItem(FREEZE_LOG_KEY))
+  const all: FreezeEntry[] = []
+  for (const k of tabKeys(storage)) all.push(...safeParse(storage.getItem(k)))
+  return all.sort((a, b) => a.at - b.at)
+}
+
+/** One tab's ring, as stored. */
+export function readTabFreezeLog(tab: string, storage: Storage = localStorage): FreezeEntry[] {
+  return safeParse(storage.getItem(freezeLogKey(tab)))
 }
 
 export function clearFreezeLog(storage: Storage = localStorage): void {
-  storage.removeItem(FREEZE_LOG_KEY)
+  for (const k of tabKeys(storage)) storage.removeItem(k)
+}
+
+/** Retention: drop tab rings whose newest entry is older than maxAge, then
+ *  keep only the `keep` most recent rings by newest entry. Never touches the
+ *  ring named in `except` (the installing tab's own). */
+export function pruneFreezeLog(storage: Storage, now: number, except: string,
+  keep: number = FREEZE_LOG_TABS_KEPT, maxAge: number = FREEZE_LOG_MAX_AGE_MS): void {
+  const rings = tabKeys(storage)
+    .filter((k) => k !== freezeLogKey(except))
+    .map((k) => {
+      const ring = safeParse(storage.getItem(k))
+      const newest = ring.length ? ring[ring.length - 1]!.at : 0
+      return { k, newest }
+    })
+  const stale = rings.filter((r) => now - r.newest > maxAge)
+  const fresh = rings.filter((r) => now - r.newest <= maxAge).sort((a, b) => b.newest - a.newest)
+  for (const r of stale) storage.removeItem(r.k)
+  for (const r of fresh.slice(Math.max(0, keep - 1))) storage.removeItem(r.k)   // -1: the installing tab counts
 }
 
 function tabId(win: Window): string {
@@ -119,6 +166,7 @@ export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
   const caf = opts.caf ?? ((id) => win.cancelAnimationFrame(id))
   const now = opts.now ?? (() => performance.now())
   const tab = tabId(win)
+  const key = freezeLogKey(tab)
 
   const record = (kind: FreezeKind, detail: string, ms?: number): void => {
     const entry: FreezeEntry = { at: Date.now(), kind, detail, vis: doc.visibilityState, tab }
@@ -126,15 +174,18 @@ export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
     const heap = heapMb()
     if (heap !== undefined) entry.heap_mb = heap
     try {
-      const ring = readFreezeLog(storage)
+      // this tab's ring only: no other tab writes this key, so the
+      // read-modify-write cannot lose anyone else's entry
+      const ring = safeParse(storage.getItem(key))
       ring.push(entry)
       if (ring.length > cap) ring.splice(0, ring.length - cap)
-      storage.setItem(FREEZE_LOG_KEY, JSON.stringify(ring))
+      storage.setItem(key, JSON.stringify(ring))
     } catch {
       // storage full or unavailable: an instrument must never throw into the page
     }
   }
 
+  try { pruneFreezeLog(storage, Date.now(), tab) } catch { /* same rule */ }
   record('start', location.pathname)
 
   // ---- frame gaps
