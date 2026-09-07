@@ -181,13 +181,38 @@ ledger, supervisor, the gateways, or the canvas.
   no date and rolls to tomorrow when the hour has passed; a cached readout on
   a broken upstream is served forever. Every one of those produced a
   real over-long window in review (23 hours against a 5-hour wall; 6 days
-  against the same). The rule that came out of it: band every candidate by
-  the lane it claims to describe — including an explicit epoch, whenever the
-  same text also names a lane, because then the two are evidence about each
-  other — bound the window itself independently (`_fallback_window_until`),
+  against the same). The rule that came out of it: band every PHRASED
+  candidate by the lane it claims to describe — a bare clock, a "try again
+  in N" — bound the window itself independently (`_fallback_window_until`),
   and prefer a SHORT wrong answer, which costs one re-freeze where a long one
-  costs the bill. The single exemption is an epoch with NO lane word beside
-  it: there the CLI is stating a machine fact and nothing contradicts it.
+  costs the bill. An explicit timestamp is different: an epoch the CLI wrote
+  or a dated time the provider spelled out is a STATED FACT and keeps only the
+  global guards (not in the past, not beyond `MAX_HORIZON`) — including when
+  the same text names a lane. (User ruling 2026-09-07 14:56Z, "the time in the
+  actual limit message first": this deliberately retires the 2026-08-18
+  reading that "your session limit …|<epoch 8 days out>" was two pieces of
+  evidence contradicting each other and the lane won. The band still applies
+  to an UNTRUSTED blob — text the agent could have written — whatever its
+  form.)
+- **The limit message's time comes first; cached usage only when it has
+  none.** For every provider (user ruling 2026-09-07 14:56Z). The freeze
+  stamp, the roster mark and the off-lock correction pass order the parsed
+  message time before the cached readout (`supervisor._limit_reset_ts`), and
+  nothing cached is placed in front of a `text` answer — the "latest active
+  constraint" projection (`limits.recovery_deadline`) is no longer a
+  scheduling input. When the message carries no time, the cache is matched
+  to model (`limits.lane_applies`, Claude tiers only), account lane (the
+  `subscription` gate) and limit type: a NAMED type takes its own lane or
+  nothing (then the probe floor), an unnamed type the shortest eligible lane
+  within the session horizon (the 2026-08-18 rule), and only a matched named
+  lane is scheduled as an observed deadline — every other cache answer is a
+  bounded `probe` (`_usage_schedule_kind`). On the codex lane the turn's own
+  rate-limit notification is the message and the board is the cache
+  (`codex_route.failure_deadline`); the provider freeze ranks a stated value
+  over the error's prose over a board value over the floor
+  (`_provider_limit_until`). The API projection shows a `text`/`provider`
+  deadline still ahead over the roster mark, whatever the roster says about
+  capacity elsewhere.
 - **Text an AGENT could have written may not price anything.** A clean
   result's `result` field IS the agent's own final answer, and the
   limit-detection gate promotes a short one that names a limit into the same
