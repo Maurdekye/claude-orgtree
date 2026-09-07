@@ -1487,6 +1487,29 @@ def _rederive_freeze_reset(node: dict[str, Any],
                 return
         fz["until"], fz["until_ts"] = "capacity available — ▶ to resume", None
         return
+    # ⚠ THE MESSAGE'S OWN DEADLINE OUTRANKS THE ROSTER MARK (user ruling
+    # 2026-09-07 14:56Z; coordinator decision 15:03Z). A freeze whose reset
+    # was parsed from the limit message (`text`) or stated by the provider for
+    # that turn (`provider`) carries the one time that describes THIS wall,
+    # for this model. The roster's `refresh_at` is the pool mark — mirrored
+    # across haiku/sonnet/opus with `max()` and, until that ruling, recorded
+    # from the cached readout — so it could show a sibling tier's later,
+    # cache-derived time in place of the reset the provider actually named.
+    # While the message deadline is still ahead it is displayed; the roster
+    # answers only when the freeze has no applicable message deadline.
+    fzd = cast("dict[str, Any]", fz)
+    src = str(fzd.get("reset_src") or "")
+    try:
+        own = float(fzd.get("until_ts") or 0)
+    except (TypeError, ValueError):
+        own = 0.0
+    now = time.time()
+    if src in ("text", "provider") and now < own <= now + limits.MAX_HORIZON:
+        fz["until"] = (
+            ("capacity recheck " if fzd.get("schedule_kind") == "probe"
+             else "capacity resets ") + supervisor._reset_label(own))
+        fz["until_ts"] = own
+        return
     ts = got.get("refresh_at")
     if not ts:
         fz["until"], fz["until_ts"] = "reset time unknown", None

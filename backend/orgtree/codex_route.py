@@ -334,16 +334,31 @@ def node_wake_epoch(limits: list[dict[str, Any]], snapshots: Any,
     return min(candidates) if candidates else None
 
 
-def failure_schedule(route: Route, board: dict[str, Any], snapshots: Any,
+#: where a `failure_deadline` answer came from — the turn's OWN rate-limit
+#: notification (the app-server says it on the wire beside the error: the
+#: limit message, in the user's sense), or the CACHED board
+SRC_NOTIFICATION = "notification"
+SRC_BOARD = "board"
+
+
+def failure_deadline(route: Route, board: dict[str, Any], snapshots: Any,
                      served_pool: str | None, *,
-                     now: float | None = None) -> tuple[float | None, str]:
-    """Return the routed failure's deadline and its honest schedule kind.
+                     now: float | None = None) -> tuple[float | None, str, str]:
+    """Return the routed failure's deadline, its honest schedule kind and
+    WHERE the deadline came from (`SRC_NOTIFICATION`, `SRC_BOARD`, or `""`
+    when nothing answered).
+
+    ⚠ THE TURN'S OWN NOTIFICATION OUTRANKS THE CACHED BOARD (user ruling
+    2026-09-07 14:56Z: the time in the limit message first, cached usage only
+    when the message carries none). Until then this took `max()` of the two,
+    so a board read minutes earlier could push the wake PAST the reset the
+    provider had just stated for this very turn. The board is consulted only
+    when the notification carried no usable reset — and then only for the
+    account and pool captured by the route, never another namespace's.
 
     A single served pool recovers only after the latest exhausted constraint
-    in that pool.  Luna can use either pool, so its earlier per-pool deadline
-    is only a time to probe the alternatives.  Cached evidence is usable only
-    for the account captured by the route; an unknown account/pool fails to a
-    probe instead of borrowing another namespace's board.
+    in that pool. Luna can use either pool, so its earlier per-pool deadline
+    is only a time to probe the alternatives.
     """
     now = time.time() if now is None else now
     pool = served_pool or None
@@ -360,20 +375,55 @@ def failure_schedule(route: Route, board: dict[str, Any], snapshots: Any,
                if isinstance(value, dict)] if board_ok else [])
     if route.get("requested") == ROUTED_TIER:
         if not pool:
-            return None, "probe"
-        wake = node_wake_epoch(limits, snapshots, sent_pool=pool)
-        return wake, "probe"
+            return None, "probe", ""
+        # both pools out: PER POOL the notification answers first and the
+        # board only where the notification said nothing about that pool;
+        # across pools the earliest known reset is the probe time (the first
+        # moment a re-probe could find capacity — `node_wake_epoch`'s rule)
+        candidates: list[tuple[float, str]] = []
+        for p in (RESERVE_POOL, PLAN_POOL):
+            exhausted, snap = snapshots_pool_reset(snapshots, p, sent_pool=pool)
+            if exhausted:
+                if snap is not None:
+                    candidates.append((snap, SRC_NOTIFICATION))
+                continue        # exhausted with no reset: unknown, not patched
+            if not limits:
+                continue
+            cap = pool_capacity(limits, p)
+            reset = cap.get("reset_ts")
+            if isinstance(reset, (int, float)) and not cap.get("reset_unknown"):
+                candidates.append((float(reset), SRC_BOARD))
+        if not candidates:
+            return None, "probe", ""
+        wake, src = min(candidates)
+        return wake, "probe", src
     if not pool:
-        return None, "probe"
-    cap = pool_capacity(limits, pool, now=now) if board_ok else None
+        return None, "probe", ""
     exhausted, snap = snapshots_pool_reset(snapshots, pool, sent_pool=pool)
-    candidates = [value for value in (
-        cap.get("reset_ts") if cap else None, snap if exhausted else None)
-        if isinstance(value, (int, float))]
-    unknown = bool(cap and cap.get("reset_unknown")) or (exhausted and snap is None)
-    if unknown or not candidates:
-        return None, "probe"
-    return max(candidates), "observed-deadline"
+    if exhausted:
+        # the notification is the message: an exhausted window with a reset
+        # answers outright, one without a reset is a probe — never patched
+        # over with the board's number
+        if snap is not None:
+            return snap, "observed-deadline", SRC_NOTIFICATION
+        return None, "probe", ""
+    cap = pool_capacity(limits, pool, now=now) if board_ok else None
+    if not cap or cap.get("reset_unknown"):
+        return None, "probe", ""
+    reset = cap.get("reset_ts")
+    if not isinstance(reset, (int, float)):
+        return None, "probe", ""
+    return float(reset), "observed-deadline", SRC_BOARD
+
+
+def failure_schedule(route: Route, board: dict[str, Any], snapshots: Any,
+                     served_pool: str | None, *,
+                     now: float | None = None) -> tuple[float | None, str]:
+    """`failure_deadline` without the provenance — the older two-value shape,
+    kept for callers that only schedule."""
+    ts, kind, _src = failure_deadline(route, board, snapshots, served_pool,
+                                      now=now)
+    return ts, kind
 
 
 # ── the decision ────────────────────────────────────────────────────────────

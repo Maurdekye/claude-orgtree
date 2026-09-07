@@ -4228,6 +4228,22 @@ def _parse_limit_reset(blob: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+     "nov", "dec"))}
+# "…at Sep 6th, 2026 10:33 AM" / "…on September 6, 2026 at 22:33" — see
+# `_parse_limit_reset_ts_raw`. Anchored on the same lead words as the bare
+# clock form so a date in unrelated prose ("since Sep 6th, 2026") is not a
+# reset. The month is matched by its first three letters; a full or
+# abbreviated spelling with an optional trailing period both read.
+r_DATE = (r"(?:reset\w*|try again)\s*(?:at\s+|on\s+)?"
+          r"(?:(?:mon|tue|wed|thu|fri|sat|sun)\w*,?\s+)?"
+          r"(jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\.?\s+"
+          r"(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(?:at\s+)?"
+          r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
+_DATE_RE = re.compile(r_DATE, re.IGNORECASE)
+
+
 def _parse_limit_reset_ts_raw(blob: str,
                               now: float | None = None) -> tuple[float | None, str]:
     """The prose parse itself → `(epoch, how)`, `how` naming the form it came
@@ -4237,6 +4253,26 @@ def _parse_limit_reset_ts_raw(blob: str,
     m = re.search(r"\|\s*(\d{9,11})\b", blob)
     if m:
         return float(m.group(1)), "epoch"
+    # "try again at Sep 6th, 2026 10:33 AM" — the codex app-server's own
+    # wording (measured 2026-09-06). Until 2026-09-07 no form here read it, so
+    # the one time the MESSAGE carried was the one time nothing could use
+    # (user ruling 2026-09-07: the message's time comes first, for every
+    # provider). A month name, a day with an optional ordinal, a four-digit
+    # year and a clock, read in this machine's zone like the bare clock
+    # below; a 24-hour clock is accepted when no am/pm follows.
+    m = _DATE_RE.search(blob)
+    if m:
+        try:
+            month = _MONTHS[m.group(1).lower()[:3]]
+            hour = int(m.group(4))
+            ampm = (m.group(6) or "").lower()
+            if ampm:
+                hour = hour % 12 + (12 if ampm == "pm" else 0)
+            t = _dtm.datetime(int(m.group(3)), month, int(m.group(2)),
+                              hour, int(m.group(5) or 0))
+            return t.timestamp(), "date"
+        except (ValueError, OverflowError, OSError):
+            pass    # "Feb 30th" is not a date; fall through to the other forms
     m = re.search(r"(?:reset\w*|try again)\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?"
                   r"\s*(am|pm)\b", blob, re.IGNORECASE)
     if m:
@@ -4266,7 +4302,11 @@ def _parse_limit_reset_ts_raw(blob: str,
 # `epoch` is the CLI's own machine value and answers for itself; the other two
 # are the CLI phrasing a guess, and a guess is bounded by the lane.
 _TEXT_HORIZON = {"epoch": limits.MAX_HORIZON, "clock": 24 * 3600.0,
-                 "relative": limits.MAX_HORIZON}
+                 "relative": limits.MAX_HORIZON,
+                 # a dated clock is as exact as an epoch, but it is the
+                 # provider PHRASING a time rather than stating a machine
+                 # value, so it keeps the lane band like the other prose
+                 "date": limits.MAX_HORIZON}
 
 
 def _parse_limit_reset_ts(blob: str, kind: str | None = None,
@@ -4409,8 +4449,17 @@ def _result_names_a_limit(text: str) -> bool:
 
 def _limit_reset_ts(blob: str, allow_fetch: bool = False,
                     subscription: bool = True,
-                    trusted: bool = True) -> tuple[float | None, str]:
+                    trusted: bool = True,
+                    tier: str = "") -> tuple[float | None, str]:
     """When does the limit behind this error lift? → `(epoch, source)`.
+
+    ⚠ THE ORDER IS THE USER'S RULING (2026-09-07 14:56Z) and it holds for
+    every provider: the time IN THE MESSAGE first; the cached usage readout
+    only when the message carries none, and then matched to model (`tier`),
+    account lane (`subscription`) and limit type (`limits.reset_for`). No
+    caller may put a cached value in front of a `"text"` answer from here —
+    the freeze stamp and the correction pass both did, through
+    `limits.recovery_deadline`, until that ruling.
 
     User ruling 2026-08-18 — every usage freeze must end up with a timestamp,
     because the `api_fallback` window is stamped from it and a window that
@@ -4453,23 +4502,36 @@ def _limit_reset_ts(blob: str, allow_fetch: bool = False,
         return None, ""
     try:
         return limits.reset_for(blob, allow_fetch=allow_fetch,
-                                trust_lane=trusted)
+                                trust_lane=trusted, tier=tier)
     except Exception as e:                                    # noqa: BLE001
         # a readout is a nicety; the freeze path must survive it failing
         print(f"[orgtree] usage readout failed while timing a freeze: {e}")
         return None, ""
 
 
-def _claude_recovery_deadline(tier: str, *, subscription: bool,
-                              trusted: bool, blob: str) -> float | None:
-    """Cache-only latest constraint for the served host subscription."""
-    if not subscription or not trusted or limits.is_rate_limit(blob):
-        return None
-    try:
-        return limits.recovery_deadline(
-            tier, limits.cached(), limits.cache_age())
-    except Exception:                                           # noqa: BLE001
-        return None
+def _usage_schedule_kind(blob: str, src: str, trusted: bool = True) -> str:
+    """`observed-deadline` or `probe` for a reset that `_limit_reset_ts` (or
+    a provider lane) answered with provenance `src` — ONE rule for the freeze
+    stamp, the correction pass and the provider freeze, which used to derive
+    it three ways.
+
+    A parsed message time (`text`) and a provider's own machine value
+    (`provider`) are observed deadlines. A cached-usage answer is one ONLY
+    when it is the lane the message NAMED, matched: `reset_for` may fall
+    through to another lane inside the named lane's reach, and an unnamed
+    limit type is answered with the shortest eligible lane — both are
+    ESTIMATES, scheduled as a bounded `probe` so the borrowing is explicit
+    in the record and on the desk ("capacity recheck …"), never silent
+    (coordinator decision 2026-09-07 15:03Z on the user's 14:56Z ruling).
+    An untrusted blob names no lane, so its cache answer is always an
+    estimate."""
+    if src in ("text", "provider"):
+        return "observed-deadline"
+    if src.startswith("usage:") and trusted:
+        kind, _model = limits.classify(blob)
+        if kind and src == f"usage:{kind}":
+            return "observed-deadline"
+    return "probe"
 
 
 def _fable_lock_ts(blob: str, rts: float | None, rsrc: str,
@@ -4581,17 +4643,20 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
         try:
             billing_ts, billing_src = _limit_reset_ts(
                 blob, allow_fetch=True, subscription=subscription,
-                trusted=trusted)
+                trusted=trusted, tier=tier)
         except Exception as e:                                # noqa: BLE001
             print(f"[orgtree] {slug}/{nid}: usage re-read failed: {e}")
         if billing_ts:
             break
-    recovery_ts = _claude_recovery_deadline(
-        tier, subscription=subscription, trusted=trusted, blob=blob)
-    ts = recovery_ts or billing_ts
-    src = "usage:constraints" if recovery_ts else billing_src
-    schedule_kind = ("observed-deadline" if recovery_ts or src == "text"
-                     else "probe")
+    # ⚠ MESSAGE FIRST, and nothing cached in front of it (user ruling
+    # 2026-09-07). This pass used to put `limits.recovery_deadline` — the
+    # latest active lane on the cached readout — ahead of `billing_ts`, so a
+    # freeze correctly stamped from the message's own time was REWRITTEN to
+    # the cache's a few seconds later, off the lock. `_limit_reset_ts`
+    # already orders text before readout; the pass now keeps that order.
+    ts = billing_ts
+    src = billing_src
+    schedule_kind = _usage_schedule_kind(blob, src, trusted)
     freeze_moved = bool(ts and (not stamped_ts
                         or abs(ts - stamped_ts) > 60.0
                         or (stamped_kind is not None
@@ -10463,11 +10528,18 @@ class _ProviderTurnFailed(RuntimeError):
     def __init__(self, message: str, blob: str = "",
                  reset_ts: float | None = None, *,
                  schedule_kind: str = "probe", provider: str = "",
-                 account: str = "", resource_pool: str = "") -> None:
+                 account: str = "", resource_pool: str = "",
+                 reset_from: str = "message") -> None:
         super().__init__(message)
         self.blob = blob or message
         self.reset_ts = reset_ts
         self.schedule_kind = schedule_kind
+        # `"message"` — the provider stated `reset_ts` for THIS turn (a
+        # notification beside the error, a wall that names its duration);
+        # `"board"` — it was read off the cached usage board. The freeze ranks
+        # the two differently (user ruling 2026-09-07): a board value sits
+        # BELOW a time parsed from the error prose, a message value above it.
+        self.reset_from = reset_from
         self.provider = provider
         self.account = account
         self.resource_pool = resource_pool
@@ -11366,9 +11438,23 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                       trec=trec)
         except _CodexRouteRejected as rj2:
             _note(rj2, retrying=False)
-            board = codex_limits.snapshot()
-            wake, _kind = codex_route.failure_schedule(
-                rj2.route, board, None, str(rj2.route.get("pool") or ""))
+            # ⚠ THE REJECTIONS' OWN RESETS FIRST (user ruling 2026-09-07):
+            # each leg's classification carries the reset the app-server
+            # stated for that pool (`reset_ts`, from the turn's notification),
+            # and this used to ignore both and wake off the cached board
+            # alone. Both pools are out, so the earliest STATED reset is the
+            # probe time; the board is asked only when neither leg stated one.
+            _stated = [float(t) for t in (rj.cls.get("reset_ts"),
+                                           rj2.cls.get("reset_ts"))
+                       if isinstance(t, (int, float))
+                       and not isinstance(t, bool)]
+            if _stated:
+                wake, _from = min(_stated), "message"
+            else:
+                board = codex_limits.snapshot()
+                wake, _kind, _src = codex_route.failure_deadline(
+                    rj2.route, board, None, str(rj2.route.get("pool") or ""))
+                _from = "board" if _src == codex_route.SRC_BOARD else "message"
             raise _ProviderTurnFailed(
                 "turn failed: both Luna routes refused the request — "
                 f"reserve ({rj.cls['why']}); direct ({rj2.cls['why']})"
@@ -11377,7 +11463,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 f"direct ({rj.cls['why']}); reserve ({rj2.cls['why']})",
                 blob=rj2.blob, reset_ts=wake, schedule_kind="probe",
                 provider="openai", account=str(rj2.route.get("account") or ""),
-                resource_pool="reserve+plan") from rj2
+                resource_pool="reserve+plan", reset_from=_from) from rj2
 
 
 def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
@@ -12909,7 +12995,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # the pool that served), then the ordinary path
         _codex_route_persist(slug, nid, _frec)
         _board = codex_limits.snapshot()
-        _reset, _schedule_kind = codex_route.failure_schedule(
+        # the turn's own notification first, the cached board only where it
+        # said nothing (user ruling 2026-09-07) — and the freeze is TOLD which
+        # it got, because a board value ranks below the error's own prose
+        _reset, _schedule_kind, _reset_src = codex_route.failure_deadline(
             route, _board, res_raw.get("rate_limit_snapshots"), _served)
         raise _ProviderTurnFailed(
             "turn failed: " + (detail or "the codex app-server reported a "
@@ -12921,7 +13010,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             blob=blob, reset_ts=_reset, schedule_kind=_schedule_kind,
             provider="openai", account=str(route.get("account") or ""),
             resource_pool=("reserve+plan" if tier == codex_route.ROUTED_TIER
-                           else str(_served or route.get("pool") or "")))
+                           else str(_served or route.get("pool") or "")),
+            reset_from=("board" if _reset_src == codex_route.SRC_BOARD
+                        else "message"))
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
     # The item lifecycle already journaled the conversation in real time.
@@ -16232,16 +16323,19 @@ def _run_one_turn_recorded(slug: str, nid: str,
                         # short so capacity is re-asked soon.
                         _sub_for_mark = subscription_lane(
                             billed_key, str(st.get("ran_as") or ""))
+                        # ⚠ the MESSAGE's time marks the roster (user ruling
+                        # 2026-09-07): the cached recovery deadline used to
+                        # sit in front of it here, so the mark — and every
+                        # refresh time projected from it — followed the
+                        # readout's latest active lane instead of the wall
+                        # the message described
                         _rts, _ = _limit_reset_ts(
                             err_blob,
                             subscription=_sub_for_mark,
-                            trusted=_trusted)
-                        _recovery = _claude_recovery_deadline(
-                            _tier, subscription=_sub_for_mark,
-                            trusted=_trusted, blob=err_blob)
+                            trusted=_trusted, tier=_tier)
                         accounts.record_limit(
                             _served, _tier,
-                            _recovery or _rts or time.time() + PROBE_FLOOR)
+                            _rts or time.time() + PROBE_FLOOR)
                         _nxt = accounts.resolve(_tier)
                         # the answer the resolver gave AT FREEZE TIME, kept
                         # for the record below (D-156). False here means
@@ -16391,19 +16485,24 @@ def _run_one_turn_recorded(slug: str, nid: str,
                             # served this turn — a key row's wall is another
                             # account's quota (machine-local routing,
                             # 2026-08-25)
+                            # ⚠ and the message's time is NOT outranked by
+                            # the cache (user ruling 2026-09-07 14:56Z):
+                            # `limits.recovery_deadline` — the latest
+                            # active lane on the cached readout — used to be
+                            # taken ahead of `_billing_ts` here, so a wall
+                            # that said "resets 1:40pm" was scheduled off
+                            # whatever lane the readout had active, hours
+                            # later. `_limit_reset_ts` orders text first
+                            # and matches the cache to this node's model
+                            # (`tier`), the serving lane and the named type.
                             _billing_ts, _billing_src = _limit_reset_ts(
                                 err_blob, subscription=_sub_lane,
-                                trusted=_trusted_blob)
-                            _recovery_ts = _claude_recovery_deadline(
-                                str(o2.node(nid).get("model") or ""),
-                                subscription=_sub_lane,
-                                trusted=_trusted_blob, blob=err_blob)
-                            _rts = _recovery_ts or _billing_ts
-                            _rsrc = ("usage:constraints" if _recovery_ts
-                                     else _billing_src)
-                            fz["schedule_kind"] = (
-                                "observed-deadline" if _recovery_ts
-                                or _billing_src == "text" else "probe")
+                                trusted=_trusted_blob,
+                                tier=str(o2.node(nid).get("model") or ""))
+                            _rts = _billing_ts
+                            _rsrc = _billing_src
+                            fz["schedule_kind"] = _usage_schedule_kind(
+                                err_blob, _billing_src, _trusted_blob)
                             _freeze_tier = str(o2.node(nid).get("model") or "")
                             _freeze_provider = providers.provider_of(_freeze_tier)
                             fz["provider"] = _freeze_provider
@@ -17206,6 +17305,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
         if isinstance(e, _ProviderTurnFailed) \
                 and _looks_like_usage_limit(e.blob):
             freeze_provider_limit(slug, nid, e.blob, e.reset_ts,
+                                  reset_from=e.reset_from,
                                   replay=None if is_cmd else text,
                                   replay_view=turn_view,
                                   schedule_kind=e.schedule_kind,
@@ -20661,25 +20761,35 @@ def _append_resume(fz: FrozenInfo, raw: str, view: str = "") -> None:
 
 
 def _provider_limit_until(blob: str, reset_ts: float | None,
-                          now: float | None = None) -> tuple[float, str]:
+                          now: float | None = None, *,
+                          reset_from: str = "message") -> tuple[float, str]:
     """When does a NON-claude lane's usage limit lift? → `(epoch, reset_src)`.
 
-    Three sources, best first, and the caller always gets a number — the user's
+    Four sources, best first, and the caller always gets a number — the user's
     2026-08-18 ruling that every usage freeze carries a timestamp is not a
-    claude-lane rule:
+    claude-lane rule — in the order the user ruled on 2026-09-07 14:56Z (the
+    time in the limit message first, cached usage only when it carries none):
 
-      1. `reset_ts` — a MACHINE value the provider handed us out of band. On
-         the codex lane that is `resetsAt` on the exhausted rate-limit window,
-         and it is the only source that answered the measured specimen at all:
-         the message said "try again at Sep 6th, 2026 10:33 AM", which no
-         parser here reads, while the notification 298 ms earlier carried
-         `resets_at: 1788680032` — that instant exactly.
-      2. the error prose, through the SAME banded parser the claude lane uses.
+      1. `reset_ts` when `reset_from == "message"` — a MACHINE value the
+         provider stated FOR THIS TURN. On the codex lane that is `resetsAt`
+         on the exhausted window of the notification beside the error; on the
+         antigravity lane the wall's own stated duration. The measured codex
+         specimen said "try again at Sep 6th, 2026 10:33 AM" while the
+         notification 298 ms earlier carried `resets_at: 1788680032` — that
+         instant exactly.
+      2. the error prose, through the SAME banded parser the claude lane uses
+         (which reads that dated wording too, since 2026-09-07).
          ⚠ `subscription=False`: the host's usage readout describes the CLAUDE
          subscription's lanes, and answering a CODEX wall from it is the
          wrong-account parking bug (redteam 2026-08-18) with a new provider on
          the front. Prose still answers, because it came from this error.
-      3. the blind `PROBE_FLOOR`, honestly short so capacity is re-asked soon.
+      3. `reset_ts` when `reset_from == "board"` — read off the CACHED usage
+         board for the served account and pool. Until 2026-09-07 this sat in
+         first place regardless of where it came from, so a board read minutes
+         before the turn outranked the reset the error itself named. Its
+         provenance is recorded as `usage:board`, which every reader already
+         collapses to "usage" (turnread) or treats as a cached lane (api).
+      4. the blind `PROBE_FLOOR`, honestly short so capacity is re-asked soon.
 
     ⚠ THE MACHINE VALUE IS BANDED LIKE ANY OTHER, against the same horizon a
     prose `epoch` gets. It arrives over the same wire as everything else here
@@ -20687,11 +20797,15 @@ def _provider_limit_until(blob: str, reset_ts: float | None,
     longest real lane — the failure it would cause (an agent asleep for years)
     is silent, which is the family of bug this whole change exists to end."""
     now = time.time() if now is None else now
-    if reset_ts is not None and now < reset_ts <= now + limits.MAX_HORIZON:
-        return reset_ts, "provider"
+    banded = (reset_ts is not None
+              and now < reset_ts <= now + limits.MAX_HORIZON)
+    if banded and reset_from != "board":
+        return cast("float", reset_ts), "provider"
     ts, src = _limit_reset_ts(blob, subscription=False)
     if ts is not None:
         return ts, (src or "text")
+    if banded:
+        return cast("float", reset_ts), "usage:board"
     return now + PROBE_FLOOR, "probe"
 
 
@@ -20701,7 +20815,8 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
                           replay_view: str = "", *,
                           schedule_kind: str = "probe",
                           provider: str = "", account: str = "",
-                          resource_pool: str = "") -> bool:
+                          resource_pool: str = "",
+                          reset_from: str = "message") -> bool:
     """A codex/antigravity turn hit a usage limit: park the agent the way the claude
     lane parks one (D-209). Returns True if a freeze was written.
 
@@ -20735,10 +20850,13 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
     True}`: ledger's pre-№41 migration re-tags that shape as a kiosk SPEND
     freeze, after which ▶ skips the node for good. `limit = True` and a label
     derived from the timestamp are what keep the record out of it."""
-    ts, src = _provider_limit_until(blob, reset_ts)
-    effective_kind = (schedule_kind if src == "provider" and
+    ts, src = _provider_limit_until(blob, reset_ts, reset_from=reset_from)
+    # the caller's kind describes ITS reset_ts (a Luna double-out is a probe
+    # even with a stated reset); a prose answer is an observed deadline; the
+    # blind floor is a probe. One rule, `_usage_schedule_kind`, for the rest.
+    effective_kind = (schedule_kind if src in ("provider", "usage:board") and
                       schedule_kind in ("probe", "observed-deadline")
-                      else "observed-deadline" if src == "text" else "probe")
+                      else _usage_schedule_kind(blob, src))
     tier = ""
     try:
         with store.DOC_LOCK:

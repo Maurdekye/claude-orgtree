@@ -738,6 +738,15 @@ def recovery_deadline(tier: str, data: Mapping[str, Any] | None,
                       now: float | None = None) -> float | None:
     """Latest active HOST-subscription constraint applicable to ``tier``.
 
+    ⚠ NO LONGER A SCHEDULING INPUT (user ruling 2026-09-07 14:56Z, coordinator
+    decision 15:03Z). Until then the freeze stamp, the off-lock correction
+    pass and the roster mark all took this value OVER the time parsed from
+    the limit message (`_rts = _recovery_ts or _billing_ts`), and for an
+    unnamed limit type it answered with the LATEST active lane where the
+    2026-08-18 ruling says the shortest. Both are the inversion the user
+    ruled against. It is kept as a read-only projection (its own tests still
+    hold) and nothing in `supervisor` consults it for a wake time any more.
+
     This is deliberately separate from :func:`reset_for`.  ``reset_for`` is
     the short, conservative key-billing bound; this answer is the first time
     every observed active constraint could have cleared.  It is cache-only
@@ -783,23 +792,72 @@ def recovery_deadline(tier: str, data: Mapping[str, Any] | None,
     return max(cast("list[float]", resets))
 
 
+def lane_applies(lim: Mapping[str, Any], tier: str) -> bool:
+    """Does this readout lane describe `tier`'s quota at all? — the MODEL half
+    of the user's matching rule (2026-09-07: cached usage is consulted only
+    when the message carries no time, and then "matched to model, account
+    lane and limit type").
+
+    `session` is shared by every tier. `weekly_all` is the pooled
+    haiku/sonnet/opus bucket and says nothing about Fable's own weekly pool;
+    a `weekly_scoped` lane belongs to the model it names. An unknown or
+    empty tier applies no filter — the callers that do not know the node's
+    model keep today's behaviour, and a filter that guessed would be a
+    guard that reads correctly and means nothing.
+    """
+    tier = str(tier or "").lower()
+    if not tier:
+        return True
+    kind = str(lim.get("kind") or "")
+    model = str(lim.get("model") or "").lower()
+    if kind == "session":
+        return True
+    if kind == "weekly_all":
+        return tier != "fable"
+    if kind == "weekly_scoped":
+        return tier in model
+    # an unrecognized lane: nothing here can say whose quota it is, and the
+    # bands below already refuse it a long horizon
+    return True
+
+
 def reset_for(blob: str, now: float | None = None,
               allow_fetch: bool = False,
-              trust_lane: bool = True) -> tuple[float | None, str]:
+              trust_lane: bool = True,
+              tier: str = "") -> tuple[float | None, str]:
     """The authoritative reset for the limit this error is about →
     `(epoch, "usage:<lane>")`; `(None, "")` when the readout cannot answer.
+
+    ⚠ THIS IS THE CACHED-USAGE HALF ONLY. User ruling 2026-09-07 14:56Z: an
+    agent's refresh time comes from the time IN THE LIMIT MESSAGE first, for
+    every provider; this readout is consulted only when the message carries
+    no time, and then matched to model (`tier`, see `lane_applies`), account
+    lane (the caller's `subscription` gate) and limit type (rule 1 below).
+    The caller (`supervisor._limit_reset_ts`) enforces that order; nothing
+    here may outrank a parsed message time.
 
     Two rules, and the second is the user's ruling of 2026-08-18 ("if the
     type of limit is not known, default to the shortest one, so that it can
     be checked sooner"):
 
       1. if the prose names a lane, that lane answers — scoped lanes matched
-         on the model name;
+         on the model name. When the named lane has no believable entry the
+         answer falls through to another lane inside the named lane's reach
+         (below) — and that answer is an ESTIMATE, not the named lane's
+         reset: `supervisor._usage_schedule_kind` schedules it as a bounded
+         `probe`, never as an observed deadline, so the borrowing is never
+         silent (coordinator decision 2026-09-07 15:03Z).
       2. otherwise take the SOONEST reset on the board, `is_active` or not,
          and never one further out than the SESSION lane. Being active makes a
          lane the likely culprit but does not earn a longer window: this
          number bounds key-billing, and guessing short costs one re-freeze
-         while guessing long costs money.
+         while guessing long costs money. The same ruling decided (2026-09-07)
+         that an UNNAMED type keeps this shortest-eligible answer rather than
+         the latest active constraint.
+
+    `tier` filters the board to the lanes that describe this model's quota
+    (`lane_applies`): a Fable node is never answered from the pooled weekly
+    lane, and a pooled node never from Fable's scoped pool. Empty = no filter.
 
     A candidate must land in the future and inside its own lane's length, so
     a stale or absurd `resets_at` is declined rather than believed — which is
@@ -826,7 +884,8 @@ def reset_for(blob: str, now: float | None = None,
         return None, ""
     lims = [cast("dict[str, Any]", x)
             for x in cast("list[Any]", data.get("limits") or [])
-            if isinstance(x, dict)]
+            if isinstance(x, dict)
+            and lane_applies(cast("dict[str, Any]", x), tier)]
     def _within(pool: list[dict[str, Any]], at: float,
                 lane: str | None) -> list[dict[str, Any]]:
         """The entries whose reset lands inside `lane`'s own length."""
