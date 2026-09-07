@@ -347,9 +347,13 @@ def t_deleted_name_never_reused() -> None:
     assert org.d.get("work_deleted_names") == [dead]
     third = item(s, "Same title twice", owner="worker")
     assert third == "same-title-twice-3", third
-    # deleting the reused name reserves it too, without duplicates
+    # deleting the reused name reserves it too; a REPEATED delete of a name
+    # that is already gone is refused (nothing to delete) and leaves the
+    # reservation list exactly as it was — no duplicate entry
     do(s, lambda o: o.work_delete(USER, again))
-    do(s, lambda o: o.work_delete(USER, again) if False else None)
+    assert store.load_org(s).d.get("work_deleted_names") == [dead, again]
+    msg = refused(lambda: do(s, lambda o: o.work_delete(USER, again)))
+    assert msg.startswith("no work item "), msg
     assert store.load_org(s).d.get("work_deleted_names") == [dead, again]
 
 
