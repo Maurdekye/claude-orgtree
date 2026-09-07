@@ -1,6 +1,13 @@
 import type { GitBranch, GitCommit, GitSnapshot } from './types'
 
 export const ROW = 28
+/** a branch label box (workspace.css .git-annotation width) */
+export const LABEL_WIDTH = 245
+/** how far LEFT of its lane a left-side label begins: the box plus its leader gap */
+export const LABEL_REACH = 277
+/** clear space kept between the canvas edge and anything drawn */
+export const EDGE = 15
+const NODE_HALF = 12
 export const PALETTE = ['#75d5ac', '#a8b8fa', '#e8be83', '#de9dbc', '#80c5de', '#c2adf0', '#dd9d80', '#accb76']
 export const shortRef = (ref: string): string => ref.replace(/^refs\/(heads|remotes)\//, '')
 export function branchColor(ref: string): string {
@@ -18,8 +25,13 @@ export interface Layout { points: Map<string, Point>; annotations: Annotation[];
 export function layoutGraph(nodes: GitCommit[], snapshot: GitSnapshot): Layout {
   const branches = [...snapshot.branches].sort((a, b) => Number(b.ref === snapshot.config.trunk) - Number(a.ref === snapshot.config.trunk) || a.ref.localeCompare(b.ref))
   const sideCount = Math.max(1, branches.length - 1)
-  const trunkX = Math.max(750, Math.ceil(sideCount / 2) * 330 + 100)
-  const width = trunkX * 2 + 300
+  // The leftmost side lane is ceil(sideCount / 2) lanes out, and its label
+  // sits LABEL_REACH to the left of it (leader + 245px box). The margin used
+  // to be 100, so with four or more side lanes the leftmost label began at a
+  // negative x: outside the canvas, where no scroll can reach (user
+  // screenshot 2026-09-07 11:00Z). Reserve the label's reach plus EDGE.
+  const trunkX = Math.max(750, Math.ceil(sideCount / 2) * 330 + LABEL_REACH + EDGE)
+  let width = trunkX * 2 + 300
   const byId = new Map(nodes.map(n => [n.oid, n]))
   const reserved = new Map<string, { x: number; owner: string | null }>()
   const trunk = branches.find(b => b.ref === snapshot.config.trunk)
@@ -61,12 +73,27 @@ export function layoutGraph(nodes: GitCommit[], snapshot: GitSnapshot): Layout {
     const height = 18 * (1 + Number(branch.tickets.length > 0) + Number(owners))
     // Put labels outward from side lanes; leave room for the nearby remote
     // fork on the trunk so commit controls cannot sit under ticket text.
-    const x = anchor.x < trunkX ? anchor.x - 277 : anchor.x + 105
+    const x = anchor.x < trunkX ? anchor.x - LABEL_REACH : anchor.x + 105
     const y = Math.max(anchor.y - height / 2, columns.get(x) ?? 15)
     columns.set(x, y + height + 12)
     annotations.push({ branch, anchor, x, y, height })
   }
-  return { points, annotations, width, height: Math.max(570, 170 + Math.max(snapshot.total_commits, nodes.length) * ROW), trunkX }
+  // Whatever the lanes did (server lanes, merge-parent offsets, remote forks),
+  // nothing may start left of the canvas or end past its width: a point or a
+  // label the scroll cannot reach is a point or a label that does not exist.
+  // Measured from the real extents, so a future lane rule cannot reintroduce it.
+  const lefts = [...points.values()].map(p => p.x - NODE_HALF)
+  const rights = [...points.values()].map(p => p.x + NODE_HALF)
+  for (const a of annotations) { lefts.push(a.x); rights.push(a.x + LABEL_WIDTH) }
+  const shift = lefts.length ? Math.max(0, EDGE - Math.min(...lefts)) : 0
+  let shiftedTrunkX = trunkX
+  if (shift) {
+    for (const p of points.values()) p.x += shift
+    for (const a of annotations) a.x += shift
+    shiftedTrunkX += shift
+  }
+  if (rights.length) width = Math.max(width, Math.max(...rights) + shift + EDGE)
+  return { points, annotations, width, height: Math.max(570, 170 + Math.max(snapshot.total_commits, nodes.length) * ROW), trunkX: shiftedTrunkX }
 }
 
 /** A click picks a comparison/branch, never an arbitrary source commit. */
@@ -82,7 +109,7 @@ export function nodeAction(oid: string, branches: GitBranch[], focused: string |
 
 export function canRecenter(layout: Layout, viewportWidth: number): boolean {
   const xs = [...layout.points.values()].map(p => p.x)
-  layout.annotations.forEach(a => { xs.push(a.x, a.x + 245) })
+  layout.annotations.forEach(a => { xs.push(a.x, a.x + LABEL_WIDTH) })
   return xs.length > 0 && Math.min(...xs) - layout.trunkX + viewportWidth / 2 >= 15
     && Math.max(...xs) - layout.trunkX + viewportWidth / 2 <= viewportWidth - 15
 }
