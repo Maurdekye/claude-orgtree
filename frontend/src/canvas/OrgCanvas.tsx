@@ -1670,6 +1670,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       // release point.
       centerOn(USER)
     }
+    // The flag describes where THIS gesture started, so it ends with the
+    // gesture. It used to be written only in onPointerDown — and a press on
+    // an agent card never gets there (startNodeDrag stops propagation), while
+    // the card's release DOES bubble up to this handler. So one eye click left
+    // `true` behind, and once the switchboard was zoomed away from (the
+    // `focusId !== USER` guard above closes only while it is open), every
+    // later agent click glided to the agent and then, from here, to the eye —
+    // until a press on the empty canvas rewrote the flag. User bug 2026-09-07
+    // 11:23Z: "clicking any agent focuses the switchboard; dragging the canvas
+    // fixes it". eyepressleak.test.tsx.
+    eyePressRef.current = false
     panRef.current = null
   }
 
