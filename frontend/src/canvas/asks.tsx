@@ -89,6 +89,43 @@ export function AskCard({ ask, slug, toast, seat = 0, committed = 0, maxTop,
     : <QuestionAsk ask={ask} slug={slug} toast={toast} />
 }
 
+/** Question text is the ledger's per-request identity; the full editable
+ * definition decides whether its draft still applies. Revisions remain CAS
+ * stamps for submission, not instructions to discard every answer. */
+function questionDraftKey(q: AskQuestion | AskTab): unknown[] {
+  return [q.question, q.header ?? '', !!q.multi, q.work_item ?? '',
+    (q.options ?? []).map(o => typeof o === 'string'
+      ? [o, ''] : [o.label, o.description ?? ''])]
+}
+
+/** Reconcile before rendering inputs: no frame may pair an old draft with a
+ * changed question. Only the immediately previous inventory is retained, so
+ * removing a question also removes its draft. Matching consumes each old slot
+ * once, even for a malformed payload with duplicate questions. */
+function useRequestDrafts<D>(keys: string[], make: (i: number) => D) {
+  const signature = JSON.stringify(keys)
+  const [saved, setSaved] = useState(() => ({ signature, keys,
+    drafts: keys.map((_, i) => make(i)) }))
+  const [tab, setTab] = useState(0)
+  let current = saved
+  if (saved.signature !== signature) {
+    const used = new Set<number>()
+    const previous = keys.map(key => {
+      const i = saved.keys.findIndex((old, j) => old === key && !used.has(j))
+      if (i >= 0) used.add(i)
+      return i
+    })
+    current = { signature, keys,
+      drafts: previous.map((i, j) => i < 0 ? make(j) : saved.drafts[i]!) }
+    setSaved(current)
+    const moved = previous.indexOf(tab)
+    setTab(moved >= 0 ? moved : Math.min(tab, keys.length - 1))
+  }
+  const setDrafts = (update: (ds: D[]) => D[]) =>
+    setSaved(s => ({ ...s, drafts: update(s.drafts) }))
+  return { drafts: current.drafts, setDrafts, tab, setTab }
+}
+
 /** FR-14: one draft state per tab. A tab is DECIDED when the user answered
  *  it or explicitly skipped it — the submit needs every tab decided, and a
  *  skip travels as an explicit null/skip, never a hole. */
@@ -108,20 +145,16 @@ function BatchAsk({ ask, slug, toast, seat, committed, maxTop, segments,
   const tabs: AskTab[] = (ask.tabs ?? []).map((t) => ({
     ...t, options: (t.options ?? []).map((o) =>
       typeof o === 'string' ? { label: o } : o) }))
-  const [tab, setTab] = useState(0)
   const [busy, setBusy] = useState(false)
-  const mk = (): BatchDraft[] => tabs.map((t) => ({
-    q: { sel: [], text: '', skip: false },
-    credits: { mode: null, g: t.kind === 'credits' ? (t.new ?? 0) : 0 },
-    scope: null }))
-  const [drafts, setDrafts] = useState<BatchDraft[]>(mk)
-  // an append/amend bumps a rev server-side — stale drafts must not survive
-  // it (the server additionally refuses a stale-rev submit; this is UX,
-  // that is the guarantee)
-  const revKey = JSON.stringify(ask.revs ?? {})
-  useEffect(() => { setDrafts(mk()); setTab(0) },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ask.id, revKey, tabs.length])
+  const keys = tabs.map(t => JSON.stringify([slug, ask.node, t.kind,
+    t.kind === 'question' ? [ask.id, questionDraftKey(t)]
+      : t.kind === 'credits' ? [t.id, t.old, t.new, t.reason]
+      : [t.id, t.item?.kind, t.item?.path, t.item?.mode, t.item?.tool,
+          t.item?.server, t.label, t.reason]]))
+  const { drafts, setDrafts, tab, setTab } = useRequestDrafts<BatchDraft>(keys,
+    i => ({ q: { sel: [], text: '', skip: false },
+      credits: { mode: null, g: tabs[i]?.kind === 'credits' ? (tabs[i]?.new ?? 0) : 0 },
+      scope: null }))
   const cur = Math.min(tab, tabs.length - 1)
   const t = tabs[cur]!
   const fallback: BatchDraft = { q: { sel: [], text: '', skip: false },
@@ -403,18 +436,10 @@ function QuestionAsk({ ask, slug, toast }: {
     .map((q) => ({ ...q, options: (q.options ?? []).map((o) =>
       typeof o === 'string' ? { label: o as string } : o) }))
   const batch = qs.length > 1
-  const [tab, setTab] = useState(0)
-  const [drafts, setDrafts] = useState<TabDraft[]>(
-    () => qs.map(() => ({ sel: [], text: '' })))
+  const { drafts, setDrafts, tab, setTab } = useRequestDrafts<TabDraft>(
+    qs.map(q => JSON.stringify([slug, ask.node, ask.id, questionDraftKey(q)])),
+    () => ({ sel: [], text: '' }))
   const [busy, setBusy] = useState(false)
-  // an amend REPLACES the batch server-side — stale drafts must not survive
-  // it, even at the SAME length (the rev bump is the signal; the server
-  // additionally refuses a stale-rev submission, so this is UX, that is
-  // the guarantee)
-  useEffect(() => {
-    setDrafts(qs.map(() => ({ sel: [], text: '' })))
-    setTab(0)
-  }, [ask.id, ask.rev, qs.length])   // eslint-disable-line react-hooks/exhaustive-deps
   const dr = (i: number): TabDraft => drafts[i] ?? { sel: [], text: '' }
   const q = qs[Math.min(tab, qs.length - 1)]!
   const d = dr(Math.min(tab, qs.length - 1))
