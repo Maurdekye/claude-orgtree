@@ -22,9 +22,13 @@ to MINT it, at both sites, for every `ping` carrier:
     §4  the turn-start site, through a REAL `_run_turn` against the fake CLI:
         a bare ping carrier + mail in the box → the chat row's segments end
         [.., "mail", "drive"], the provider user event still carries the
-        nudge verbatim; and the folded-steer control (a carrier that already
-        OWNS its batch) is NOT re-minted — its [MAIL] block never disappears
-        into a hidden drive segment
+        nudge verbatim; and a folded-steer carrier (one that already OWNS its
+        batch) is NOT re-minted — its [MAIL] block never disappears into a
+        hidden drive segment — but REUSES the journal composition it owns
+        (`_owned_segments`, root ruling 04:29Z), after anything newly drained,
+        with no duplicate composition across journal rows
+    §5  the same reuse at the envelope (boundary feed), and the fallbacks: a
+        carrier whose token has no journal row composes its text as before
 
 Hermetic: throwaway ORGTREE_DATA/HOME set before any orgtree import; §4 runs
 fakecli.js in-process exactly as test_stuck_mail_pointer_drop.py does.
@@ -390,12 +394,13 @@ check("turn start · bare ping + mail → chat segments [.., mail, drive]; provi
       "the nudge verbatim", _turn_start_bare_ping)
 
 
-def _turn_start_folded_control():
+def _turn_start_folded_reuses_owned():
     """A steer carrier folded into the queue already OWNS its batch (journal token +
-    enveloped text). Its typed composition was minted by the envelope that drained
-    it; the turn start must NOT mint again — doing so would wrap the whole [MAIL]
-    block into a hidden drive segment and the message would vanish from the human
-    transcript while still reaching the agent."""
+    enveloped text). The turn start must NOT mint again — that would wrap the whole
+    [MAIL] block into a hidden drive segment and the message would vanish from the
+    human transcript — and must not file the enveloped text as a text segment
+    either (the nudge would show, twice over with the mail block). It re-reads the
+    composition it owns from the journal, AFTER whatever this turn drains fresh."""
     marker = "FD-" + os.urandom(4).hex()
     with store.DOC_LOCK:
         org = store.load_org(SLUG)
@@ -405,24 +410,142 @@ def _turn_start_folded_control():
     segs_out: list = []
     etext, tok, _ = S._envelope(SLUG, NID, NUDGE, via="steer", segments_out=segs_out,
                                 ping=True, ping_reason="user_mail")
-    assert tok and [s["kind"] for s in segs_out[0]] == ["mail", "drive"]
+    owned = segs_out[0]
+    assert tok and [s["kind"] for s in owned] == ["mail", "drive"]
     assert not S._has_deliverable(SLUG, NID), "the fixture must leave the box EMPTY"
+    # …and a NEW message lands before the folded carrier starts its turn
+    marker2 = "NEW-" + os.urandom(4).hex()
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "newer words " + marker2, "message", typed=True)
+        store.save_org(org)
     carrier = S._mark_ping({"toks": [tok], "text": etext}, "user_mail")
     run_turn(carrier)
     ev_texts = [t for t in transcript_user_texts() if marker in t]
     assert ev_texts, "HELD: the folded carrier was not delivered"
+    # agent bytes: the new batch first, then the owned envelope ending in the nudge
+    assert marker2 in ev_texts[-1] and ev_texts[-1].index(marker2) < ev_texts[-1].index(marker)
+    assert ev_texts[-1].rstrip().endswith(NUDGE) and ev_texts[-1].count(NUDGE) == 1
     rows = [m for m in chat_user_rows() if isinstance(m.get("segments"), list)
             and marker in json.dumps(m["segments"])]
     assert rows, "no projected chat row for the folded carrier"
     segs = rows[-1]["segments"]
-    drives = [s for s in segs if s["kind"] == "drive"]
-    assert not any("[MAIL" in d["text"] for d in drives), \
+    kinds = [s["kind"] for s in segs]
+    assert "text" not in kinds, f"the enveloped text was filed as a text segment: {kinds}"
+    body = [s for s in segs if s["kind"] != "state"]
+    assert [s["kind"] for s in body] == ["mail", "mail", "drive"], kinds
+    assert marker2 in json.dumps(body[0]) and marker in json.dumps(body[1]), \
+        "order: the newly drained batch, then the owned composition"
+    assert body[1:] == owned, "the owned composition is the journal's, re-read verbatim"
+    assert not any("[MAIL" in d["text"] for d in segs if d["kind"] == "drive"), \
         "OVERSHOOT: the [MAIL] block was wrapped into a hidden drive segment"
-    assert not drives, [s["kind"] for s in segs]
+    assert body[2]["text"] == NUDGE and body[2]["event"]["reason"] == "user_mail"
 
 
-check("turn start · CONTROL: a folded carrier owning its batch is not re-minted — the "
-      "[MAIL] block never hides", _turn_start_folded_control)
+check("turn start · a folded carrier reuses its OWNED journal composition after the new "
+      "drain — no text segment, no re-mint, order kept", _turn_start_folded_reuses_owned)
+
+
+def _turn_start_no_duplicate_rows():
+    """The journal row written for the NEW drain holds only its own composition —
+    never a copy of the owned one — so the live per-carrier snapshot
+    (commit_steer's by-token read) cannot show a message twice."""
+    marker = "DUP-" + os.urandom(4).hex()
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "owned " + marker, "message", typed=True)
+        store.save_org(org)
+    etext, tok, _ = S._envelope(SLUG, NID, NUDGE, via="steer", ping=True)
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "fresh " + marker, "message", typed=True)
+        store.save_org(org)
+    seen: list = []
+    real = S._journal_drain
+
+    def spy(org, nid, mail, pending, via="steer", **kw):
+        # snapshot NOW: the caller later inserts the state segments into its own
+        # list in place, and an aliased reference would read those too
+        seen.append(json.loads(json.dumps(kw.get("segments"))))
+        return real(org, nid, mail, pending, via, **kw)
+    S._journal_drain = spy
+    try:
+        run_turn(S._mark_ping({"toks": [tok], "text": etext}, "user_mail"))
+    finally:
+        S._journal_drain = real
+    assert len(seen) == 1 and seen[0] is not None, seen
+    assert [s["kind"] for s in seen[0]] == ["mail"], seen[0]
+    assert "owned " + marker not in json.dumps(seen[0]), "the new row copied the owned batch"
+
+
+check("turn start · the new drain's journal row holds its own composition only",
+      _turn_start_no_duplicate_rows)
+
+
+# ══════════════════════════════════════════════════════════════════════════ §5
+print("\n§5  the envelope reuses owned composition too; fallbacks stay plain")
+
+
+def _envelope_owned():
+    slug = fresh()
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "owned one", "message", typed=True)
+    store.save_org(org)
+    o1: list = []
+    etext, tok, _ = S._envelope(slug, "boss", NUDGE, via="steer", segments_out=o1, ping=True)
+    owned = o1[0]
+    assert [s["kind"] for s in owned] == ["mail", "drive"]
+    # the boundary feed re-envelopes the folded carrier: nothing new → exactly the owned
+    o2: list = []
+    t2, tok2, _ = S._envelope(slug, "boss", etext, via="turn", segments_out=o2,
+                              ping=False, owned_toks=[tok])
+    assert tok2 is None and t2 == etext and o2[0] == owned
+    # something new drained too → [new mail] + owned, and the new row holds only its own
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "fresh one", "message", typed=True)
+    store.save_org(org)
+    o3: list = []
+    t3, tok3, _ = S._envelope(slug, "boss", etext, via="turn", segments_out=o3,
+                              ping=False, owned_toks=[tok])
+    assert tok3 and t3.endswith("\n\n" + etext)
+    assert [s["kind"] for s in o3[0]] == ["mail", "mail", "drive"] and o3[0][1:] == owned
+    assert o3[0][0]["rows"][0]["body"] == "fresh one"
+    new_row = journal_row(slug, "boss", tok3)
+    assert [s["kind"] for s in new_row["segments"]] == ["mail"] and new_row["drive"] is None
+    assert journal_row(slug, "boss", tok)["segments"] == owned, "the owned row is untouched"
+
+
+check("envelope · owned_toks re-reads the journal composition after the new drain; "
+      "rows never duplicate", _envelope_owned)
+
+
+def _owned_fallbacks():
+    slug = fresh()
+    org = store.load_org(slug)
+    assert S._owned_segments(org, "boss", None) is None
+    assert S._owned_segments(org, "boss", []) is None
+    assert S._owned_segments(org, "boss", ["no-such-token"]) is None, \
+        "a token with no row: None (compose the text as before), never a partial list"
+    org.post_mail(USER, "boss", "x", "message", typed=True)
+    store.save_org(org)
+    etext, tok, _ = S._envelope(slug, "boss", NUDGE, via="steer", ping=True)
+    org = store.load_org(slug)
+    assert S._owned_segments(org, "boss", [tok]) == journal_row(slug, "boss", tok)["segments"]
+    assert S._owned_segments(org, "boss", [tok, "missing"]) is None, "ALL tokens or none"
+    # a v1 row without `segments` (pre-typed journal shape) → None as well
+    with store.DOC_LOCK:
+        o = store.load_org(slug)
+        o.d["delivering"]["boss"].append({"tok": "v1", "at": "x", "mail": [], "notices": []})
+        store.save_org(o)
+    assert S._owned_segments(store.load_org(slug), "boss", ["v1"]) is None
+    # and the text fallback is what the envelope then composes (unchanged behaviour)
+    o4: list = []
+    S._envelope(slug, "boss", etext, via="turn", segments_out=o4, owned_toks=["v1"])
+    assert o4[0] == [{"kind": "text", "text": etext}]
+
+
+check("owned · fallbacks: no tokens / unknown token / v1 row → None, text composed as before",
+      _owned_fallbacks)
 
 print(f"\n{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
