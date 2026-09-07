@@ -555,14 +555,15 @@ def dropped_and_superseded():
        working_on_next=[], dropped_reason="cancelled: B is not needed")
     js = listing(slug)
     assert js["counts"]["active"] == 0, js["counts"]
-    # both are closed and neither is an HOUR old yet, so both are still listed.
-    # `dropped` now ages out on the same clock as done (test_work_closure §2);
-    # `superseded` still never does.
-    assert {x["slug"] for x in js["items"]} == {a, b}, "a just-closed item stays listed"
+    # both are closed. `dropped` archives AT ONCE (user 2026-09-07,
+    # test_work_closure §2), so B leaves the main list the instant it is set;
+    # `superseded` still never archives by itself, so A stays listed.
+    assert {x["slug"] for x in js["items"]} == {a}, "superseded stays; dropped is archived"
+    assert js["counts"]["archived"] == 1, js["counts"]
 
 
-check("supersede and dropped close an item; neither is archived on the spot; "
-      "active count excludes them", dropped_and_superseded)
+check("supersede and dropped close an item; dropped is archived on the spot, "
+      "superseded is not; active count excludes both", dropped_and_superseded)
 
 
 # ============================================================== §4 archive

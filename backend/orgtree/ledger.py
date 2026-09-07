@@ -9644,8 +9644,9 @@ class Org:
     #
     # `dropped` (user 2026-09-05) is the TERMINAL NON-SUCCESS outcome: work
     # that was explicitly cancelled, or that failed in a way it cannot be
-    # recovered from. It is closed, it archives on the same clock as `done`
-    # (`_work_eligible`), and it is never Done — which is the whole point of
+    # recovered from. It is closed, it archives AT ONCE (user 2026-09-07: "no
+    # 1-hour timeout for them" — `_work_eligible`), and it is never Done —
+    # which is the whole point of
     # having it, because without a documented way to end work unsuccessfully
     # the tidy path is `review` → accept, and the docket then records a
     # completion that never happened. Its reason says WHICH of the two it was.
@@ -10091,15 +10092,35 @@ class Org:
     #: its status, reason and history with no acceptance recorded, and the
     #: timer never resumes it — coming back is the ordinary `reopen=true`.
     WORK_ARCHIVES_ITSELF: Final = ("done", "dropped", "waiting")
+    #: …and of those, the statuses that archive THE MOMENT they are set, with
+    #: no clock at all (user 2026-09-07: "dropped tasks should be immediately
+    #: archived, no 1-hour timeout for them"). Dead work has nothing left to
+    #: show on the active docket; the hour was only ever a grace for work that
+    #: might still be looked at. `done` and `waiting` keep the hour unchanged.
+    #: Because archival is DERIVED on read, an item dropped before this rule
+    #: existed reads as archived at once too, and the next sweep moves it.
+    WORK_ARCHIVES_AT_ONCE: Final = ("dropped",)
 
     def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
-        """Ages out of the main list: a status that archives itself — done,
-        dropped, or waiting on an event — whose docket update is STRICTLY older
-        than one hour."""
-        if it.get("status") not in self.WORK_ARCHIVES_ITSELF:
+        """Ages out of the main list: a status that archives itself — done or
+        waiting on an event — whose docket update is STRICTLY older than one
+        hour; or `dropped`, which is eligible the instant it is set."""
+        status = it.get("status")
+        if status not in self.WORK_ARCHIVES_ITSELF:
             return False
+        if status in self.WORK_ARCHIVES_AT_ONCE:
+            return True
         age = self._work_age_s(it, now_ts)
         return age is not None and age > self.WORK_ARCHIVE_AFTER_S
+
+    def _work_archived_why(self, it: WorkItem) -> str:
+        """The reason an archived item is archived, in the item's OWN terms —
+        never "done" for work that was not, never "over an hour" for work
+        that archives at once."""
+        status = str(it.get("status") or "")
+        if status in self.WORK_ARCHIVES_AT_ONCE:
+            return f"{status} — a {status} item archives at once"
+        return f"{status} for over an hour"
 
     def _work_archived(self, it: WorkItem, physically: bool,
                        now_ts: float) -> bool:
@@ -10140,10 +10161,10 @@ class Org:
 
     def _work_sweep(self, now_ts: float | None = None) -> list[str]:
         """Physically move eligible, attention-free items into the archive —
-        done, dropped, or waiting for over an hour. Called at the head of every
-        docket mutation; a read never writes. Returns the moved ids (logged,
-        never silent). The move is a change of LIST, never of state: no status
-        is rewritten on the way in."""
+        done or waiting for over an hour, dropped at once. Called at the head
+        of every docket mutation; a read never writes. Returns the moved ids
+        (logged, never silent). The move is a change of LIST, never of state:
+        no status is rewritten on the way in."""
         # ⚠ Refused HERE, at the head of every mutation, so no route has to
         # remember to convert first: a half-converted document 409s on its
         # next read. Routes that mutate work fields directly bypass this and
@@ -10174,7 +10195,8 @@ class Org:
         if moved:
             self._log("work_archived", "orgtree",
                       {"items": moved,
-                       "why": "not updated for over an hour",
+                       "why": "eligible: over an hour since the last docket "
+                              "update, or dropped (at once) — see outcomes",
                        "outcomes": outcomes}, [])
         return moved
 
@@ -10943,7 +10965,7 @@ class Org:
         now_ts = _time.time()
         if self._work_archived(it, phys, now_ts) and not reopen:
             raise LedgerError(
-                f"{wid} is ARCHIVED ({it.get('status')} for over an hour). If "
+                f"{wid} is ARCHIVED ({self._work_archived_why(it)}). If "
                 f"real work resumes, pass reopen=true with the new status; do "
                 f"not create a duplicate item")
         if it.get("status") in self.WORK_CLOSED and not reopen:

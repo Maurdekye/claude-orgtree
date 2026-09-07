@@ -15,9 +15,10 @@ data root. No clock is waited on: the hour is crossed by backdating `docket_at`,
 which is the same instrument test_work_items uses for the done edge.
 
 CONTROLS, because a check that cannot fail is not a check: a `done` item must
-still archive on the same clock, a `dropped` item under the hour must NOT, a
-`superseded` item must still never archive by itself (that exemption is
-deliberate — see §2), and an item dropped BEFORE this rule existed must stay
+still archive on the hour clock (and NOT before it — the strict edge), a
+`dropped` item must archive AT ONCE (user 2026-09-07: "no 1-hour timeout for
+them"), a `superseded` item must still never archive by itself (that exemption
+is deliberate — see §2), and an item dropped BEFORE this rule existed must stay
 reopenable without anyone inventing a reason for it.
 
 THE RENDERING IS COVERED ELSEWHERE, not here: frontend/tests/docket.test.tsx
@@ -46,6 +47,8 @@ from datetime import datetime, timedelta, timezone                 # noqa: E402
 
 from orgtree import store                                          # noqa: E402
 from orgtree.ledger import LedgerError, USER                       # noqa: E402
+from orgtree.ledger import now                                     # noqa: E402
+import time as _time                                               # noqa: E402
 
 # ⚠ ASSERT the root rather than trusting the assignment above: `store` binds
 # DATA_ROOT at import time, and a stray earlier import would have bound it to
@@ -349,18 +352,25 @@ check("every state-information field has a sentence, names a real status, and "
       "is cleared by the shared clear", the_map_is_the_single_source_of_truth)
 
 
-print("\n§2  it archives itself, the way done does")
+print("\n§2  it archives itself — AT ONCE (user 2026-09-07), where done waits an hour")
 
 
-def a_dropped_item_ages_out() -> None:
+def a_dropped_item_archives_at_once() -> None:
     slug = fixture()
     wid = item(slug, "Doomed", status="in_progress")
     upd(slug, wid, status="dropped", dropped_reason=WHY_CANCELLED)
-    at = backdate(slug, wid, 3601)
-    lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
+    # NO backdating: read at the instant it was dropped
+    org = store.load_org(slug)
+    now_ts = _time.time()
+    assert (org._work_age_s(org._work_find(wid)[0], now_ts) or 0) < 60, "fixture: fresh"
+    lst = org.work_list(USER, include_archived=True, now_ts=now_ts)
     assert lst["items"] == [], lst["items"]
     assert [r["slug"] for r in lst["archived"]] == [wid], lst["archived"]
+    assert lst["archived"][0]["status"] == "dropped" and lst["archived"][0]["archived"] is True
     assert lst["counts"]["archived"] == 1 and lst["counts"]["active"] == 0, lst["counts"]
+    # the default list (no archive) does not show it at all
+    plain = store.load_org(slug).work_list(USER, now_ts=now_ts)
+    assert wid not in [r["slug"] for r in plain["items"]] and "archived" not in plain
     # the derived read did NOT write, and the next mutation sweeps it for real
     assert store.load_org(slug).d.get("work_items_archive") in (None, []), \
         "a read moved the item"
@@ -368,12 +378,53 @@ def a_dropped_item_ages_out() -> None:
     org = store.load_org(slug)
     _, phys = org._work_find(wid)
     assert phys, "the sweep at the head of a mutation left it in the active list"
-    assert org.work_get(USER, wid)["dropped_reason"] == WHY_CANCELLED, \
-        "the archived row lost the reason it was archived with"
+    got = org.work_get(USER, wid)
+    assert got["dropped_reason"] == WHY_CANCELLED, "the archived row lost its reason"
+    assert got["status"] == "dropped" and got["archived"] and got["archived_at"]
+    assert any(h.get("op") == "update" and (h.get("changes") or {}).get("status", {}).get("to")
+               == "dropped" for h in got["history"]), "history kept"
 
 
-check("a dropped item over an hour old archives itself, and the archived row "
-      "still carries its reason", a_dropped_item_ages_out)
+check("a dropped item archives AT ONCE: out of the list and the active count, in the "
+      "archive; a read never writes; the sweep moves it with reason and history kept",
+      a_dropped_item_archives_at_once)
+
+
+def an_already_dropped_item_is_archived_too() -> None:
+    """An item dropped BEFORE this rule existed: still on the active list in the
+    document, under an hour old. Archival is derived on read, so it reads as
+    archived at once and the next mutation moves it — nothing has to be
+    migrated, and nothing is invented for it."""
+    slug = fixture()
+    wid = item(slug, "Dropped last week", status="in_progress")
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, phys = org._work_find(wid)
+        assert not phys
+        it["status"] = "dropped"
+        it["dropped_reason"] = WHY_FAILED
+        it["docket_at"] = it["updated_at"] = now()      # fresh, as the old rule left it
+        store.save_org(org)
+    org = store.load_org(slug)
+    lst = org.work_list(USER, include_archived=True)
+    assert [r["slug"] for r in lst["archived"]] == [wid] and lst["items"] == []
+    item(slug, "an unrelated write")
+    org = store.load_org(slug)
+    assert org._work_find(wid)[1], "not swept"
+    got = org.work_get(USER, wid)
+    assert got["dropped_reason"] == WHY_FAILED and got["status"] == "dropped"
+    # …and it reopens exactly like any archived item
+    upd(slug, wid, status="in_progress", reopen=True, done=["resuming"])
+    org = store.load_org(slug)
+    it, phys = org._work_find(wid)
+    assert not phys and it["status"] == "in_progress", (phys, it["status"])
+    lst = org.work_list(USER, include_archived=True)
+    assert wid in [r["slug"] for r in lst["items"]] and lst["archived"] == []
+    assert any(h.get("op") == "reopen" for h in it["history"]), "reopen recorded"
+
+
+check("an item dropped BEFORE the rule reads as archived at once, is swept on the next "
+      "write, keeps its reason, and reopens", an_already_dropped_item_is_archived_too)
 
 
 def the_log_does_not_call_it_done() -> None:
@@ -386,7 +437,9 @@ def the_log_does_not_call_it_done() -> None:
     fine = item(slug, "Finished", status="review")
     upd(slug, dead, status="dropped", dropped_reason=WHY_CANCELLED)
     do(slug, lambda org: org.work_accept(USER, fine))
-    at = max(backdate(slug, dead, 3601), backdate(slug, fine, 3601))
+    # the dropped item was swept by the accept's own head-of-mutation sweep (at
+    # once); the accepted one needs the hour
+    at = backdate(slug, fine, 3601)
     with store.DOC_LOCK:
         org = store.load_org(slug)
         org._work_sweep(at)
@@ -394,13 +447,14 @@ def the_log_does_not_call_it_done() -> None:
     rows = [r for r in (store.load_org(slug).d.get("events") or [])
             if r.get("op") == "work_archived"]
     assert rows, "the sweep archived items and logged nothing"
-    d = rows[-1]["detail"]
-    assert sorted(d["items"]) == sorted([dead, fine]), d
-    # the CONTROL is in the same row: the accepted item still reads `done`, so
-    # this is about telling the two apart and not about erasing the word
-    assert d["outcomes"][dead] == "dropped", d["outcomes"]
-    assert d["outcomes"][fine] == "done", d["outcomes"]
-    assert "done for over an hour" not in str(d), d
+    outcomes: dict = {}
+    for r in rows:
+        outcomes.update(r["detail"]["outcomes"])
+    assert set(outcomes) == {dead, fine}, rows
+    # the CONTROL: the accepted item still reads `done`, so this is about
+    # telling the two apart and not about erasing the word
+    assert outcomes[dead] == "dropped" and outcomes[fine] == "done", outcomes
+    assert "done for over an hour" not in str(rows), rows
 
 
 check("the durable archive log records each item's OWN outcome, so cancelled "
@@ -418,10 +472,10 @@ def the_refusal_does_not_call_it_done_either() -> None:
     fine = item(slug, "Finished", status="review")
     upd(slug, dead, status="dropped", dropped_reason=WHY_FAILED)
     do(slug, lambda org: org.work_accept(USER, fine))
-    backdate(slug, dead, 3601)
     backdate(slug, fine, 3601)
     msg = refused(lambda: upd(slug, dead, done=["picking it back up"]))
-    assert "ARCHIVED (dropped for over an hour)" in msg, msg
+    assert "ARCHIVED (dropped — a dropped item archives at once)" in msg, msg
+    assert "over an hour" not in msg, "a dropped item is never told it waited an hour: " + msg
     # the CONTROL: the accepted item is told `done`, so this is about naming
     # the outcome and not about deleting the word from the message
     ctrl = refused(lambda: upd(slug, fine, done=["more"]))
@@ -432,20 +486,27 @@ check("the archived-item refusal names the item's OWN outcome, so a cancelled "
       "item is never told it is done", the_refusal_does_not_call_it_done_either)
 
 
-def the_hour_edge_holds_for_dropped() -> None:
-    """CONTROL: the archive is earned by the CLOCK, not by the status alone —
-    without this, 'dropped archives' could be true the instant it is set."""
+def the_hour_edge_still_holds_for_done_and_waiting() -> None:
+    """CONTROL: the clock is untouched for the statuses that keep it. `done`
+    and `waiting` at EXACTLY one hour are still on the list (strict edge), and
+    at one second past they archive — so 'dropped at once' did not leak into
+    'everything at once'."""
     slug = fixture()
-    wid = item(slug, "Doomed", status="in_progress")
-    upd(slug, wid, status="dropped", dropped_reason=WHY_CANCELLED)
-    at = backdate(slug, wid, 3600)
+    fine = item(slug, "Finished", status="review")
+    do(slug, lambda org: org.work_accept(USER, fine))
+    waits = item(slug, "Waits", status="in_progress")
+    upd(slug, waits, status="waiting", waiting_reason="a build; the watchdog mails me")
+    # the LOWER of the two 'now's: each item is then at most exactly an hour old
+    at = min(backdate(slug, fine, 3600), backdate(slug, waits, 3600))
     lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
-    assert [r["slug"] for r in lst["items"]] == [wid], "archived at exactly an hour"
+    assert {r["slug"] for r in lst["items"]} == {fine, waits}, "archived at exactly an hour"
     assert lst["archived"] == [] and lst["counts"]["archived"] == 0, lst["counts"]
+    lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at + 1)
+    assert {r["slug"] for r in lst["archived"]} == {fine, waits} and lst["items"] == []
 
 
-check("at EXACTLY one hour a dropped item is still on the list — the same "
-      "strict edge done has", the_hour_edge_holds_for_dropped)
+check("CONTROL: done and waiting keep the strict one-hour edge — listed at exactly an "
+      "hour, archived a second later", the_hour_edge_still_holds_for_done_and_waiting)
 
 
 def done_still_archives() -> None:

@@ -63,7 +63,7 @@ const STATUS_LABEL: Record<string, string> = {
 const WAITING_HELP = 'Waiting on an external event, not on the user — it names the event and how the agent will hear of it. It stops its own idle reminders, is out of the active count, and archives an hour after its last docket update unless attention holds it, still Waiting'
 // the word on its own could be read as "finished with"; it means the opposite
 // of Done, and the pane says which of the two ways it ended
-const DROPPED_HELP = 'Ended WITHOUT being completed — cancelled, or failed in a way it cannot be recovered from. Closed, and archived on the same clock as Done, but never Done'
+const DROPPED_HELP = 'Ended WITHOUT being completed — cancelled, or failed in a way it cannot be recovered from. Closed and archived at once (no one-hour wait), but never Done'
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
 /** hover help, only where the status word can be read two ways */
 const statusHelp = (status: string): string | undefined =>
