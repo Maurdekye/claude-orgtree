@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GitWorkspace } from '../GitWorkspace'
-import { closeIfCentred, pinModal, raiseModal, readModalPins, unpinModal } from '../canvas/modalpin'
+import { closeIfCentred, isModalPinned, pinModal, raiseModal, readModalPins, unpinModal } from '../canvas/modalpin'
 import type { RefRoutes } from '../canvas/reflinks'
 import type { ToastFn } from '../types'
 import { noteActionDocument, openSurfaces } from '../windowlife'
@@ -36,6 +36,11 @@ export function useGitPanels(slug: string | null) {
     if (panel?.extra) unpinModal(panel.kind)
     setPanels(old => old.filter(p => p.id !== id))
   }, [])
+  const toggle = useCallback((context: GitContext) => {
+    const id = `git:${context.slug}`
+    if (current.current.some(p => p.id === id) && isModalPinned(id)) close(id)
+    else open(context)
+  }, [close, open])
   const another = useCallback((source: GitPanel, repository?: string) => {
     const id = `git:${source.context.slug}:panel:${(crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)}`
     const w = window.innerWidth, h = window.innerHeight
@@ -65,7 +70,7 @@ export function useGitPanels(slug: string | null) {
   useEffect(() => () => {
     for (const panel of current.current) if (panel.extra) unpinModal(panel.kind)
   }, [])
-  return { panels: panels.filter(p => p.context.slug === slug), open, close, another }
+  return { panels: panels.filter(p => p.context.slug === slug), open, toggle, close, another }
 }
 
 export function GitPanels({ panels, close, another, routes, toast }: {

@@ -35,7 +35,7 @@ import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
-import { closeIfCentred, PinFrame } from './canvas/modalpin'
+import { closeIfCentred, isModalPinned, PinFrame } from './canvas/modalpin'
 import { mailRefTarget, useRefRoutes } from './canvas/reflinks'
 import type { TypedRef } from './canvas/workrefs'
 import {
@@ -637,7 +637,7 @@ export default function App() {
         {!BASE &&
           <button className={'h1-usage' + (usageAlert ? ' u-' + usageAlert.sev : '')}
             title={usageAlert?.title ?? usageTitle(provPresence)}
-            onClick={() => setShowUsage(true)}>
+            onClick={() => setShowUsage(v => isModalPinned('usage') ? !v : true)}>
             <DataUsageIcon fontSize="inherit" /></button>}
         {/* the accounts panel (machine-local routing, 2026-08-25). Beside
             the usage bars deliberately — they answer the same question
@@ -645,7 +645,7 @@ export default function App() {
             are read together. */}
         {!BASE &&
           <button className="h1-usage" title="App settings"
-            onClick={() => setShowAccounts(true)}>
+            onClick={() => setShowAccounts(v => isModalPinned('app-settings') ? !v : true)}>
             <SettingsIcon fontSize="inherit" />
           </button>}</h1>
       {slug && <button className="home" onClick={goHome}><HomeIcon fontSize="inherit" /> all organizations</button>}
@@ -681,7 +681,7 @@ export default function App() {
           .catch((e: Error) => toast([`error: ${e.message}`]))} />}
       {/* global default org settings (user spec): every NEW org is born with
           these — admin only */}
-      {!BASE && <button className="home" onClick={() => setShowDefaults(true)}>
+      {!BASE && <button className="home" onClick={() => setShowDefaults(v => isModalPinned('defaults') ? !v : true)}>
         <SettingsIcon fontSize="inherit" /> default org settings</button>}
       {/* kiosk dashboard: admin only — a public visitor never sees this panel
           (and the server refuses the endpoints regardless) */}
@@ -935,7 +935,7 @@ export default function App() {
                     and are display:none at compact */}
                 {!tree.public &&
                   <button className="mob-only bar-row"
-                    onClick={() => { setBarMore(false); setShowSettings(true) }}>
+                    onClick={() => { setBarMore(false); setShowSettings(v => isModalPinned('org-settings') ? !v : true) }}>
                     <SettingsIcon fontSize="inherit" /> settings</button>}
                 <KillSwitch slug={slug} toast={toast} refreshTree={refreshTree}
                   onKilled={() => setBarMore(false)} className="mob-only" />
@@ -962,7 +962,7 @@ export default function App() {
                   return (
                     <button className={'iconbtn ask-bell' + (pip?.urgent ? ' glow' : '')}
                       title={pip?.title ?? 'your inbox'}
-                      onClick={() => { setInboxJump(null); setShowInbox(true) }}>
+                      onClick={() => { setInboxJump(null); setShowInbox(v => isModalPinned('inbox') ? !v : true) }}>
                       <MailIcon fontSize="inherit" />
                       {pip && <b className={'eye-count' + (pip.urgent ? ' asks' : '')}>
                         {pip.count}</b>}
@@ -989,7 +989,7 @@ export default function App() {
                       title={docs > 0
                         ? `presented documents — ${docs} from currently-hired agents`
                         : 'presented documents'}
-                      onClick={() => setShowGallery(true)}>
+                      onClick={() => setShowGallery(v => isModalPinned('gallery') ? !v : true)}>
                       <DocIcon fontSize="inherit" />
                       {docs > 0 && <b className="eye-count">{docs}</b>}
                     </button>
@@ -1002,9 +1002,9 @@ export default function App() {
                     (zero hidden). */}
                 <DocketToolbarButton
                   summary={tree.work_items_summary}
-                  onClick={() => setShowDocket(true)} />
+                  onClick={() => setShowDocket(v => isModalPinned('docket') ? !v : true)} />
                 {!tree.public && <button className="iconbtn" title="Git repositories"
-                  onClick={() => gitPanels.open({ slug })}>⑂</button>}
+                  onClick={() => gitPanels.toggle({ slug })}>⑂</button>}
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —
@@ -1014,10 +1014,10 @@ export default function App() {
                 {!tree.public &&
                   <button className={'iconbtn' + (usageAlert ? ' u-' + usageAlert.sev : '')}
                     title={usageAlert?.title ?? usageTitle(provPresence)}
-                    onClick={() => setShowUsage(true)}>
+                    onClick={() => setShowUsage(v => isModalPinned('usage') ? !v : true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
                 {!tree.public &&
-                  <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
+                  <button onClick={() => setShowSettings(v => isModalPinned('org-settings') ? !v : true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
                   target="_blank" rel="noreferrer" title="orgtree on GitHub">
                   <GitHubIcon fontSize="inherit" /></a>
@@ -1030,7 +1030,7 @@ export default function App() {
                 onOpenMailHandled={() => setMailJump(null)}
                 openDocAt={docJump}
                 onOpenDocHandled={() => setDocJump(null)}
-                onAccounts={BASE ? undefined : () => setShowAccounts(true)}
+                onAccounts={BASE ? undefined : () => setShowAccounts(v => isModalPinned('app-settings') ? !v : true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jumpTo(jump) : null)
                   setShowInbox(true)
