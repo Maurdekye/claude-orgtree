@@ -9,6 +9,7 @@ import { pickFolder } from './picker'
 import { fmtFull } from './timefmt'
 import type { ToastFn } from './types'
 import * as api from './git/api'
+import { observeGit } from './git/observers'
 import { branchColor, canRecenter, layoutGraph, nodeAction, shortRef, ROW } from './git/layout'
 import type { GitBranch, GitChanges, GitCommit, GitContext, GitDiscovery, GitRegistry, GitSettings, GitSnapshot } from './git/types'
 import './git/workspace.css'
@@ -131,6 +132,7 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   const [newHistory, setNewHistory] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [branchesOpen, setBranchesOpen] = useState(false)
+  const [branchSearch, setBranchSearch] = useState('')
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
   const [discovery, setDiscovery] = useState<GitDiscovery | null>(null)
   const [discovering, setDiscovering] = useState(false)
@@ -151,6 +153,7 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   const initialPosition = useRef(true)
   const appliedContext = useRef('')
   const layout = useMemo(() => snapshot ? layoutGraph(nodes, snapshot) : null, [nodes, snapshot])
+  const visibleBranches = snapshot?.inventory.filter(b => shortRef(b.ref).toLowerCase().includes(branchSearch.toLowerCase())) ?? []
   useLayoutEffect(() => {
     const element = hoverElement.current
     if (!hover || !element) return
@@ -212,23 +215,16 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   useEffect(() => { initialPosition.current = true; setSnapshot(null); setNodes([]); void refresh(); return () => { sequence.current++ } }, [refresh])
   useEffect(() => {
     if (!snapshot || !rid) return
-    let cancelled = false, running = false
-    const poll = async () => {
-      if (running || busy) return
-      running = true
-      try {
-        const value = await api.getGitObservation(slug, rid)
-        if (cancelled) return
+    return observeGit(slug, rid, {
+      value: value => {
         if (value.freshness) setSnapshot(old => old ? { ...old, freshness: value.freshness! } : old)
         else if (value.busy) setSnapshot(old => old ? { ...old, freshness: { ...old.freshness, busy: true } } : old)
         if (value.ref_identity && value.ref_identity !== snapshot.ref_identity) {
           if (!gesture.current && (viewport.current?.scrollTop ?? 0) < 50) void refresh()
           else setNewHistory(true)
         }
-      } catch (e) { if (!cancelled) setError(message(e)) } finally { running = false }
-    }
-    const timer = setInterval(() => void poll(), 5000)
-    return () => { cancelled = true; clearInterval(timer) }
+      }, error: e => setError(message(e)),
+    })
   }, [slug, rid, snapshot?.token, busy, refresh])
   useLayoutEffect(() => {
     const vp = viewport.current
@@ -293,10 +289,6 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
     try { await api.fetchGit(slug, rid); await refresh() }
     catch (e) { toast([message(e)]); await refresh() } finally { setBusy(false) }
   }
-  const autoFetch = async (enabled: boolean) => {
-    try { const value = await api.getGitSettings(slug, rid); await api.saveGitSettings(slug, rid, value.revision, { auto_fetch: enabled }); await refresh() }
-    catch (e) { toast([message(e)]) }
-  }
   const perform = async () => {
     if (!snapshot || !action) return
     setBusy(true)
@@ -348,8 +340,6 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
     {rid && <nav className="git-toolbar">
       <button disabled={busy} onClick={() => void refresh()}>Refresh</button>
       <button disabled={busy || !snapshot?.config.remote} onClick={() => void fetch()}>Fetch now</button>
-      <label><input type="checkbox" checked={snapshot?.freshness.watched ?? false} disabled={busy || !snapshot?.config.remote}
-        onChange={e => void autoFetch(e.target.checked)} />Fetch every 30s</label>
       <button onClick={() => setBranchesOpen(v => !v)}>Branches and history</button>
       <span className="git-key"><i />Shared <i className="unpushed" />Unpushed <i className="ghost" />Remote only</span>
       {snapshot && <span className={'git-freshness ' + snapshot.freshness.state} title={snapshot.freshness.error ?? ''}>
@@ -368,10 +358,17 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
           <option value="">Choose checkout</option>{snapshot.worktrees.filter(w => w.branch === b.ref && !w.bare).map(w => <option key={w.id} value={w.id}>{w.path}</option>)}
         </select></label>)}
       <p>Choose up to 40 branches. Inactive and remote-only branches are included here.</p>
-      <button onClick={() => { setSelected(undefined); setBranchesOpen(false) }}>Relevant branches</button>
-      {snapshot.inventory.map(b => <label key={b.ref}><input type="checkbox"
+      <div className="git-branch-controls">
+        <label>Find branch <input type="search" value={branchSearch} onChange={e => setBranchSearch(e.target.value)} placeholder="Search branch names" /></label>
+        <button disabled={!branchSearch} onClick={() => setBranchSearch('')}>Clear search</button>
+        <button onClick={() => { setSelected(undefined); setBranchesOpen(false) }}>Relevant branches</button>
+      </div>
+      <div className="git-branch-results">
+      {!visibleBranches.length && <p role="status">No branches match this search.</p>}
+      {visibleBranches.map(b => <label key={b.ref}><input type="checkbox"
         checked={(selected ?? snapshot.branches.map(v => v.ref)).includes(b.ref)}
         onChange={e => setSelected(old => { const list = old ?? snapshot.branches.map(v => v.ref); return e.target.checked ? [...list, b.ref].slice(0, 40) : list.filter(r => r !== b.ref) })} />{shortRef(b.ref)}</label>)}
+      </div>
     </section>}
     {layout && snapshot && <div className="git-viewport" ref={viewport} tabIndex={0} aria-label="Repository commit graph"
       style={{ backgroundPosition: `${-view.left * .22}px ${-view.top * .32}px` }}

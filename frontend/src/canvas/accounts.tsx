@@ -24,6 +24,7 @@
 // guard that fires for one row in a hundred just makes the panel inexplicable.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { refreshGitPreferences } from '../git/observers'
 import type {
   AccountsPayload, AccountUsage, ProviderInfo, RuntimeSettingsPayload,
   TierStanding, ToastFn, UsageLimit,
@@ -31,7 +32,7 @@ import type {
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
   getProviders, getRuntimeSettings, setAccountKeyOrder,
-  setIdleDocketRemindersEnabled, setProviderEnabled,
+  setIdleDocketRemindersEnabled, setProviderEnabled, setGitPeriodicFetchEnabled,
   setWaitForMcpToolsEnabled, setWarmingEnabled, setWorkingCheckupsEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
@@ -314,6 +315,8 @@ export function AccountsPanel({ toast, close }: {
   const [waitForMcpToolsBusy, setWaitForMcpToolsBusy] = useState(false)
   const [docketReminders, setDocketReminders] = useState<boolean | null>(null)
   const [docketRemindersBusy, setDocketRemindersBusy] = useState(false)
+  const [gitFetch, setGitFetch] = useState<boolean | null>(null)
+  const [gitFetchBusy, setGitFetchBusy] = useState(false)
   const [warmingErr, setWarmingErr] = useState<string | null>(null)
   // the OpenRouter entry carries the runtime tiers (favorites); adopting them
   // here colours this panel's own chips even before the canvas has polled
@@ -331,6 +334,7 @@ export function AccountsPanel({ toast, close }: {
         setWorkingCheckups(p.working_checkups_enabled !== false)
         setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
         setDocketReminders(p.idle_docket_reminders_enabled === true)
+        setGitFetch(p.git_periodic_fetch_enabled === true)
         setWarmingErr(null)
       })
       .catch((e: Error) => setWarmingErr(e.message))
@@ -357,6 +361,8 @@ export function AccountsPanel({ toast, close }: {
         setWorkingCheckups(p.working_checkups_enabled !== false)
         setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
         setDocketReminders(p.idle_docket_reminders_enabled === true)
+        setGitFetch(p.git_periodic_fetch_enabled === true)
+        refreshGitPreferences()
         setWarmingErr(null)
         toast([say(p)])
       })
@@ -854,6 +860,13 @@ export function AccountsPanel({ toast, close }: {
               sit between turns, two are about what a turn does at its edges.
               The old flat list of three gave no reason why "keep processes
               warm" and "wait for MCP tools" sat next to each other. */}
+          <SetGroup title="Git repositories">
+            <SetToggle label="fetch open repositories every 30 seconds"
+              checked={gitFetch === true} disabled={gitFetch == null || gitFetchBusy}
+              onChange={runtimeSwitch(setGitPeriodicFetchEnabled, setGitFetchBusy,
+                p => `periodic Git fetch turned ${p.git_periodic_fetch_enabled ? 'on' : 'off'}`)}
+              hint="Applies to every open Git panel, including separate windows. Closing the last view stops future periodic fetches." />
+          </SetGroup>
           <SetGroup title="Agent processes">
             <SetToggle label="keep agent processes warm"
               checked={warming !== false}

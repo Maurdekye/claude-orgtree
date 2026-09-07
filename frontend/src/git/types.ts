@@ -44,7 +44,7 @@ export interface GitDiscovery {
   candidates: { path: string; name: string }[]; truncated: boolean; scanned: number; errors: unknown[]
 }
 export interface GitSettings {
-  revision: number; auto_fetch: boolean; remote: string | null; trunk: string | null
+  revision: number; remote: string | null; trunk: string | null
   remotes: string[]; branches: string[]; saved_trunk: string | null; saved_remote: string | null
   items: { slug: string; title: string }[]
   links: { repository_id: string; branch_ref: string; org_slug: string; item_slug: string }[]

@@ -371,6 +371,11 @@ export const setOpenRouterFavorite = (
   })
 export const getRuntimeSettings = (): Promise<RuntimeSettingsPayload> =>
   req('/api/app-settings/runtime')
+export const setGitPeriodicFetchEnabled = (enabled: boolean): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ git_periodic_fetch_enabled: enabled }),
+  })
 export const setWarmingEnabled = (
   enabled: boolean,
 ): Promise<RuntimeSettingsPayload> =>

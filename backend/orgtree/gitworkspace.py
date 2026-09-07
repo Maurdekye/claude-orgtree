@@ -4,6 +4,7 @@ No import-time jobs, subprocesses or writes. Each common Git directory owns
 one lock, regardless of how many registered worktrees or tabs address it.
 """
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 
 from collections import OrderedDict
 from copy import deepcopy
@@ -18,7 +19,7 @@ import threading
 import time
 from typing import Any
 
-from . import gitrunner as gr, gitsettings as settings, store
+from . import gitrunner as gr, gitsettings as settings, store, appsettings
 
 _locks: dict[str, threading.RLock] = {}
 _guard = threading.RLock()
@@ -169,9 +170,11 @@ def remotes(repo: dict[str, Any]) -> list[str]:
     return text(repo["root"], ["remote"]).splitlines()
 
 
-def refs(repo: dict[str, Any], trunk: str | None = None, *, batch: bool = True) -> list[dict[str, Any]]:
+def refs(repo: dict[str, Any], trunk: str | None = None, *, batch: bool = True, metadata_only: bool = False) -> list[dict[str, Any]]:
     root = repo["root"]
     fmt = "%(refname)%00%(objectname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(symref)%00%(upstream:track)"
+    if metadata_only:
+        fmt = fmt.replace("%(upstream:track)", "")
     use_batch = bool(batch and trunk)
     if use_batch:
         capability = _batch_support.get(root)
@@ -348,12 +351,13 @@ def remote_config(repo: dict[str, Any], remote: str | None) -> dict[str, Any]:
             "fingerprint": digest([remote, urls, push_urls, specs.text()])}
 
 
-def freshness(repo: dict[str, Any], remote: str | None, *, now: float | None = None) -> dict[str, Any]:
+def freshness(repo: dict[str, Any], remote: str | None, *, now: float | None = None,
+              captured_config: dict[str, Any] | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     observation = deepcopy(repo.get("observations", {}).get(remote or "", {}))
     if remote:
         try:
-            if observation.get("fingerprint") != remote_config(repo, remote)["fingerprint"]:
+            if observation.get("fingerprint") != (captured_config or remote_config(repo, remote))["fingerprint"]:
                 observation = {}
         except GitError:
             # A selected remote that became unavailable has a real failed
@@ -361,9 +365,10 @@ def freshness(repo: dict[str, Any], remote: str | None, *, now: float | None = N
             observation = observation if observation.get("fingerprint") is None else {}
     last = observation.get("success_at")
     age = max(0, now - last) if last else None
-    state = ("failing" if observation.get("error") else "not_watched" if not repo["auto_fetch"]
+    watched = bool(remote and appsettings.git_periodic_fetch_enabled())
+    state = ("failing" if observation.get("error") else "not_watched" if not watched
              else "not_yet_observed" if age is None else "stale" if age > 60 else "fresh")
-    return {**observation, "state": state, "age_seconds": age, "watched": repo["auto_fetch"],
+    return {**observation, "state": state, "age_seconds": age, "watched": watched,
             "busy": repo["common"] in _busy}
 
 
@@ -417,6 +422,11 @@ def history(slug: str, rid: str, cursor: str) -> dict[str, Any]:
         raise GitError("Invalid history cursor", status=422) from None
     snap = cached(slug, rid, token)
     repo = repository(slug, rid)
+    return _history_page(repo, snap, offset)
+
+
+def _history_page(repo: dict[str, Any], snap: dict[str, Any], offset: int) -> dict[str, Any]:
+    token = snap["token"]
     with lock(repo):
         if not snap["tips"]:
             return {"nodes": [], "next_cursor": None, "frontier": [], "offset": offset}
@@ -449,14 +459,21 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
     repo = repository(slug, rid)
     facts = org_facts(slug)
     links = associations(slug, repo, facts)
-    with lock(repo):
-        first = refs(repo, batch=False)
+    with lock(repo), ThreadPoolExecutor(max_workers=3, thread_name_prefix="git-read") as reads:
+        first_read = reads.submit(refs, repo, batch=False, metadata_only=batch)
+        worktree_read = reads.submit(worktrees, repo)
+        shallow_read = reads.submit(text, repo["root"], ["rev-parse", "--is-shallow-repository"])
+        first = first_read.result()
         cfg = configuration(repo, first)
-        rows = refs(repo, cfg["trunk"] if not cfg["trunk_missing"] else None, batch=batch)
+        # Normal reads calculate comparisons from the captured topology below.
+        # The legacy path remains an independent Git oracle for fixture checks.
+        rows = first if batch else refs(repo, cfg["trunk"] if not cfg["trunk_missing"] else None, batch=False)
         by_ref = {r["ref"]: r for r in rows}
-        wts = worktrees(repo)
+        wts = worktree_read.result()
         captured_worktrees = digest(wts)
-        shallow = text(repo["root"], ["rev-parse", "--is-shallow-repository"]) == "true"
+        shallow = shallow_read.result() == "true"
+        remote_read = reads.submit(remote_config, repo, cfg["remote"])
+        worktree_changes = [reads.submit(changes, repo, wt) for wt in wts[:60]]
         wt_branches = {w.get("branch") for w in wts}
         active = [r for r in rows if not r["symref"] and (r["ref"] == cfg["trunk"] or r["ref"] in wt_branches
                   or any(it.get("status") not in ("done", "dropped", "superseded") for it in links.get(r["ref"], [])))]
@@ -479,23 +496,15 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
                 ahead = re.search(r"ahead (\d+)", row["track"])
                 behind = re.search(r"behind (\d+)", row["track"])
                 counts = [int(ahead[1]) if ahead else 0, int(behind[1]) if behind else 0]
-            sync = comparison(repo, row["oid"], upstream["oid"], counts, shallow=shallow) if upstream else {
+            sync = ({"state": "pending", "ahead": None, "behind": None} if batch else comparison(repo, row["oid"], upstream["oid"], counts, shallow=shallow)) if upstream else {
                 "state": "upstream_gone" if row["upstream"] else "no_upstream" if is_local else "remote_only",
                 "ahead": None, "behind": None}
             unique: dict[str, list[str]] = {"local": [], "remote": []}
             classified = bool(upstream and sync["state"] not in ("shallow", "unrelated", "unavailable"))
             branches.append({**row, "local": is_local, "tickets": links.get(row["ref"], []),
                              "upstream_oid": upstream["oid"] if upstream else None, "sync": sync,
-                             "against_trunk": comparison(repo, row["oid"], trunk_oid, row["trunk_counts"], shallow=shallow),
+                             "against_trunk": {} if batch else comparison(repo, row["oid"], trunk_oid, row["trunk_counts"], shallow=shallow),
                              "unique": unique, "classified": classified})
-        # Worktree states are independent, including several checkouts at one OID.
-        for wt in wts[:60]:
-            wt["changes"] = changes(repo, wt)
-            wt["agents"] = [name for name in facts.get("nodes", {}) if "@" not in name
-                            and within(wt["path"], os.path.join(store.scratch_root(slug), name))]
-        final = refs(repo, batch=False)
-        if ref_identity(first) != ref_identity(final) or captured_worktrees != digest(worktrees(repo)):
-            raise GitError("Repository refs or checkouts changed during scan; refresh to read a consistent snapshot", status=409, code="changed_during_scan")
         token = secrets.token_hex(16)
         tips = list(dict.fromkeys([b["oid"] for b in branches] + [b["upstream_oid"] for b in branches if b["upstream_oid"]]
                                  + [w["oid"] for w in wts[:60] if w.get("oid")]))
@@ -512,6 +521,33 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
         for oid, parents in ancestry.items():
             for parent in parents:
                 membership[parent] = membership.get(parent, 0) | membership[oid]
+        if batch:
+            trunk_index = next((i for i, b in enumerate(branches) if b["ref"] == cfg["trunk"]), None)
+            def compare_bits(a: str, b: str | None, left: int, right: int) -> dict[str, Any]:
+                if not b:
+                    return {"state": "unavailable", "ahead": None, "behind": None}
+                if a == b:
+                    return {"state": "in_sync", "ahead": 0, "behind": 0}
+                if shallow:
+                    return {"state": "shallow", "ahead": None, "behind": None}
+                ahead = behind = 0
+                common = False
+                for oid in ordered:
+                    mask = membership[oid]
+                    x, y = bool(mask & left), bool(mask & right)
+                    ahead += x and not y
+                    behind += y and not x
+                    common |= x and y
+                if not common:
+                    return {"state": "unrelated", "ahead": None, "behind": None}
+                return {"state": "diverged" if ahead and behind else "ahead" if ahead else "behind" if behind else "in_sync",
+                        "ahead": ahead, "behind": behind}
+            for i, branch in enumerate(branches):
+                left = 1 << (2 * i)
+                if branch["upstream_oid"]:
+                    branch["sync"] = compare_bits(branch["oid"], branch["upstream_oid"], left, left << 1)
+                branch["against_trunk"] = compare_bits(branch["oid"], trunk_oid, left, 1 << (2 * trunk_index) if trunk_index is not None else 0)
+                branch["classified"] = bool(branch["upstream_oid"] and branch["sync"]["state"] not in ("shallow", "unrelated", "unavailable"))
         # Compact per-node comparison facts accompany every loaded page. The
         # first-page shortcut is bounded; classification never stops at that cap.
         for index, branch in enumerate(branches):
@@ -542,6 +578,17 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
             position = lanes.setdefault(oid, {"offset": 165, "owner": None})
             for index, parent in enumerate(parents):
                 lanes.setdefault(parent, {"offset": position["offset"] + 75 * index, "owner": position["owner"]})
+        # Status reads overlap topology work, but every checkout is still read
+        # and validated before publication. Nothing incomplete is called clean.
+        for wt, pending in zip(wts[:60], worktree_changes):
+            wt["changes"] = pending.result()
+            wt["agents"] = [name for name in facts.get("nodes", {}) if "@" not in name
+                            and within(wt["path"], os.path.join(store.scratch_root(slug), name))]
+        final_read = reads.submit(refs, repo, batch=False, metadata_only=True)
+        final_worktrees = reads.submit(worktrees, repo)
+        final = final_read.result()
+        if ref_identity(first) != ref_identity(final) or captured_worktrees != digest(final_worktrees.result()):
+            raise GitError("Repository refs or checkouts changed during scan; refresh to read a consistent snapshot", status=409, code="changed_during_scan")
         snap = {"token": token, "slug": slug, "repository_id": rid, "created": time.time(),
                 "tips": tips, "shallow": shallow, "branches": branches, "worktrees": wts[:60], "config": cfg,
                 "ref_identity": ref_identity(final), "unborn_branch": None,
@@ -550,8 +597,10 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
         if not tips:
             unborn = gr.run(repo["root"], ["symbolic-ref", "-q", "HEAD"])
             snap["unborn_branch"] = unborn.text() if unborn.code == 0 else None
+        captured_config = None
         try:
-            snap["remote_fingerprint"] = remote_config(repo, cfg["remote"])["fingerprint"]
+            captured_config = remote_read.result()
+            snap["remote_fingerprint"] = captured_config["fingerprint"]
         except GitError:
             snap["remote_fingerprint"] = None
         with _guard:
@@ -562,8 +611,8 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
                   "inventory": [{"ref": r["ref"], "oid": r["oid"], "linked": bool(links.get(r["ref"]))}
                                 for r in rows if not r["symref"]],
                   "omitted_active": omitted, "omitted_worktrees": max(0, len(wts) - 60),
-                  "freshness": freshness(repo, cfg["remote"])}
-        result["history"] = history(slug, rid, _cursor(token, 0))
+                  "freshness": freshness(repo, cfg["remote"], captured_config=captured_config)}
+        result["history"] = _history_page(repo, snap, 0)
         return result
 
 
@@ -585,7 +634,7 @@ def observation(slug: str, rid: str) -> dict[str, Any]:
 
 def patch_settings(slug: str, rid: str, values: dict[str, Any], revision: int) -> dict[str, Any]:
     repo = repository(slug, rid)
-    if set(values) - {"remote", "trunk", "auto_fetch"}:
+    if set(values) - {"remote", "trunk"}:
         raise GitError("Unsupported repository setting")
     with lock(repo):
         if "remote" in values and values["remote"] is not None and values["remote"] not in remotes(repo):
@@ -593,8 +642,6 @@ def patch_settings(slug: str, rid: str, values: dict[str, Any], revision: int) -
         if "trunk" in values and values["trunk"] is not None:
             if values["trunk"] not in {r["ref"] for r in refs(repo) if r["ref"].startswith("refs/heads/")}:
                 raise GitError("Select a known local trunk branch")
-        if "auto_fetch" in values and not isinstance(values["auto_fetch"], bool):
-            raise GitError("Auto-fetch must be true or false")
         return settings.change(lambda d: d["repositories"][rid].update(values), revision=revision)
 
 
@@ -806,51 +853,38 @@ def operate(slug: str, rid: str, action: str, token: str, branch_ref: str,
 
 
 class FetchScheduler:
-    """One backend scheduler; coalesced work across orgs, worktrees and tabs."""
+    """Open views request ticks; no registry sweep or automatic future jobs.
+
+    The common directory owns the cadence across orgs, worktrees and tabs.
+    Closing the last view stops requests; an already started fetch may finish.
+    """
     def __init__(self) -> None:
-        self.stop_event = threading.Event()
-        self.thread: threading.Thread | None = None
         self.jobs: dict[str, threading.Thread] = {}
         self.last: dict[str, float] = {}
         self.guard = threading.Lock()
 
-    def tick(self, now: float | None = None) -> None:
+    def request(self, slug: str, rid: str, now: float | None = None) -> bool:
+        repo = repository(slug, rid)
         now = time.monotonic() if now is None else now
-        doc = settings.load()
         with self.guard:
             self.jobs = {k: t for k, t in self.jobs.items() if t.is_alive()}
-            for repo in doc["repositories"].values():
-                key = repo["common"]
-                if (not repo["auto_fetch"] or not repo["orgs"] or key in self.jobs
-                        or now - self.last.get(key, float("-inf")) < 30 or len(self.jobs) >= 2):
-                    continue
-                self.last[key] = now
-                def job(r: dict[str, Any] = repo) -> None:
-                    try:
-                        fetch(r["orgs"][0], r["id"])
-                    except (GitError, settings.SettingsError, OSError):
-                        pass  # Fetch records a failure; registry errors remain visible through its API.
-                thread = threading.Thread(target=job, name="git-fetch", daemon=True)
-                self.jobs[key] = thread
-                thread.start()
-
-    def start(self) -> None:
-        if self.thread and self.thread.is_alive():
-            return
-        self.stop_event.clear()
-        def loop() -> None:
-            while not self.stop_event.wait(1):
+            key = repo["common"]
+            if (not appsettings.git_periodic_fetch_enabled() or key in self.jobs
+                    or now - self.last.get(key, float("-inf")) < 30 or len(self.jobs) >= 2):
+                return False
+            self.last[key] = now
+            def job() -> None:
                 try:
-                    self.tick()
-                except (settings.SettingsError, OSError):
-                    pass
-        self.thread = threading.Thread(target=loop, name="git-fetch-scheduler", daemon=True)
-        self.thread.start()
+                    if appsettings.git_periodic_fetch_enabled():
+                        fetch(slug, rid)
+                except (GitError, settings.SettingsError, OSError):
+                    pass  # Fetch records its failure for the observation response.
+            thread = threading.Thread(target=job, name="git-fetch", daemon=True)
+            self.jobs[key] = thread
+            thread.start()
+            return True
 
     def stop(self) -> None:
-        self.stop_event.set()
-        if self.thread:
-            self.thread.join(timeout=3)
         for thread in list(self.jobs.values()):
             thread.join(timeout=50)
 

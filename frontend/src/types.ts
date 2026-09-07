@@ -1392,6 +1392,7 @@ export interface ProvidersPayload { providers: ProviderInfo[] }
 
 /** GET/PUT /api/app-settings/runtime — machine behavior, never org state. */
 export interface RuntimeSettingsPayload {
+  git_periodic_fetch_enabled: boolean
   warming_enabled: boolean
   /** Default on: real 20-minute checkups replace disposable cache reads. */
   working_checkups_enabled: boolean

@@ -24,7 +24,7 @@ for key in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TR
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from orgtree import gitworkspace as gw, gitsettings, gitrunner, store
+from orgtree import gitworkspace as gw, gitsettings, gitrunner, store, appsettings
 
 assert Path(store.DATA_ROOT).resolve() == DATA.resolve(), "INERT: wrong storage root"
 assert Path(gw.__file__).resolve().is_relative_to(ROOT), "INERT: wrong code imported"
@@ -84,6 +84,37 @@ class Fixture:
 
 
 class GitWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        appsettings.set_git_periodic_fetch_enabled(False)
+
+    def test_app_setting_roundtrip_preserves_legacy_and_unopened_repositories(self):
+        from fastapi.testclient import TestClient
+        from orgtree import api as main_api
+        client = TestClient(main_api.app)
+        f, unopened = Fixture(), Fixture()
+        gitsettings.change(lambda d: d["repositories"][unopened.rid].update(auto_fetch=True))
+        before = Path(gitsettings.path()).read_bytes()
+        self.assertFalse(client.get("/api/app-settings/runtime").json()["git_periodic_fetch_enabled"])
+        changed = client.put("/api/app-settings/runtime", json={"git_periodic_fetch_enabled": True})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertTrue(changed.json()["git_periodic_fetch_enabled"])
+        self.assertEqual(Path(gitsettings.path()).read_bytes(), before, "App preference cannot rewrite legacy Git registry flags")
+        scheduler = gw.FetchScheduler()
+        try:
+            self.assertEqual(scheduler.jobs, {}, "Construction never starts a registry sweep")
+            self.assertTrue(scheduler.request(f.slug, f.rid, 100))
+            scheduler.stop()
+            self.assertTrue(gw.repository(f.slug, f.rid)["observations"])
+            self.assertEqual(gw.repository(unopened.slug, unopened.rid)["observations"], {})
+            other = store.create_org("same-repo-other-org", [str(f.base)])
+            self.assertEqual(gw.register(other.d["slug"], str(f.clone))["id"], f.rid)
+            self.assertFalse(scheduler.request(other.d["slug"], f.rid, 110), "Common-dir cadence spans org views")
+            off = client.put("/api/app-settings/runtime", json={"git_periodic_fetch_enabled": False})
+            self.assertFalse(off.json()["git_periodic_fetch_enabled"])
+            self.assertFalse(scheduler.request(f.slug, f.rid, 200))
+        finally:
+            scheduler.stop()
+
     def test_repository_list_does_not_probe_discovery_roots(self):
         from orgtree import gitapi
         from fastapi import FastAPI
@@ -129,9 +160,11 @@ class GitWorkspaceTests(unittest.TestCase):
         self.assertEqual(f.branch(snap)["sync"]["state"], "in_sync")
         self.assertEqual(len({b["oid"] for b in snap["history"]["nodes"]}), 1)
         rev = gitsettings.load()["revision"]
-        gw.patch_settings(f.slug, f.rid, {"auto_fetch": True}, rev)
+        gw.patch_settings(f.slug, f.rid, {"trunk": "refs/heads/main"}, rev)
         with self.assertRaises(gitsettings.SettingsError):
-            gw.patch_settings(f.slug, f.rid, {"auto_fetch": False}, rev)
+            gw.patch_settings(f.slug, f.rid, {"trunk": "refs/heads/main"}, rev)
+        with self.assertRaises(gw.GitError):
+            gw.patch_settings(f.slug, f.rid, {"auto_fetch": True}, gitsettings.load()["revision"])
 
     def test_changes_have_separate_categories(self):
         f = Fixture()
@@ -199,12 +232,11 @@ class GitWorkspaceTests(unittest.TestCase):
         git(f.clone, "branch", "no-upstream")
         with patch.object(gitrunner, "run", wraps=gitrunner.run) as recorded:
             modern = f.snapshot(batch=True)
-            self.assertTrue(any("%(ahead-behind:" in " ".join(call.args[1]) for call in recorded.call_args_list), "batch capability was never probed")
-        # Exercise the capability-negative path, not just the caller override.
-        with patch.dict(gw._batch_support, {f.repo["root"]: False}):
-            with patch.object(gitrunner, "run", wraps=gitrunner.run) as recorded:
-                fallback = f.snapshot(batch=True)
-                self.assertTrue(any(call.args[1][:3] == ["rev-list", "--left-right", "--count"] for call in recorded.call_args_list), "fallback command did not execute")
+            self.assertFalse(any(call.args[1][0] == "merge-base" for call in recorded.call_args_list))
+        # Keep a separately executed Git-command oracle for the graph calculation.
+        with patch.object(gitrunner, "run", wraps=gitrunner.run) as recorded:
+            fallback = f.snapshot(batch=False)
+            self.assertTrue(any(call.args[1][:3] == ["rev-list", "--left-right", "--count"] for call in recorded.call_args_list), "Git oracle did not execute")
         topic = lambda s: next(b for b in s["branches"] if b["ref"] == "refs/heads/topic")
         self.assertEqual(topic(modern)["against_trunk"]["ahead"], 2)
         self.assertEqual(topic(modern)["sync"]["ahead"], 1)
@@ -214,6 +246,51 @@ class GitWorkspaceTests(unittest.TestCase):
         untracked = next(b for b in selected["branches"] if b["ref"].endswith("no-upstream"))
         self.assertEqual(untracked["sync"]["state"], "no_upstream")
         self.assertIsNone(untracked["sync"]["ahead"])
+
+    def test_topology_comparisons_match_git_across_divergence_and_unrelated_roots(self):
+        f = Fixture()
+        f.history(180, "ahead")
+        git(f.clone, "branch", "--set-upstream-to", "origin/main", "ahead")
+        git(f.clone, "checkout", "-b", "diverged")
+        f.commit(f.clone, "local.txt", "local\n")
+        git(f.clone, "branch", "--set-upstream-to", "origin/main", "diverged")
+        f.commit(f.seed, "remote.txt", "remote\n")
+        git(f.seed, "push", "origin", "main")
+        gw.fetch(f.slug, f.rid)
+        git(f.clone, "checkout", "--orphan", "unrelated")
+        git(f.clone, "commit", "-qm", "unrelated root")
+        git(f.clone, "branch", "--set-upstream-to", "origin/main", "unrelated")
+        git(f.clone, "branch", "gone")
+        git(f.clone, "config", "branch.gone.remote", "origin")
+        git(f.clone, "config", "branch.gone.merge", "refs/heads/missing")
+        selected = ["refs/heads/" + name for name in ("main", "ahead", "diverged", "unrelated", "gone")]
+        fast, oracle = f.snapshot(selected=selected), f.snapshot(selected=selected, batch=False)
+        for a, b in zip(fast["branches"], oracle["branches"]):
+            self.assertEqual(a["ref"], b["ref"])
+            self.assertEqual(a["sync"], b["sync"], a["ref"])
+            self.assertEqual(a["against_trunk"], b["against_trunk"], a["ref"])
+            self.assertEqual(a["classified"], b["classified"])
+        by_name = {b["ref"].split("/")[-1]: b for b in fast["branches"]}
+        self.assertEqual(by_name["ahead"]["sync"], {"state": "diverged", "ahead": 180, "behind": 1})
+        self.assertEqual(by_name["diverged"]["sync"]["state"], "diverged")
+        self.assertEqual(by_name["unrelated"]["sync"]["state"], "unrelated")
+        self.assertEqual(by_name["gone"]["sync"]["state"], "upstream_gone")
+        self.assertGreater(fast["total_commits"], gw.PAGE_SIZE)
+
+    def test_shallow_comparisons_remain_unknown(self):
+        f = Fixture(); f.commit(f.seed, "second.txt", "second\n")
+        shallow = f.base / "shallow"
+        git(f.base, "clone", "--depth=1", f.seed.as_uri(), str(shallow))
+        git(shallow, "checkout", "-b", "ahead")
+        f.commit(shallow, "ahead.txt", "ahead\n")
+        git(shallow, "branch", "--set-upstream-to", "origin/main", "ahead")
+        repo = gw.register(f.slug, str(shallow))
+        for batch in (True, False):
+            snap = gw.snapshot(f.slug, repo["id"], batch=batch)
+            branch = next(b for b in snap["branches"] if b["ref"] == "refs/heads/ahead")
+            self.assertTrue(snap["shallow"])
+            self.assertEqual(branch["sync"], {"state": "shallow", "ahead": None, "behind": None})
+            self.assertFalse(branch["classified"])
 
     def test_unborn_and_history_pages(self):
         f = Fixture()
@@ -266,7 +343,7 @@ class GitWorkspaceTests(unittest.TestCase):
         repo = gw.repository(f.slug, f.rid)
         observed = repo["observations"]["origin"]["success_at"]
         self.assertEqual(gw.freshness(repo, "origin", now=observed + 3600)["state"], "not_watched")
-        repo["auto_fetch"] = True
+        appsettings.set_git_periodic_fetch_enabled(True)
         self.assertEqual(gw.freshness(repo, "origin", now=observed + 3600)["state"], "stale")
         repo["observations"]["origin"].update(error="fixture fetch failed", attempt_at=observed + 3590)
         failed = gw.freshness(repo, "origin", now=observed + 3600)
@@ -309,6 +386,7 @@ class GitWorkspaceTests(unittest.TestCase):
                   ("POST", f"/{f.rid}/links", {"branch": "refs/heads/main", "item": "unknown"}),
                   ("DELETE", f"/{f.rid}/links", {"branch": "refs/heads/main", "item": "unknown"}),
                   ("POST", f"/{f.rid}/fetch", None), ("POST", f"/{f.rid}/push", {"snapshot": token, "branch": "refs/heads/main"}),
+                  ("POST", f"/{f.rid}/watch", None),
                   ("POST", f"/{f.rid}/pull", {"snapshot": token, "branch": "refs/heads/main"}),
                   ("DELETE", f"/{f.rid}/registration", None)]
         # The router guard is structural. Keep the behavioral controls complete
@@ -365,6 +443,7 @@ class GitWorkspaceTests(unittest.TestCase):
         self.assertEqual(gw.register(f.slug, str(sibling))["id"], f.rid)
         # Only this fixture is watched; previous tests may leave registry rows.
         gitsettings.change(lambda d: [r.update(auto_fetch=r["id"] == f.rid) for r in d["repositories"].values()])
+        self.assertFalse(appsettings.git_periodic_fetch_enabled(), "Legacy per-repo flags cannot opt in globally")
         scheduler = gw.FetchScheduler()
         entered, release = threading.Event(), threading.Event()
         called, actual = [], gw.fetch
@@ -375,18 +454,20 @@ class GitWorkspaceTests(unittest.TestCase):
             return actual(slug, rid)
         try:
             with patch.object(gw, "fetch", side_effect=observed):
-                scheduler.tick(100)
+                self.assertFalse(scheduler.request(f.slug, f.rid, 99))
+                appsettings.set_git_periodic_fetch_enabled(True)
+                self.assertTrue(scheduler.request(f.slug, f.rid, 100))
                 self.assertTrue(entered.wait(5), "positive fetch control never ran")
-                scheduler.tick(101); scheduler.tick(200)
+                scheduler.request(f.slug, f.rid, 101); scheduler.request(f.slug, f.rid, 200)
                 self.assertEqual(called, [f.rid], "in-flight jobs must coalesce")
                 release.set(); scheduler.stop()
                 self.assertIsNotNone(gw.repository(f.slug, f.rid)["observations"]["origin"].get("success_at"))
-                scheduler.tick(120)
+                scheduler.request(f.slug, f.rid, 120)
                 self.assertEqual(called, [f.rid])
-                scheduler.tick(131); scheduler.stop()
+                scheduler.request(f.slug, f.rid, 131); scheduler.stop()
                 self.assertEqual(called, [f.rid, f.rid])
-                gitsettings.change(lambda d: d["repositories"][f.rid].update(auto_fetch=False))
-                scheduler.tick(300)
+                appsettings.set_git_periodic_fetch_enabled(False)
+                scheduler.request(f.slug, f.rid, 300)
                 self.assertEqual(called, [f.rid, f.rid])
         finally:
             release.set(); scheduler.stop()

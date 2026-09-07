@@ -15,4 +15,5 @@ export const getGitSettings = (slug: string, id: string): Promise<GitSettings> =
 export const saveGitSettings = (slug: string, id: string, revision: number, values: Record<string, unknown>): Promise<unknown> => req(`${repo(slug, id)}/settings`, json('PATCH', { revision, values }))
 export const linkGit = (slug: string, id: string, branch: string, item: string, remove = false): Promise<unknown> => req(`${repo(slug, id)}/links`, json(remove ? 'DELETE' : 'POST', { branch, item }))
 export const fetchGit = (slug: string, id: string): Promise<GitOperation> => req(`${repo(slug, id)}/fetch`, { method: 'POST' }, 120_000)
+export const watchGit = (slug: string, id: string): Promise<{ started: boolean }> => req(`${repo(slug, id)}/watch`, { method: 'POST' })
 export const gitAction = (slug: string, id: string, action: 'push' | 'pull', snapshot: string, branch: string, worktree?: string): Promise<GitOperation> => req(`${repo(slug, id)}/${action}`, json('POST', { snapshot, branch, worktree }), 150_000)

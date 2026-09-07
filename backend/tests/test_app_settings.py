@@ -201,6 +201,7 @@ def runtime_round_trip_uses_warm_flag() -> None:
         "warming_enabled": True,
         "working_checkups_enabled": True,
         "wait_for_mcp_tools_enabled": False,
+        "git_periodic_fetch_enabled": False,
         "idle_docket_reminders_enabled": False}, initial.json()
 
     off = client.put(
@@ -210,6 +211,7 @@ def runtime_round_trip_uses_warm_flag() -> None:
         "warming_enabled": False,
         "working_checkups_enabled": True,
         "wait_for_mcp_tools_enabled": False,
+        "git_periodic_fetch_enabled": False,
         "idle_docket_reminders_enabled": False}, off.json()
     assert open(flag, encoding="utf-8").read().strip() == "0"
     warmpool._FLAG_CACHE["at"] = 0.0
@@ -223,6 +225,7 @@ def runtime_round_trip_uses_warm_flag() -> None:
         "warming_enabled": False,
         "working_checkups_enabled": False,
         "wait_for_mcp_tools_enabled": False,
+        "git_periodic_fetch_enabled": False,
         "idle_docket_reminders_enabled": False}, checkups_off.json()
     assert appsettings.working_checkups_enabled() is False
 
@@ -239,6 +242,7 @@ def runtime_round_trip_uses_warm_flag() -> None:
         "warming_enabled": True,
         "working_checkups_enabled": False,
         "wait_for_mcp_tools_enabled": False,
+        "git_periodic_fetch_enabled": False,
         "idle_docket_reminders_enabled": False}, on.json()
     checkups_on = client.put(
         "/api/app-settings/runtime",

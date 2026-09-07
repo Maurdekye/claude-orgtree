@@ -129,6 +129,18 @@ def wait_for_mcp_tools_enabled() -> bool:
     return runtime.get("wait_for_mcp_tools") is True
 
 
+def git_periodic_fetch_enabled() -> bool:
+    """Only an explicit app-wide opt-in fetches open repositories periodically."""
+    return load()["runtime"].get("git_periodic_fetch") is True
+
+
+def set_git_periodic_fetch_enabled(enabled: bool) -> None:
+    with _LOCK:
+        doc = load(strict=True)
+        doc["runtime"]["git_periodic_fetch"] = bool(enabled)
+        _save(doc)
+
+
 def _save(doc: dict[str, Any]) -> None:
     blob = json.dumps(doc, indent=2).encode("utf-8")
     target = path()

@@ -3137,10 +3137,12 @@ class RuntimePreference(Body):
     working_checkups_enabled: bool | None = None
     wait_for_mcp_tools_enabled: bool | None = None
     idle_docket_reminders_enabled: bool | None = None
+    git_periodic_fetch_enabled: bool | None = None
 
 
 def _runtime_preferences() -> dict[str, bool]:
     return {
+        "git_periodic_fetch_enabled": appsettings.git_periodic_fetch_enabled(),
         "warming_enabled": warmpool.warm_enabled(),
         "working_checkups_enabled": appsettings.working_checkups_enabled(),
         "wait_for_mcp_tools_enabled": (
@@ -3170,7 +3172,8 @@ async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
 
     if (body.enabled is None and body.working_checkups_enabled is None
             and body.wait_for_mcp_tools_enabled is None
-            and body.idle_docket_reminders_enabled is None):
+            and body.idle_docket_reminders_enabled is None
+            and body.git_periodic_fetch_enabled is None):
         raise HTTPException(422, "one runtime setting is required")
     try:
         if body.enabled is not None:
@@ -3187,6 +3190,8 @@ async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
             await run_in_threadpool(
                 appsettings.set_idle_docket_reminders_enabled,
                 body.idle_docket_reminders_enabled)
+        if body.git_periodic_fetch_enabled is not None:
+            await run_in_threadpool(appsettings.set_git_periodic_fetch_enabled, body.git_periodic_fetch_enabled)
         result = await run_in_threadpool(_runtime_preferences)
     except (appsettings.AppSettingsUnreadable, OSError) as e:
         raise HTTPException(500, str(e)) from e
@@ -9201,7 +9206,6 @@ async def org_ws(ws: WebSocket, slug: str) -> None:
 # ------------------------------------------------------------------- static
 from . import gitapi, gitworkspace  # Git workspace owns its isolated router/jobs.
 app.include_router(gitapi.router)
-app.router.add_event_handler("startup", gitworkspace.scheduler.start)
 app.router.add_event_handler("shutdown", gitworkspace.scheduler.stop)
 
 if os.path.isdir(FRONTEND_DIST):

@@ -117,7 +117,7 @@ def get_settings(slug: str, rid: str) -> dict[str, Any]:
         doc = settings.load()
         rows = gw.refs(repo)
         facts = gw.org_facts(slug)
-        return {"revision": doc["revision"], "auto_fetch": repo["auto_fetch"],
+        return {"revision": doc["revision"],
                 **gw.configuration(repo, rows), "saved_trunk": repo["trunk"], "saved_remote": repo["remote"],
                 "branches": [r["ref"] for r in rows if not r["symref"]],
                 "items": [{"slug": i["slug"], "title": i["title"]} for i in facts.get("work_items", []) + facts.get("work_items_archive", [])],
@@ -177,6 +177,12 @@ def changes(slug: str, rid: str, wid: str) -> dict[str, Any]:
 def fetch(slug: str, rid: str) -> dict[str, Any]:
     with errors():
         return gw.fetch(slug, rid)
+
+
+@router.post("/{rid}/watch")
+def watch(slug: str, rid: str) -> dict[str, bool]:
+    with errors():
+        return {"started": gw.scheduler.request(slug, rid)}
 
 
 @router.post("/{rid}/push")
