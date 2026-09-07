@@ -135,6 +135,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   const toggleConfig = useCallback((id: string) => {
     setConfigId((v) => isModalPinned('node-config') && v === id ? null : id)
   }, [])
+  const toggleUserConfig = useCallback(() => {
+    setUserCfg((v) => isModalPinned('user-config') ? !v : true)
+  }, [])
+  const toggleNodeSurface = useCallback((kind: string, id: string,
+    set: (v: string | null | ((current: string | null) => string | null)) => void) => {
+    set((current) => isModalPinned(kind) && current === id ? null : id)
+  }, [])
   const [lineageId, setLineageId] = useState<string | null>(null)
   const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
@@ -2439,12 +2446,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 setInboxSeen(nw)
                 onInbox?.()
               }}
-              onGear={() => setUserCfg(true)}
+              onGear={toggleUserConfig}
               onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
               /* switchboard panel headers mirror the desk header identically
                  (user spec 2026-08-19): the gen badge and gear in each panel
                  open the same canvas-level lineage/config surfaces */
-              onNodeLineage={setLineageId} onNodeConfig={toggleConfig}
+              onNodeLineage={(id) => toggleNodeSurface('lineage', id, setLineageId)} onNodeConfig={toggleConfig}
               onSpawn={(t) => spawn(USER, t)} />
           }
           if (n.id === DRAFT) {
@@ -2475,8 +2482,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
               onSpawnSide={(t, side) => spawnBeside(n, t, side)}
               onSpawnTop={(t) => spawnAbove(n, t)}
               onConfig={() => toggleConfig(n.id)}
-              onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
-              onDocket={() => setAgentDocketId(n.id)}
+              onInbox={() => toggleNodeSurface('node-inbox', n.id, setInboxId)} onLineage={() => toggleNodeSurface('lineage', n.id, setLineageId)}
+              onDocket={() => toggleNodeSurface('agent-docket', n.id, setAgentDocketId)}
               onOpenDoc={setDocView}
               onMailLink={openMail} onWorkLink={openWork}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
@@ -2541,7 +2548,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 + `${w.spent ? 'departing after its spark' : w.state}; `
                 + 'click for detail'}
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); setDogView(w.id) }}>
+              onClick={(e) => { e.stopPropagation(); setDogView(isModalPinned('watchdog') ? null : w.id) }}>
               <span className="wd-glyph">{w.state === 'armed' ? '◉'
                 : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
               {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}
@@ -2557,7 +2564,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
             }}
             title="the org inbox — outside mail addressed to this organization"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setOiOpen(true)}>
+            onClick={() => setOiOpen((v) => isModalPinned('org-inbox') ? !v : true)}>
             <div className="oi-head">
               {/* the label is its own element so it can ELLIPSIS instead of
                   wrapping. As a bare text node it was an anonymous flex item
@@ -2609,7 +2616,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
           targetOf={cardRectOf} op={op} toast={toast} pub={!!tree.public}
           compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
           pxc={pxPerCredit} onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
-          onLineage={setLineageId} onConfig={toggleConfig} onJump={centerOn} />
+          onLineage={(id) => toggleNodeSurface('lineage', id, setLineageId)} onConfig={toggleConfig} onJump={centerOn} />
       )}
       {/* nav cluster (user spec): bottom-LEFT beside the agents tray, so
           every zoom target lives in one stack — ordered top to bottom:
@@ -2890,7 +2897,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                   <button className="ms-btn" title="hire a report"
                     onClick={() => setHireOpen(true)}>＋</button>}
                 <button className="ms-btn" title="inbox"
-                  onClick={() => setInboxId(sheetId)}>✉</button>
+                  onClick={() => toggleNodeSurface('node-inbox', sheetId, setInboxId)}>✉</button>
                 {!tree.public &&
                   <button className="ms-btn" title="permissions & settings"
                     onClick={() => toggleConfig(sheetId)}>⚙</button>}
@@ -2900,7 +2907,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 <div className="ms-doglist">
                   {myDogs.map((w) => (
                     <button key={w.id} className={(w.once ? 'oneshot ' : '') + w.state}
-                      onClick={() => { setDogView(w.id); setSheetDogs(false) }}>
+                      onClick={() => { setDogView(isModalPinned('watchdog') ? null : w.id); setSheetDogs(false) }}>
                       <span className="wd-glyph">{w.state === 'armed' ? '◉'
                         : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
                       {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}
@@ -2915,7 +2922,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                   toast={toast} pub={!!tree.public} compactAt={tree.compact_at}
                   maxTop={tree.max_top_grant ?? 1000} pxc={pxPerCredit}
                   onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
-                  onLineage={() => setLineageId(sheetId)}
+                  onLineage={() => toggleNodeSurface('lineage', sheetId, setLineageId)}
                   onConfig={() => toggleConfig(sheetId)}
                   onJump={(id) => {
                     if (id !== USER && mapRef.current.has(id)) setSheetId(id)

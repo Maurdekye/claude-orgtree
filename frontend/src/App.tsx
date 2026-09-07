@@ -1033,11 +1033,11 @@ export default function App() {
                 onAccounts={BASE ? undefined : () => setShowAccounts(v => isModalPinned('app-settings') ? !v : true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jumpTo(jump) : null)
-                  setShowInbox(true)
+                  setShowInbox(v => typeof jump === 'string' ? true : isModalPinned('inbox') ? !v : true)
                 }}
                 onWorkItem={(item: string) => {
                   setDocketJump(jumpTo(item))
-                  setShowDocket(true)
+                  setShowDocket(v => isModalPinned('docket') ? !v : true)
                 }} />
               {/* hard-full is a STATE, not an event: the alert persists (and
                   survives reloads) until usage drops; it never auto-opens
