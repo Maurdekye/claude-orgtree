@@ -71,7 +71,7 @@ hiring a replacement.
    kickoff. Embed the common rules and the complete role instructions in each
    hire; do not rely on this preset remaining in their context.
 4. Grant each worker only the folders and tools required for its role. Give
-   Redteam Opus read access plus an isolated test workspace where needed. Give
+   Redteam Opus read access plus an isolated test workspace where needed.
    Grant every core worker direct user audience, within destination
    permissions.
 5. Hiring alone starts no work. Give a concrete kickoff task, or intentionally
