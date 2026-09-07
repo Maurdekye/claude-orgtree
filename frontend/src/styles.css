@@ -3314,6 +3314,34 @@ span.ref-chip.ref-chip {
     background: color-mix(in srgb, var(--accent) 22%, var(--bg));
   }
 }
+/* "Copied!", from where the pointer was (user 2026-09-07 15:41Z). Anchored to
+   the ROW, not the viewport: this modal also renders in a portal and in a
+   popped-out window, and inside the canvas under a `transform: scale()`,
+   where `position: fixed` resolves against the transformed ancestor rather
+   than the screen. `left` AND `top` arrive as percentages of the row, from
+   the click, so the scale cancels and the message comes from where the
+   pointer was rather than from the row's edge. It never takes the pointer —
+   a double-click must not be able to land on it — and it appears only after
+   the clipboard write resolved. */
+.docket-row { position: relative; }
+.docket-copied {
+  position: absolute; transform: translate(-50%, -100%);
+  z-index: 6; pointer-events: none; white-space: nowrap;
+  font: 600 10px/1 var(--mono); color: var(--ok);
+  background: var(--panel); border: 1px solid var(--ok); border-radius: 4px;
+  padding: 3px 6px; box-shadow: 0 2px 8px #0006;
+  animation: docket-copied 900ms ease-out forwards;
+}
+@keyframes docket-copied {
+  0%   { opacity: 0; transform: translate(-50%, -60%); }
+  18%  { opacity: 1; transform: translate(-50%, -100%); }
+  70%  { opacity: 1; transform: translate(-50%, -120%); }
+  100% { opacity: 0; transform: translate(-50%, -150%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* no drift, but still the message: the confirmation is the point */
+  .docket-copied { animation: none; opacity: 1; transform: translate(-50%, -100%); }
+}
 /* THE DESCRIPTION — problem first, then the proposed solution */
 .docket-desc { margin: 0 0 12px; }
 .docket-desc-body { white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }

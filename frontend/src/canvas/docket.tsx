@@ -1171,6 +1171,11 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
   )
 }
 
+/** One number per successful copy, anywhere in the docket — see the `id` note
+ *  in DocketRow. It only has to DIFFER from the row's previous value, so a
+ *  module counter is enough and needs no reset. */
+let copyTicket = 0
+
 function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   close, flash, rowRef, depth = 0, kids = 0, folded = false, onFold,
   ageMode = 'updated' }: {
@@ -1215,12 +1220,66 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   // Dismiss clears the MANUAL flag only — a question-only attention item has
   // nothing to dismiss (answering the question is the only way to clear it).
   const canDismiss = item.attention_sources.includes('manual')
+  // DOUBLE-CLICK COPIES THE SLUG (user 2026-09-07 15:41Z). `Copied!` appears
+  // only after the write RESOLVES: a clipboard that is absent, blocked or
+  // denied says nothing rather than lying about what is on the clipboard.
+  //
+  // The position is stored as FRACTIONS of the row's box, not as pixels. This
+  // modal renders in more than one place — the app's own overlay, a portal,
+  // and a popped-out window — and inside the canvas a CSS `transform: scale()`
+  // applies, under which `getBoundingClientRect()` is scaled while an
+  // absolutely positioned child is laid out unscaled. A ratio cancels the
+  // scale, so the bubble lands under the pointer in all of them.
+  //
+  // ⚠ TWO SEPARATE THINGS MAKE A REPEAT AT THE SAME PIXEL WORK, and they are
+  // easy to confuse (root review 2026-09-07 16:32Z; the first cut stored a
+  // bare number and had neither):
+  //   * the state is an OBJECT, so a second success is never `Object.is` the
+  //     first even at identical coordinates. React therefore does not bail
+  //     out, the effect below re-runs, and the timer restarts — without this
+  //     the first copy's timer would still fire and clear the second message.
+  //   * `id` differs every time and the element is KEYED on it, so React
+  //     remounts the span and the CSS animation replays from the start.
+  //     Without it the bubble would sit there mid-animation, already faded.
+  // Measured: a mutant that freezes `id` keeps the timer restart and loses
+  // only the replay, which is why the suite checks the animation's own clock.
+  const [copied, setCopied] = useState<{ id: number; x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 900)
+    return () => clearTimeout(t)
+  }, [copied])
+  const copySlug = (e: React.MouseEvent<HTMLDivElement>) => {
+    // an embedded control owns its own double-click. `stopPropagation` on
+    // those buttons' `click` does NOT stop `dblclick`, so the guard is here.
+    if ((e.target as Element | null)?.closest?.(
+      'button, input, textarea, select, a, .docket-copied')) return
+    // the row's OWN window, not the global one: in a popped-out surface the
+    // module-level `navigator` belongs to the opener (the same house pattern
+    // as shared.ts's copyCodeFromEvent and deskhosts.tsx)
+    const clip = e.currentTarget.ownerDocument.defaultView?.navigator?.clipboard
+    if (!clip) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const ratio = (value: number, size: number) =>
+      size ? Math.min(1, Math.max(0, value / size)) : 0.5
+    const x = ratio(e.clientX - rect.left, rect.width)
+    const y = ratio(e.clientY - rect.top, rect.height)
+    // the EXACT slug off the item — never the rendered text
+    void clip.writeText(item.slug)
+      .then(() => setCopied({ id: ++copyTicket, x, y }))
+      .catch(() => {})
+  }
   return (
     // THE NAME IN THE LIST IS THE SLUG (user 2026-09-05). The full descriptive
     // title is printed only in the detail pane; here it is the row's hover
     // title, so nothing is lost and the row stays one line of name.
-    <div className={cls} title={item.title} onClick={onClick} ref={rowRef}
+    <div className={cls} title={item.title} onClick={onClick}
+      onDoubleClick={copySlug} ref={rowRef}
       style={depth ? { '--docket-depth': depth } as React.CSSProperties : undefined}>
+      {copied && (
+        <span key={copied.id} className="docket-copied" role="status"
+          style={{ left: `${copied.x * 100}%`, top: `${copied.y * 100}%` }}>Copied!</span>
+      )}
       <div className="l1">
         {/* TWO SEPARATE CLICK TARGETS (the approved design's own note): the
             arrow folds, the row selects. A parent's own details stay reachable
