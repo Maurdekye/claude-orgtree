@@ -643,6 +643,18 @@ parallel frontend-test children. It defaults to `4`; lower it when the machine
 is under pressure, or set it to `0` only to restore Node's old unbounded
 parallelism. This is a test-runner setting, not a runtime orgtree setting.
 
+**Frontend test containment (Windows):** the whole `node --test` tree runs
+inside a kernel Job Object (`frontend/tests/joblimit.ps1`) with a job-wide
+commit ceiling, default 6 GB, and a whole-run time limit, default 5 minutes,
+both scaled by `--reps`. An allocation past the ceiling is refused by the
+kernel and the offending child dies with `Array buffer allocation failed`
+instead of swapping the machine; the time limit terminates every process in
+the job, not just the parent. `ORGTREE_TEST_JOB_MB` overrides the ceiling
+(`0` = no ceiling), `ORGTREE_TEST_RUN_TIMEOUT_MS` the run limit (`0` = none).
+`frontend/tests/containment.test.ts` is the positive control: it proves the
+ceiling kills a planted allocator, that no ceiling lets it finish, and that
+the run limit leaves no survivor.
+
 **The two tiers.** The fast tier runs every suite in the cheapest mode that
 suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
 touches no real listener that matters. It is what CI runs. The full tier runs

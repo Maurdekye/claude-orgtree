@@ -15,8 +15,8 @@
 // The DOM comes from jsdom (a devDependency), installed by `harness.ts` before
 // any app module is reached — see the import-order note there.
 
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
@@ -136,21 +136,81 @@ const TIMEOUT_MS = process.env.ORGTREE_TEST_TIMEOUT_MS ?? String(10_000 * REPS_N
 // behaviour, which should only ever be temporary.
 const CONCURRENCY = process.env.ORGTREE_TEST_CONCURRENCY ?? '4'
 
+// ⚠ CONTAINMENT — THE RUN AS A WHOLE IS BOUNDED IN MEMORY AND IN TIME, because
+// the two bounds above are each only half of one. The per-test timeout bounds
+// how long ONE test lives and says itself that it bounds time, not memory; the
+// concurrency cap bounds how MANY children live at once, not what one of them
+// may take. Neither stops a single child that allocates 1.5 GB/s for ten
+// seconds, and the incident this exists for (D-177) was exactly that shape:
+// the machine was at 0.44 GB free before any timeout fired. Both bounds also
+// stop at the test: a runaway in setup, in a hook, or after `--test-force-exit`
+// fails to force anything, is outside them.
+//
+// So on Windows the whole `node --test` tree runs inside a kernel Job Object
+// (tests/joblimit.ps1) with a JOB-WIDE COMMIT CEILING: an allocation past it is
+// REFUSED by the kernel — the child dies with the same "Array buffer allocation
+// failed" the incident produced, in well under a second, instead of swapping
+// the host — and a WHOLE-RUN time limit that terminates every process in the
+// job, not just the parent (node's --test parent does not take its children
+// with it when killed on Windows). The ceiling covers ArrayBuffer / external
+// memory, which --max-old-space-size does not (measured, D-177).
+//
+// WHERE THE NUMBERS COME FROM. Ceiling 6 GB: the whole suite at concurrency 4
+// peaks at 873 MB (measured above), so this is ~7x headroom — loose enough
+// that no honest run touches it, tight enough that a runaway dies at ~4 s of
+// the incident's rate rather than at 66 GB. Run limit 5 min: the whole suite is
+// ~36 s wall, so ~8x. Both scale with --reps like the per-test timeout does.
+// ORGTREE_TEST_JOB_MB overrides the ceiling (0 = no ceiling); ORGTREE_TEST_
+// RUN_TIMEOUT_MS overrides the run limit (0 = none). Without the job (non-
+// Windows, or ceiling 0) the run limit still applies through spawnSync's own
+// timeout, which bounds the direct child only.
+//
+// `containment.test.ts` is the positive control: it runs a planted allocator
+// under a 512 MB ceiling and asserts it DIES with the allocation error, runs
+// the same allocator under no ceiling and asserts it FINISHES, and runs a
+// sleeper past a 2 s run limit and asserts exit 124 with no survivor. A guard
+// that has never been seen to fire is not a guard (team rule 2).
+const JOB_MB = Number(process.env.ORGTREE_TEST_JOB_MB ?? '6144')
+const RUN_TIMEOUT_MS = Number(process.env.ORGTREE_TEST_RUN_TIMEOUT_MS ?? String(300_000 * REPS_N))
+
 const files = readdirSync(out).filter((f) => f.endsWith('.mjs'))
-try {
-  // --test-force-exit: React's scheduler holds a ref'd MessageChannel open for
-  // the process's whole life, so node would otherwise sit at 100 % pass and
-  // never exit.
-  execFileSync(process.execPath, ['--test', '--test-force-exit',
-    `--test-timeout=${TIMEOUT_MS}`,
-    ...(Number(CONCURRENCY) > 0 ? [`--test-concurrency=${CONCURRENCY}`] : []),
-    ...files.map((f) => path.join(out, f))], {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      ORGTREE_TEST_REPS: repsIdx > 0 ? process.argv[repsIdx + 1] : process.env.ORGTREE_TEST_REPS,
-    },
+// --test-force-exit: React's scheduler holds a ref'd MessageChannel open for
+// the process's whole life, so node would otherwise sit at 100 % pass and
+// never exit.
+const nodeArgs = ['--test', '--test-force-exit',
+  `--test-timeout=${TIMEOUT_MS}`,
+  ...(Number(CONCURRENCY) > 0 ? [`--test-concurrency=${CONCURRENCY}`] : []),
+  ...files.map((f) => path.join(out, f))]
+const env = {
+  ...process.env,
+  ORGTREE_TEST_REPS: repsIdx > 0 ? process.argv[repsIdx + 1] : process.env.ORGTREE_TEST_REPS,
+}
+
+if (process.platform === 'win32' && JOB_MB > 0) {
+  // the argument list goes through a file, one per line: dozens of bundle
+  // paths must not pass through powershell's own quoting a second time
+  const argFile = path.join(out, 'node-args.txt')
+  writeFileSync(argFile, nodeArgs.join('\n') + '\n')
+  const ps = path.join(process.env.SystemRoot ?? 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', path.join(HERE, 'joblimit.ps1'),
+    '-LimitMB', String(JOB_MB),
+    '-TimeoutSec', String(Math.ceil(RUN_TIMEOUT_MS / 1000)),
+    '-WorkDir', path.join(HERE, '..'),
+    '-Exe', process.execPath,
+    '-ArgFile', argFile], { stdio: 'inherit', env })
+  if (r.error || r.status !== 0) {
+    if (r.error) console.error(`[run.mjs] could not start joblimit.ps1: ${r.error.message}`)
+    process.exit(1)
+  }
+} else {
+  const r = spawnSync(process.execPath, nodeArgs, {
+    stdio: 'inherit', env,
+    ...(RUN_TIMEOUT_MS > 0 ? { timeout: RUN_TIMEOUT_MS, killSignal: 'SIGKILL' } : {}),
   })
-} catch {
-  process.exit(1)
+  if (r.error?.code === 'ETIMEDOUT') {
+    console.error(`[run.mjs] RUN LIMIT: no exit after ${RUN_TIMEOUT_MS} ms - test parent killed (children not covered without the job)`)
+  }
+  if (r.error || r.status !== 0) process.exit(1)
 }
