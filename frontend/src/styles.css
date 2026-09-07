@@ -2709,13 +2709,7 @@ button.cc-name:hover {
 }
 .df-charter:focus { outline: none; }
 /* charter length notices — text that is too long used to be cut in silence,
-   so these sit in the hire form itself, under the box being typed into.
-   `-note` is INFORMATIONAL (a long charter is legal, just not free); `-warn`
-   is for the one case where the server actually had to bound something. */
-.df-charter-note {
-  font-size: 9px; line-height: 1.4; padding: 3px 6px;
-  color: var(--dim, #8a8a8a);
-}
+   this remains for the one case where the server actually bounded preset text. */
 .df-charter-warn {
   font-size: 9px; line-height: 1.4; padding: 4px 6px; border-radius: 4px;
   color: var(--warn, #b3541e);

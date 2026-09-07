@@ -971,9 +971,6 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // them into actual charter text (prepended to any manual entry).
   const [presets, setPresets] = useState<CharterPreset[]>([])
   const [chosen, setChosen] = useState<CharterPreset[]>([])
-  // the advisory threshold, as the SERVER reports it — never hardcoded here,
-  // or this notice would drift out of agreement with the backend
-  const [charterLong, setCharterLong] = useState<number | null>(null)
   const [presetLoad, setPresetLoad] = useState<'pending' | 'error' | 'ready'>('pending')
   const [presetError, setPresetError] = useState<string | null>(null)
   const [presetRetry, setPresetRetry] = useState(0)
@@ -984,7 +981,6 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
     getCharters().then((r) => {
       if (!current) return
       setPresets(r.charters ?? [])
-      setCharterLong(r.charter_long ?? null)
       setPresetLoad('ready')
     }).catch((e: unknown) => {
       if (!current) return
@@ -999,12 +995,9 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // ⚠ charter text used to be cut without a word — at 6000 on the way out of
   // /api/charters and at 4000 on the way in. Neither cut exists any more
   // (charters are uncapped; the preset bound is far above any real file), but
-  // the SAYING is the part worth keeping. `cut` = a preset the endpoint had to
-  // bound anyway. `long` = this charter will ride in the agent's prompt every
-  // turn; purely informational, it never blocks the hire.
+  // `cut` marks a preset the endpoint had to bound; the warning below explains
+  // the resulting content without changing the hire flow.
   const cut = chosen.filter((c) => c.truncated)
-  const composed = unicodeLength(finalCharter())
-  const long = charterLong != null && composed > charterLong
   // top-level drafts pre-fill the org's default grant (50 unless configured),
   // clamped only by a kiosk's remaining headroom
   const [grant, setGrant] = useState(() => {
@@ -1133,13 +1126,6 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
                 const omittedUnit = omitted === 1 ? 'character' : 'characters'
                 return `${c.name}: using ${formatCount(supplied)} of ${formatCount(original)} ${originalUnit}; ${formatCount(omitted)} ${omittedUnit} omitted`
               }).join(' · ')}. The hire gets only the first part. Shorten the preset file.
-            </div>
-          )}
-          {long && (
-            <div className="df-charter-note">
-              {composed} chars — stored whole, charters are not capped. Note it
-              rides in this agent&rsquo;s prompt on every turn, so it costs
-              tokens for as long as the agent lives.
             </div>
           )}
           <div className="df-foot">

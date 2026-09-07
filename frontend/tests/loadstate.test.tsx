@@ -232,3 +232,39 @@ test('preset failure has retry while manual charter remains usable', async () =>
     await view.unmount(); delete g.fetch
   }
 })
+
+test('uninitialized hire keeps long manual charter without an advisory warning', async () => {
+  let confirmed = ''
+  g.fetch = (url: string) => {
+    const path = new URL(url, 'http://localhost').pathname
+    if (path === '/api/charters')
+      return Promise.resolve(response({ charter_long: 4, charters: [] }))
+    return Promise.reject(new Error(`unexpected GET ${path}`))
+  }
+  const view = await mountView(
+    <DraftNode pos={{ x: 0, y: 0 }} draft={{ parent: null, tier: 'haiku' }}
+      map={new Map()} seats={{ haiku: 1 }} maxTop={100} defaultTop={0}
+      kioskRemaining={null} tree={tree()} zoom={1} pxc={1}
+      onConfirm={(_name, _grant, charter) => { confirmed = charter }}
+      onCancel={() => {}} />, (el) => el)
+  try {
+    await settle()
+    const editor = view.el.querySelector<HTMLTextAreaElement>('.df-charter')!
+    await setText(editor, 'a deliberately long manual charter')
+    assert.equal(view.el.querySelector('.df-charter-note'), null)
+    assert.doesNotMatch(view.el.textContent ?? '', /stored whole|costs\s+tokens/)
+    const name = view.el.querySelector<HTMLInputElement>('.df-name')!
+    await inAct(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, 'value')?.set
+      setter!.call(name, 'long-charter-agent')
+      name.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+    const hire = [...view.el.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('hire'))!
+    await inAct(async () => { hire.click(); await flush(4) })
+    assert.equal(confirmed, 'a deliberately long manual charter')
+  } finally {
+    await view.unmount(); delete g.fetch
+  }
+})
