@@ -19,6 +19,8 @@ try:
   toggle=page.get_by_role('button',name='View options')
   assert not toggle.is_visible(),'wide should stay inline'
   group=page.get_by_label('Arrange',exact=True);sort=page.get_by_label('Sort',exact=True)
+  options_group=page.get_by_role('group',name='Docket view options')
+  assert options_group.count()==1,'options disclosure needs an accessible group label'
   group.select_option('status');sort.select_option('created')
   page.evaluate('window.savedGroup=document.querySelector("#docket-group")')
   page.evaluate('optionsProbe.pin()');toggle.wait_for()
@@ -35,6 +37,7 @@ try:
    page.evaluate('([w,h])=>optionsProbe.size(w,h)',[width,height]);page.wait_for_timeout(80)
    bounds=panel.bounding_box();menu=page.locator('.docket-options').bounding_box()
    assert menu['x']>=bounds['x'] and menu['x']+menu['width']<=bounds['x']+bounds['width']+1,(bounds,menu)
+   assert menu['height']<=181,'options menu exceeds the 180px height cap'
    assert page.locator('.docket-options').evaluate('e=>e.scrollWidth<=e.clientWidth+1'),'options overflow horizontally'
    sort.select_option('status');assert sort.input_value()=='status'
    results.append(dict(home='pinned',width=width,panel=bounds,menu=menu))
@@ -63,6 +66,14 @@ try:
   page.evaluate('localStorage.removeItem("orgtree-modal-pins")')
   page.set_viewport_size(dict(width=600,height=800));page.reload();page.get_by_role('button',name='View options').wait_for()
   assert not page.get_by_label('Arrange',exact=True).is_visible()
+  page.get_by_role('button',name='View options').press('Enter');page.get_by_label('Arrange',exact=True).wait_for()
+  page.set_viewport_size(dict(width=1100,height=800));page.wait_for_timeout(100)
+  assert not page.get_by_role('button',name='View options').is_visible()
+  assert page.get_by_label('Arrange',exact=True).is_visible()
+  page.keyboard.press('Escape');page.get_by_text('Closed docket',exact=True).wait_for()
+  # Reopen the centered control for the existing narrow Escape regression.
+  page.set_viewport_size(dict(width=600,height=800))
+  page.reload();page.get_by_role('button',name='View options').wait_for()
   page.get_by_role('button',name='View options').press('Enter');page.get_by_label('Arrange',exact=True).wait_for()
   page.keyboard.press('Escape');page.get_by_label('Arrange',exact=True).wait_for(state='hidden')
   assert page.locator('.docket-modal').count()==1,'centered Escape closed docket before options'
