@@ -96,7 +96,7 @@ test('the header summary counts every provider family', async (t: TestContext) =
     (el) => el,
   )
   t.after(async () => { await view.unmount(); realClock() })
-  assert.match(view.el.textContent ?? '', /7 live · 1 working/)
+  assert.match(view.el.textContent ?? '', /7 live · 1 active/, 'a busy node is an ACTIVE turn (Working is the reported status)')
   assert.deepEqual(
     [...view.el.querySelectorAll<HTMLBRElement>('.agents b')]
       .map((b) => [b.className, b.textContent]),

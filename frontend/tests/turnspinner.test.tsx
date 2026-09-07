@@ -196,7 +196,7 @@ test('NodeSquare: recorded state outside turn displays state text and idle time 
     'recorded working outside a turn must never show active-turn spinning arrow')
 })
 
-test('NodeSquare: active turn renders spinning arrow on the left, working text, and elapsed turn time', async (t) => {
+test('NodeSquare: active turn renders spinning arrow on the left, active text, and elapsed turn time', async (t) => {
   const claudeNode = makeNode({
     id: 'claude',
     tier: 'haiku',
@@ -229,7 +229,7 @@ test('NodeSquare: active turn renders spinning arrow on the left, working text, 
     assert.equal(seat.firstElementChild, destSpin, 'spinning arrow must be on the left of sq-workstate')
     const workWord = seat.querySelector('.sq-idle.working')
     assert.ok(workWord, 'literal working text element mounted')
-    assert.equal(workWord.textContent, 'working', 'literal working text rendered')
+    assert.equal(workWord.textContent, 'active', 'literal executing-turn text rendered')
     const time = seat.querySelector('.sq-idle-time')
     assert.ok(time, 'elapsed turn time mounted')
     assert.match(time.textContent ?? '', /\d|—/, 'elapsed turn time rendered')
@@ -284,7 +284,7 @@ test('mapMode: active turn renders spinning arrow and elapsed turn time', async 
     'waiting mapMode renders waiting statusdot')
 })
 
-test('OrgCanvas tray-main: idle shows status and idle time; active turn shows spinner, working label, and elapsed time', async (t) => {
+test('OrgCanvas tray-main: idle shows status and idle time; active turn shows spinner, active label, and elapsed time', async (t) => {
   const idleNode = makeNode({
     id: 'idle-agent',
     proc_warm: true,
@@ -349,7 +349,7 @@ test('OrgCanvas tray-main: idle shows status and idle time; active turn shows sp
   assert.ok(activeSpinner, 'active tray row has cc-spin with prov-openai color')
   const activeLabel = trayButtons[1]!.querySelector('.tray-status-label.working')
   assert.ok(activeLabel, 'active tray row has working status label')
-  assert.equal(activeLabel.textContent, 'working', 'active tray row label is working')
+  assert.equal(activeLabel.textContent, 'active', 'active tray row label is active (the executing turn)')
   const activeTime = trayButtons[1]!.querySelector('.tray-status-time')
   assert.ok(activeTime, 'active tray row has elapsed turn time')
   assert.match(activeTime.textContent ?? '', /\d|—/, 'active turn time rendered')
@@ -403,7 +403,8 @@ test('TurnStatusBanner in desk header: displays recorded non-idle state without 
   try {
     const banner = activeView.el.querySelector('.turn-status-banner')!
     assert.ok(banner.classList.contains('working'))
-    assert.equal(banner.querySelector('.turn-status-label')?.textContent, 'Working')
+    assert.equal(banner.querySelector('.turn-status-label')?.textContent, 'Active',
+      'an EXECUTING turn is Active; Working is reserved for the agent-reported status (line above)')
     const spin = banner.querySelector('.cc-spin.prov-openai')
     assert.ok(spin, 'active turn renders spinning arrow themed with destination provider')
     const time = banner.querySelector('.turn-status-time')
@@ -429,7 +430,7 @@ test('explicit diagnostic process cue is preserved in desk header', async () => 
   }
 })
 
-test('Activity component renders spinning arrow and working text without gears or tool names', async () => {
+test('Activity component renders spinning arrow and active text without gears or tool names', async () => {
   const dotView = await mountView(
     <Activity dotOnly tier="terra" />,
     (el) => el
@@ -449,7 +450,7 @@ test('Activity component renders spinning arrow and working text without gears o
   try {
     assert.ok(fullView.el.querySelector('.actlabel'), 'renders .actlabel container')
     assert.ok(fullView.el.querySelector('.cc-spin.prov-claude'), 'renders themed spinning arrow')
-    assert.equal(fullView.el.querySelector('.actlabel-text')?.textContent, 'working', 'renders literal working text')
+    assert.equal(fullView.el.querySelector('.actlabel-text')?.textContent, 'active', 'renders literal active text')
     assert.equal(fullView.el.querySelectorAll('.actgear').length, 0, 'no actgear')
     assert.equal(fullView.el.querySelectorAll('.actdots').length, 0, 'no actdots')
   } finally {

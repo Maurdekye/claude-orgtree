@@ -184,8 +184,8 @@ export function ActiveAgentSummary({ tree }: { tree: TreePayload }) {
   for (const node of nodes) byTier[node.tier] = (byTier[node.tier] ?? 0) + 1
   return (
     <span className="chip agents"
-      title="live agents · currently working · breakdown by model">
-      {nodes.length} live{busy > 0 ? ` · ${busy} working` : ''}
+      title="live agents · active (a turn executing now) · breakdown by model">
+      {nodes.length} live{busy > 0 ? ` · ${busy} active` : ''}
       {/* the OpenRouter tiers are runtime-minted, so the inventory takes them
           from what is actually running rather than from a static list */}
       {[...ALL_TIERS, ...Object.keys(byTier).filter(isOpenRouterTier).sort()]
@@ -662,7 +662,7 @@ export default function App() {
             <span className="spacer" />
             {(o.working ?? 0) > 0 &&
               <span className="working-ct"
-                title={`${o.working} agent${o.working === 1 ? '' : 's'} currently working`}>
+                title={`${o.working} agent${o.working === 1 ? '' : 's'} active — a turn executing now`}>
                 <AutorenewIcon fontSize="inherit" className="cc-spin" /> {o.working}</span>}
             <span className="dim">{o.live}/{o.nodes} live</span>
             {/* kiosk orgs delete like any other (user report 2026-07-31: the

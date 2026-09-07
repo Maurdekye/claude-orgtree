@@ -227,6 +227,12 @@ export function DestinationBusy({ tier }: { tier?: string | null }) {
     className={`cc-spin prov-${providerOf(tier ?? '')}`} />
 }
 
+/** The SYSTEM-OBSERVED turn state (user ruling 2026-09-07 06:28Z, one word
+ *  each): a node with a turn executing right now is shown as "Active"; the
+ *  word "Working" is reserved for the AGENT-REPORTED status (orgtree_status),
+ *  which the desk shows out of turn from `last_status`. The internal value
+ *  stays 'working' — only the human-facing label changed — so every class
+ *  name, test seam and caller keeps its meaning. */
 export type AgentTurnState = 'working' | 'queued' | 'compacting' | 'idle'
 
 export function deriveTurnState(node: {
@@ -253,8 +259,8 @@ export function AgentWorkstate({ node, turn, live = true }: {
       <>
         <DestinationBusy tier={node.tier} />
         <span className="sq-idle working"
-          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
-          working
+          title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
+          active
         </span>
         <span className="sq-idle-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -317,8 +323,8 @@ export function TrayStatus({ node, turn, live = true }: {
       <span className="tray-status">
         <DestinationBusy tier={node.tier} />
         <span className="tray-status-label working"
-          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
-          working
+          title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
+          active
         </span>
         <span className="tray-status-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -381,7 +387,7 @@ export function MapModeIndicator({ node }: { node: CanvasNode }) {
   const state = deriveTurnState(node)
   if (state === 'working') {
     return (
-      <span title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+      <span title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
         <DestinationBusy tier={node.tier} />
       </span>
     )
@@ -446,7 +452,7 @@ export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
   const outOfTurnState = (!active && recordedState && recordedState !== 'idle') ? recordedState : null
   const displayClass = outOfTurnState || state
   const label = active
-    ? (state === 'working' ? 'Working'
+    ? (state === 'working' ? 'Active'
       : state === 'queued' ? 'Queued' : 'Compacting')
     : outOfTurnState
       ? (outOfTurnState.charAt(0).toUpperCase() + outOfTurnState.slice(1))
@@ -1068,9 +1074,9 @@ export function Activity({ act, dotOnly, tier }: { act?: ActivityInfo; dotOnly?:
     return <DestinationBusy tier={tier} />
   }
   return (
-    <div className="actlabel" title="working">
+    <div className="actlabel" title="active">
       <DestinationBusy tier={tier} />
-      <span className="actlabel-text">working</span>
+      <span className="actlabel-text">active</span>
     </div>
   )
 }

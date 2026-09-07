@@ -44,7 +44,7 @@ test('fresh desk banner is neutral motionless Idle with no invented age', async 
   } finally { await view.unmount() }
 })
 
-test('Idle age and Working duration advance without a tree refetch', async () => {
+test('Idle age and Active duration advance without a tree refetch', async () => {
   const stamp = turn(new Date(Date.now() - 10_000).toISOString())
   const inflight = new Date(Date.now() - 20_000).toISOString()
   const view = await mountView(<>
@@ -64,7 +64,7 @@ test('Idle age and Working duration advance without a tree refetch', async () =>
   } finally { await view.unmount() }
 })
 
-test('one persistent banner switches Working duration to Idle completion age', async () => {
+test('one persistent banner switches Active duration to Idle completion age', async () => {
   const completed = turn(new Date(Date.now() - 120_000).toISOString())
   const inflight = new Date(Date.now() - 300_000).toISOString()
   function Probe() {
@@ -76,7 +76,7 @@ test('one persistent banner switches Working duration to Idle completion age', a
   const view = await mountView(<Probe />, (el) => el)
   try {
     const banner = view.el.querySelector<HTMLElement>('.turn-status-banner')!
-    assert.match(banner.textContent, /Working5m/)
+    assert.match(banner.textContent, /Active5m/)
     assert.ok(banner.querySelector('.cc-spin'))
     const { act } = await import('react')
     await act(async () => { view.el.querySelector<HTMLButtonElement>('button')!.click() })
