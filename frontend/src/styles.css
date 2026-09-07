@@ -5806,7 +5806,7 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .popout-mount .popout-restart { flex: none; }
 .popout-mount .overlay-detached { position: relative; inset: auto; display: flex;
   flex: 1; min-height: 0; padding: 0; background: none; width: 100%; }
-.popout-mount .overlay-detached > .settings { position: relative; margin: 0;
+.popout-mount .overlay-detached > :not(.popout-placeholder) { position: relative; margin: 0;
   width: 100%; max-width: none; height: 100%; max-height: none; box-sizing: border-box; }
 .popout-mount .desk-body { flex: 1; min-height: 0; width: 100%; height: 100%; }
 .popout-mount .modalpin-bar { display: flex; }
@@ -5836,3 +5836,7 @@ html.mobile .popout-button { display: none; }
 /* One shared-clock presentation for a live usage-frozen agent. */
 .usage-freeze-status { display: inline-flex; align-items: center; gap: 4px; color: var(--ice); white-space: nowrap; }
 .usage-freeze-status .sq-idle, .usage-freeze-status .sq-idle-time { color: inherit; }
+/* The graph viewport fits its owning panel; the canvas keeps the history
+   extent and grows to fill any extra viewport area. */
+.git-workspace.modalpin-win .git-viewport,
+.popout-mount .git-workspace .git-viewport { min-width: 0; min-height: 0; }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties, ReactNode, RefObject } from 'react'
 import { PinFrame } from './canvas/modalpin'
+import { useSurfaceDocument } from './popout'
 import { AgentName } from './canvas/identity'
 import { resolveRef } from './canvas/reflinks'
 import type { RefRoutes } from './canvas/reflinks'
@@ -95,11 +96,31 @@ function RepositorySettings({ slug, rid, changed, removed, close, toast }: {
   </section>
 }
 
-export function GitWorkspace({ slug, context, routes, toast, close }: {
+// This observer lives inside PinFrame's surface context. The same viewport
+// moves between documents; an opener-owned observer alone misses child resize.
+function GitViewportSize({ viewport, update, ready }: {
+  viewport: RefObject<HTMLDivElement | null>; update: () => void; ready: boolean
+}) {
+  const owner = useSurfaceDocument()
+  useLayoutEffect(() => {
+    const element = viewport.current
+    if (!element || !ready) return
+    const frame = owner.defaultView
+    if (!frame) return
+    const observer = new frame.ResizeObserver(update)
+    observer.observe(element); update()
+    frame.addEventListener('resize', update)
+    return () => { observer.disconnect(); frame.removeEventListener('resize', update) }
+  }, [owner, viewport, update, ready])
+  return null
+}
+
+export function GitWorkspace({ slug, context, routes, toast, close, panelId, initialRepository, onOpenPanel }: {
   slug: string; context?: GitContext; routes: RefRoutes; toast: ToastFn; close: () => void
+  panelId?: string; initialRepository?: string; onOpenPanel?: (repository?: string) => void
 }) {
   const [registry, setRegistry] = useState<GitRegistry | null>(null)
-  const [rid, setRid] = useState('')
+  const [rid, setRid] = useState(initialRepository ?? '')
   const [snapshot, setSnapshot] = useState<GitSnapshot | null>(null)
   const [nodes, setNodes] = useState<GitCommit[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
@@ -221,12 +242,6 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
     const vp = viewport.current
     if (vp) setView({ top: vp.scrollTop, left: vp.scrollLeft, width: vp.clientWidth, height: vp.clientHeight })
   }, [])
-  useEffect(() => {
-    const vp = viewport.current
-    if (!vp) return
-    const observer = new ResizeObserver(updateView); observer.observe(vp); updateView()
-    return () => observer.disconnect()
-  }, [snapshot !== null, updateView])
   const loadOlder = useCallback(async () => {
     if (!cursor || !rid || pageBusy.current || busy) return
     pageBusy.current = true; setLoadingHistory(true)
@@ -308,13 +323,14 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
     if (layout && canRecenter(layout, vp.clientWidth)) vp.scrollTo({ left: layout.trunkX - vp.clientWidth / 2,
       top: vp.scrollTop, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
   }
-  return <PinFrame kind={`git:${slug}`} title="Git repositories" panel="git-workspace" close={close}
+  return <PinFrame kind={panelId ?? `git:${slug}`} title={registry?.repositories.find(r => r.id === rid)?.name ?? "Git repositories"} panel="git-workspace" close={close}
     onEsc={() => { if (action || hover) { setAction(null); setHover(null) } else close() }}>
+    <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />
     <header className="git-head"><span className="git-mark">⑂</span>
       <select aria-label="Repository" value={rid} disabled={busy} onChange={e => chooseRepository(e.target.value)}>
         {!rid && <option value="">Select repository</option>}
         {registry?.repositories.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-      </select><button disabled={busy} onClick={() => void add()}>Add repository</button>
+      </select>{onOpenPanel && <button onClick={() => onOpenPanel(rid || undefined)}>Open another panel</button>}<button disabled={busy} onClick={() => void add()}>Add repository</button>
       <button disabled={discovering} onClick={() => void scan()}>Scan subfolders</button>
       <button onClick={() => setDiscoveryOpen(v => !v)}>{discovering ? 'Finding repositories…' : 'Discovery results'}</button>
       {rid && <button onClick={() => setSettingsOpen(v => !v)}>Repository settings</button>}
@@ -370,8 +386,8 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
         e.currentTarget.scrollLeft = g.left - (e.clientX - g.x); e.currentTarget.scrollTop = g.top - (e.clientY - g.y) }}
       onPointerUp={endDrag} onPointerCancel={endDrag}
       onLostPointerCapture={() => { gesture.current = null; viewport.current?.classList.remove('dragging') }}>
-      <div className="git-canvas" style={{ width: layout.width, height: layout.height }}>
-        <svg aria-hidden="true" width={layout.width} height={layout.height}>
+      <div className="git-canvas" style={{ width: Math.max(layout.width, view.width), height: Math.max(layout.height, view.height) }}>
+        <svg aria-hidden="true" width={Math.max(layout.width, view.width)} height={Math.max(layout.height, view.height)}>
           {nodes.flatMap(n => { const a = layout.points.get(n.oid)!; return n.parents.map(parent => {
             const b = layout.points.get(parent)
             if (b && (Math.max(a.y, b.y) < view.top - 100 || Math.min(a.y, b.y) > view.top + view.height + 100)) return null
