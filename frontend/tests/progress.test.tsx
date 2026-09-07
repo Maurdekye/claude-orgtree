@@ -564,7 +564,7 @@ test('§4 DeskChat: the fifth tab is the agent\'s OWN DOCKET, and the chip count
   t.after(async () => { await view.unmount(); resetConvos(); realClock() })
   await flush()
   const tabs = [...view.el.querySelectorAll('.cc-tabs button')].map((b) => b.textContent)
-  assert.deepEqual(tabs, ['chat', 'history', 'files', 'inbox', 'docket'])
+  assert.deepEqual(tabs, ['chat', 'history', 'files', 'inbox', 'docket', 'presented'])
   assert.equal(Boolean(view.el.querySelector('.docket-agent')), false,
     'the panel must not be open on the chat tab')
   // the header chip: it counts the assignment, and it is a way in
@@ -964,3 +964,34 @@ test('agent docket hides archived rows/count by default and reveals then hides s
     assert.match(view.el.querySelector('.docket-agent .mailer-read')?.textContent ?? '',
       /select an item to view it/)
   })
+
+test('Presented desk tab lists the selected agent documents and opens markdown', async (t) => {
+  resetConvos()
+  useFakeClock()
+  const server = new FakeServer()
+  installFetch(server)
+  const opened: string[] = []
+  const n = node({ id: 'agent', documents: [
+    { id: 'doc-agent-md', title: 'Agent report', at: '2026-09-05T09:00:00.000Z', format: 'markdown' },
+    { id: 'doc-agent-html', title: 'Agent preview', at: '2026-09-05T09:01:00.000Z', format: 'html' },
+  ] })
+  const view = await mountView(
+    <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="prog" toast={noop}
+      pub={false} bare onJump={noop} onOpenDoc={(id) => { opened.push(id) }} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+  await flush()
+  const { act } = await import('react')
+  const tabs = [...view.el.querySelectorAll('.cc-tabs button')].map((b) => b.textContent)
+  assert.ok(tabs.includes('presented'), 'desk is missing Presented tab')
+  const control = view.el.querySelector<HTMLButtonElement>('.presented-control')
+  assert.ok(control, 'agent controls lack Presented button')
+  await act(async () => { control!.click() })
+  assert.ok(view.el.querySelector('.desk-presented'))
+  assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /Agent report/)
+  assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /Agent preview/)
+  const markdown = view.el.querySelector<HTMLButtonElement>('.desk-presented-card')
+  assert.ok(markdown, 'markdown document is not actionable')
+  await act(async () => { markdown!.click() })
+  assert.deepEqual(opened, ['doc-agent-md'])
+})

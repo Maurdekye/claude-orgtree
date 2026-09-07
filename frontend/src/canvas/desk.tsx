@@ -1294,7 +1294,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // a double-click while the request is in flight; the response/WS tree state
   // remains authoritative if another desk wins the race.
   const [processToggleBusy, setProcessToggleBusy] = useState(false)
-  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'docket'>('chat')     // chat | history | files | inbox | docket
+  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'docket' | 'presented'>('chat')     // chat | history | files | inbox | docket | presented
   // THE AGENT'S OWN DOCKET (user ruling 2026-09-05 21:07). It replaced the
   // derived task-progress model that used to live in this tab — the user
   // called that content irrelevant, and what an agent is answerable for is
@@ -1886,6 +1886,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <span className="cc-head-right">
           <span className="cc-actions">
             <GitContextButton slug={slug} agent={node.id} />
+            <button className="progress-chip presented-control"
+              aria-label={`presented documents for ${node.id}`}
+              title={`open presented documents for ${node.id}`}
+              onClick={() => setView('presented')}>
+              presented {node.documents?.length ?? 0}
+            </button>
             {live && !liveKids &&
               <button className="danger" onClick={() => setAsking('retire')}>
                 retire · {fmtCredits(node.seat! + node.grant!)}</button>}
@@ -1895,7 +1901,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
           </span>
           <span className="cc-tabs">
-            {(['chat', 'history', 'files', 'inbox', 'docket'] as const).map((v) => (
+            {(['chat', 'history', 'files', 'inbox', 'docket', 'presented'] as const).map((v) => (
               <button key={v} className={view === v ? 'on' : ''}
                 onClick={() => setView(v)}>
                 {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0
@@ -2379,6 +2385,26 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         onShowArchived={setShowArchivedDocket}
         refs={deskRefs}
         onChanged={() => setWorkBump((n) => n + 1)} />}
+      {view === 'presented' && (
+        <section className="desk-presented" aria-label={`presented documents for ${node.id}`}>
+          <div className="desk-presented-head">
+            <b>Presented</b>
+            <span className="dim">documents and HTML previews from {node.id}</span>
+          </div>
+          {(node.documents?.length ?? 0) === 0
+            ? <p className="dim desk-presented-empty">No presented documents.</p>
+            : <div className="desk-presented-list">
+                {node.documents!.map((d) => (
+                  <PresentationCard key={d.id} slug={slug} doc={d}
+                    className="doc-badge desk-presented-card"
+                    onOpen={onOpenDoc ?? (() => {})}>
+                    {d.format !== 'html' && <DocIcon fontSize="inherit" />}
+                    <span>{d.title}</span>
+                  </PresentationCard>
+                ))}
+              </div>}
+        </section>
+      )}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
           was named explicitly). `onJump` is the SAME callback NavChip and the
           header already use here, so no new route is invented — and it is

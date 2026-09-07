@@ -712,7 +712,7 @@ export interface CanvasNode {
   ask?: AskInfo | null
   /** FR-03: presented documents — metadata only; the reader fetches the
    *  body on open */
-  documents?: { id: string; title: string; at: string }[] | null
+  documents?: { id: string; title: string; at: string; format?: 'markdown' | 'html'; bytes?: number }[] | null
   /** FR-01: parked while the user drives this session from another device */
   remote_controlled?: { at?: string } | null
   waiting?: boolean
