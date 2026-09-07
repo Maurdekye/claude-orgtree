@@ -1,19 +1,31 @@
-"""The `waiting` docket state, the information blocked and waiting owe, and
+"""The REMOVED `waiting` docket state (user 2026-09-07 06:33Z: "remove waiting as
+a task state, and make blocked avoid periodic status nudges"), the compatibility
+the rows already stored under it are owed, the information `blocked` owes, and
 the next-action recipient resolver.
 
 Run: python backend/tests/test_docket_waiting_state.py
 
-Everything here is driven through the real ledger on a throwaway data root —
-no scheduler, no provider, no clock to wait on. What is pinned: that `waiting`
-is read in the main list and counted in no badge, and that after an hour it
-ages into the archive still waiting (user 2026-09-06, §1 and §5) rather than
-becoming a second backlog or a completion; that entering blocked or waiting
-requires its own field while staying in the state does not; that a blank string
-is refused rather than erasing what is recorded; that a refused transition
-writes NOTHING; that the field is cleared on every way out of the state; and
-that the recipient of an item is the reviewer while it is under review, the
-owner otherwise, with the exclusions decided per item BEFORE the recipient is
-asked for.
+Everything here is driven through the real ledger on a throwaway data root — no
+scheduler, no provider, no clock to wait on. What is pinned:
+
+  §1  `waiting` can no longer be asserted or created — the refusal names
+      `blocked` — and a row STORED as waiting (planted raw, the way the live
+      documents hold it) is READ as blocked everywhere: served status, served
+      reason (falling back to the recorded waiting reason), `legacy_status`
+      saying what it was stored as, the active count, the archive predicate
+      (never ages out by itself; a physically archived one stays archived and
+      reopens), and history untouched. A read never writes.
+  §2  the item's own next update CONVERTS it — stored status becomes blocked,
+      the waiting reason is carried into blocked_reason, the conversion is
+      recorded in history, and no fresh reason is demanded of a row that had
+      none — while every other verb that leaves the stored state clears the
+      leftover field.
+  §3  the information `blocked` owes: entering needs the field, staying does
+      not, a blank never erases, a refused transition writes nothing.
+  §4  the next-action recipient: the reviewer while under review, the owner
+      otherwise, with exclusions decided per item before anyone is grouped —
+      and BLOCKED IS NEVER A REMINDER ROW (the policy's second half), while
+      the actionable items beside it still are.
 
 The `reviewer` field is codex-sandbox's and no verb here writes it yet, so the
 fixtures plant it directly on the stored item — which is exactly the shape the
@@ -104,269 +116,297 @@ def upd(slug: str, wid: str, **kw):
     return do(slug, lambda org: org.work_update(
         USER, wid, kw.pop("done", ["a step"]), kw.pop("next", []), **kw))
 
+def backdate(slug: str, wid: str, seconds: int) -> float:
+    """Push the item's docket clock into the past. Returns the `now` it has
+    been aged against, so the caller never compares against a second clock."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, _ = org._work_find(wid)
+        dt = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        it["docket_at"] = dt.isoformat()
+        store.save_org(org)
+    return dt.timestamp() + seconds
 
-print("\n§1  waiting is READ in the main list, and COUNTED nowhere")
+
+def sweep(slug: str, at: float) -> list[str]:
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        moved = org._work_sweep(at)
+        store.save_org(org)
+    return moved
 
 
-def waiting_is_listed_but_not_counted() -> None:
-    """⚠ THIS CHECK WAS INVERTED ON 2026-09-06, and only in its second half.
+def plant_waiting(slug: str, wid: str, reason: str | None = EVENT) -> None:
+    """Store the row EXACTLY as the live documents hold a pre-removal item:
+    status `waiting`, its reason in `waiting_reason`, nothing in
+    `blocked_reason`. No verb can produce this shape any more, which is the
+    point — it is the shape compatibility has to read."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, _ = org._work_find(wid)
+        it["status"] = "waiting"
+        it["waiting_reason"] = reason
+        it["blocked_reason"] = None
+        store.save_org(org)
 
-    It used to assert `active == 1` for a waiting item. The user asked for the
-    opposite — "waiting tasks shouldn't count towards the number in the corner
-    of the docket button" — so the count is now 0 while every other thing this
-    check pinned is unchanged: waiting stays in the MAIN list, it is not the
-    backlog, and it keeps its status and its reason. The two halves are held
-    apart on purpose, because "not counted" and "not shown" are exactly the
-    pair that would be easy to conflate into hiding the row."""
+
+def raw(slug: str, wid: str) -> dict:
+    it, _ = store.load_org(slug)._work_find(wid)
+    return it
+
+
+print("\n§1  waiting cannot be asserted; a stored one is READ as blocked")
+
+
+def waiting_is_refused_on_update_and_create() -> None:
     slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    # AN ORG WHOSE ONLY WORK IS WAITING SHOWS ZERO on the button — the case the
-    # user is actually looking at when they say the number overstates the work
-    assert store.load_org(slug).work_counts()["active"] == 0, \
-        store.load_org(slug).work_counts()
-    back = item(slug, "Nobody has started this", status="backlogged")
-    live = item(slug, "Somebody is on this", status="in_progress")
-    counts = store.load_org(slug).work_counts()
-    # THE CONTROL IS IN THE SAME NUMBER: the in_progress item is counted, so
-    # this is about excluding waiting and not about a badge stuck at zero
-    assert counts["active"] == 1, counts
-    assert counts["backlogged"] == 1, counts
-    lst = store.load_org(slug).work_list(USER, include_backlogged=True,
-                                         include_archived=True)
-    assert sorted(r["slug"] for r in lst["items"]) == sorted([wid, live]), \
-        lst["items"]
-    assert [r["slug"] for r in lst["backlogged"]] == [back], lst["backlogged"]
-    assert not lst["archived"], lst["archived"]
-    v = view(slug, wid)
-    assert v["status"] == "waiting" and v["waiting_reason"] == EVENT, v
-
-
-check("a waiting item stays in the main list but is out of the active count "
-      "(control: an in_progress item in the same org is counted)",
-      waiting_is_listed_but_not_counted)
-
-
-def an_agents_own_count_agrees_with_the_badge() -> None:
-    """The org-wide badge and a single agent's readable set are counted by two
-    different code paths (`work_counts` and `work_list`'s own sum). Two rules,
-    one number: an agent reading its docket must not be told a different amount
-    of work in flight than the button shows."""
-    slug = fixture(peers=("peer",))
-    wid = item(slug, "Waits on a build", owner="peer")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    item(slug, "Somebody is on this", owner="peer", status="in_progress")
-    org = store.load_org(slug)
-    assert org.work_list("peer")["counts"]["active"] == 1, \
-        org.work_list("peer")["counts"]
-    assert org.work_counts()["active"] == 1, org.work_counts()
-
-
-check("an agent's own docket count excludes waiting exactly as the badge does",
-      an_agents_own_count_agrees_with_the_badge)
-
-
-def waiting_is_a_real_transition() -> None:
-    """codex-checklist's status clock counts status TRANSITIONS: if the move
-    into waiting does not record one, their sort silently misplaces the row."""
-    slug = fixture()
-    wid = item(slug, "Waits on a build", status="in_progress")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    rows = [h for h in view(slug, wid)["history"]
-            if (h.get("changes") or {}).get("status")]
-    assert rows and rows[-1]["changes"]["status"] == {
-        "from": "in_progress", "to": "waiting"}, rows
-
-
-check("moving to waiting records a real status transition in the history",
-      waiting_is_a_real_transition)
-
-
-print("\n§2  the information blocked and waiting owe")
-
-
-def entering_needs_the_field() -> None:
-    slug = fixture()
-    wid = item(slug, "Waits on a build", status="in_progress")
-    msg = refused(lambda: upd(slug, wid, status="waiting"))
-    assert "waiting_reason" in msg and "how you will learn" in msg, msg
-    # REFUSED MEANS NOTHING WAS WRITTEN — not the status, not the lists
-    v = view(slug, wid)
-    assert v["status"] == "in_progress" and not v["waiting_reason"], v
-    assert v["done_so_far"] == [], v["done_so_far"]
-    msg = refused(lambda: upd(slug, wid, status="blocked"))
-    assert "blocked_reason" in msg and "who can act" in msg, msg
-    assert view(slug, wid)["status"] == "in_progress"
-    # POSITIVE CONTROL: the same move with the field is accepted
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    assert view(slug, wid)["waiting_reason"] == EVENT
-
-
-check("entering waiting or blocked without its field is refused, and writes "
-      "nothing (control: with the field it goes through)",
-      entering_needs_the_field)
-
-
-def other_states_owe_nothing() -> None:
-    """Open, in_progress, review and backlogged require no reason field.
-
-    ⚠ `review` still owes its REVIEWER (codex-sandbox's staffing change), and
-    that is a different requirement from the one this check is about — so the
-    reviewer is supplied for that one transition rather than dropping `review`
-    from the loop, which would quietly stop covering it. It must be somebody
-    other than the owner: self-review is prohibited."""
-    slug = fixture(peers=("checker",))
-    wid = item(slug, "Ordinary work")
-    for st in ("open", "in_progress", "review", "backlogged"):
-        upd(slug, wid, status=st, **({"reviewer": "checker"} if st == "review"
-                                     else {}))
-        assert view(slug, wid)["status"] == st
-
-
-check("no other status requires state information", other_states_owe_nothing)
-
-
-def blank_does_not_erase() -> None:
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    for blank in ("", "   ", "\n"):
-        msg = refused(lambda b=blank: upd(slug, wid, waiting_reason=b))
-        assert "blank" in msg and "does not erase" in msg, msg
-        assert view(slug, wid)["waiting_reason"] == EVENT, "it was erased"
-    wid2 = item(slug, "Stuck")
-    upd(slug, wid2, status="blocked", blocked_reason=BLOCK)
-    refused(lambda: upd(slug, wid2, blocked_reason=" "))
-    assert view(slug, wid2)["blocked_reason"] == BLOCK
-
-
-check("a blank reason is refused and leaves the recorded one standing",
-      blank_does_not_erase)
-
-
-def staying_may_omit_it() -> None:
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    upd(slug, wid, done=["progress note"])          # no status, no reason
-    v = view(slug, wid)
-    assert v["status"] == "waiting" and v["waiting_reason"] == EVENT, v
-    upd(slug, wid, status="waiting", done=["restated"])   # same status again
-    assert view(slug, wid)["waiting_reason"] == EVENT
-    # and a NEW value replaces it
-    upd(slug, wid, waiting_reason="the deploy lands; astra mails me")
-    assert view(slug, wid)["waiting_reason"] == "the deploy lands; astra mails me"
-
-
-check("an item already in the state may be updated without restating its "
-      "reason, and a new value replaces it", staying_may_omit_it)
-
-
-def legacy_items_stay_editable() -> None:
-    """An item blocked BEFORE the requirement existed carries no reason. It
-    must not become un-updatable — the check is on the transition."""
-    slug = fixture()
-    wid = item(slug, "Blocked long ago")
-    do(slug, lambda org: org._work_find(wid)[0].update(
-        {"status": "blocked", "blocked_reason": None}))
-    assert view(slug, wid)["blocked_reason"] is None, "fixture must be reasonless"
-    upd(slug, wid, done=["still stuck"])
-    v = view(slug, wid)
-    assert v["status"] == "blocked" and v["blocked_reason"] is None, v
-    assert v["done_so_far"] == ["still stuck"], v
-
-
-check("a legacy blocked item with no reason is still updatable",
-      legacy_items_stay_editable)
-
-
-def leaving_clears_it() -> None:
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    upd(slug, wid, status="in_progress")
-    assert view(slug, wid)["waiting_reason"] is None
+    wid = item(slug, "Moving", status="in_progress")
+    msg = refused(lambda: upd(slug, wid, status="waiting", waiting_reason=EVENT))
+    assert "no longer a task state" in msg and "`blocked`" in msg, msg
+    assert raw(slug, wid)["status"] == "in_progress", "a refused transition wrote"
+    assert raw(slug, wid).get("waiting_reason") in (None, "")
+    msg = refused(lambda: item(slug, "New", status="waiting", waiting_reason=EVENT))
+    assert "waiting" not in msg.split("starts", 1)[-1], msg     # the menu no longer lists it
+    # CONTROL: the replacement goes through, with its field
     upd(slug, wid, status="blocked", blocked_reason=BLOCK)
-    v = view(slug, wid)
-    assert v["blocked_reason"] == BLOCK and v["waiting_reason"] is None, v
-    # blocked -> waiting swaps which field is set; neither survives the other
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    v = view(slug, wid)
-    assert v["waiting_reason"] == EVENT and v["blocked_reason"] is None, v
+    assert view(slug, wid)["status"] == "blocked"
+    # and reopen's own menu does not offer it either
+    org = store.load_org(slug)
+    assert "waiting" not in org.WORK_STATUSES and "waiting" not in org.WORK_AGENT_STATUSES
+    assert org.WORK_LEGACY_STATUSES == {"waiting": "blocked"}
 
 
-check("a reason never survives the state it describes", leaving_clears_it)
+check("`waiting` is refused on update and create, naming blocked; nothing is written; "
+      "blocked still goes through (control)", waiting_is_refused_on_update_and_create)
 
 
-def create_obeys_the_same_rule() -> None:
+def a_stored_waiting_row_reads_as_blocked() -> None:
     slug = fixture()
-    msg = refused(lambda: item(slug, "Born waiting", status="waiting"))
-    assert "waiting_reason" in msg, msg
-    refused(lambda: item(slug, "Born blocked", status="blocked"))
-    # NOTHING STRANDED: the refusals left no item behind
-    assert not (store.load_org(slug).d.get("work_items") or []), \
-        "a refused create left an item behind"
-    wid = item(slug, "Born waiting", status="waiting", waiting_reason=EVENT)
-    assert view(slug, wid)["waiting_reason"] == EVENT
-    assert "waiting" in refused(
-        lambda: item(slug, "Born done", status="done"))
-
-
-check("create refuses waiting/blocked without the field and strands nothing",
-      create_obeys_the_same_rule)
-
-
-def closing_clears_it() -> None:
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    do(slug, lambda org: org.work_accept(USER, wid))
+    wid = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, wid)
     v = view(slug, wid)
-    assert v["status"] == "done" and v["waiting_reason"] is None, v
-    other = item(slug, "The replacement")
-    wid2 = item(slug, "Also waiting")
-    upd(slug, wid2, status="waiting", waiting_reason=EVENT)
-    do(slug, lambda org: org.work_supersede(USER, wid2, other))
-    v = view(slug, wid2)
-    assert v["status"] == "superseded" and v["waiting_reason"] is None, v
+    assert v["status"] == "blocked" and v["legacy_status"] == "waiting", (v["status"], v.get("legacy_status"))
+    assert v["blocked_reason"] == EVENT, "the recorded reason is served as the blocked reason"
+    assert v["waiting_reason"] == EVENT, "and the field it was recorded in is still served"
+    # the list agrees: served as blocked, counted as active (blocked is), on the main list
+    lst = store.load_org(slug).work_list(USER, include_archived=True)
+    row = [r for r in lst["items"] if r["slug"] == wid][0]
+    assert row["status"] == "blocked" and row["legacy_status"] == "waiting"
+    assert lst["counts"]["active"] == 1 and lst["archived"] == [], lst["counts"]
+    # the READ wrote nothing: the document still holds the stored word
+    assert raw(slug, wid)["status"] == "waiting" and raw(slug, wid)["blocked_reason"] is None
+    # CONTROL: an ordinary blocked row carries no legacy marker
+    plain = item(slug, "Plainly blocked", status="blocked", blocked_reason=BLOCK)
+    assert view(slug, plain)["legacy_status"] is None and view(slug, plain)["blocked_reason"] == BLOCK
 
 
-check("accept and supersede clear the state information too", closing_clears_it)
+check("a row stored as waiting is served as blocked with its reason and legacy_status; "
+      "counted active; the read writes nothing; plain blocked has no marker (control)",
+      a_stored_waiting_row_reads_as_blocked)
 
 
-def the_users_dismissal_still_works() -> None:
-    """The system's OWN transition into blocked carries its own real reason
-    and must never fail for want of agent input."""
+def an_own_blocked_reason_wins_over_the_recorded_one() -> None:
     slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT,
-        attention=True, attention_reason="confirm the extra switch I added")
-    rev = view(slug, wid)["manual_attention"]["set_rev"]
-    r = do(slug, lambda org: org.work_dismiss_attention(wid, rev))
-    assert r["status"] == "blocked", r
+    wid = item(slug, "Both reasons", status="in_progress")
+    plant_waiting(slug, wid)
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        org._work_find(wid)[0]["blocked_reason"] = BLOCK
+        store.save_org(org)
+    assert view(slug, wid)["blocked_reason"] == BLOCK, "a stored blocked reason is never overridden"
+
+
+check("a stored blocked_reason beside a legacy waiting reason is the one served",
+      an_own_blocked_reason_wins_over_the_recorded_one)
+
+
+def a_legacy_row_never_ages_out_by_itself() -> None:
+    """Blocked never archives itself, and a legacy row IS blocked now — so the
+    hour that used to archive `waiting` no longer does. CONTROL: `done` still
+    ages out on the same fixture."""
+    slug = fixture()
+    wid = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, wid)
+    fine = item(slug, "Finished", status="review")
+    do(slug, lambda org: org.work_accept(USER, fine))
+    at = max(backdate(slug, wid, 360000), backdate(slug, fine, 3601))
+    lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
+    assert [r["slug"] for r in lst["items"]] == [wid], lst["items"]
+    assert [r["slug"] for r in lst["archived"]] == [fine], lst["archived"]
+    moved = sweep(slug, at)
+    assert moved == [fine], moved
+
+
+check("a legacy waiting row never ages out by itself (blocked does not); done still "
+      "does (control)", a_legacy_row_never_ages_out_by_itself)
+
+
+def a_physically_archived_legacy_row_stays_archived_and_reopens() -> None:
+    """The live documents hold rows that were archived AS waiting by the old
+    hourly sweep. They stay in the archive — read as blocked — and come back
+    with reopen=true like any archived item, converted on that write."""
+    slug = fixture()
+    wid = item(slug, "Archived as waiting", status="in_progress")
+    plant_waiting(slug, wid)
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, _ = org._work_find(wid)
+        org._work_active().remove(it)
+        it["archived_at"] = "2026-09-06T20:00:00Z"
+        org.d.setdefault("work_items_archive", []).append(it)
+        store.save_org(org)
     v = view(slug, wid)
-    assert v["status"] == "blocked", v
-    assert "dismissed by the user" in (v["blocked_reason"] or ""), v
-    assert v["waiting_reason"] is None, "the waiting reason outlived waiting"
+    assert v["archived"] is True and v["status"] == "blocked" and v["legacy_status"] == "waiting"
+    assert v["blocked_reason"] == EVENT
+    lst = store.load_org(slug).work_list(USER, include_archived=True)
+    assert [r["slug"] for r in lst["archived"]] == [wid] and lst["items"] == []
+    msg = refused(lambda: upd(slug, wid, done=["poking it"]))
+    assert "ARCHIVED (blocked" in msg, msg          # named by what it READS as
+    upd(slug, wid, status="in_progress", reopen=True, done=["resuming"])
+    v = view(slug, wid)
+    assert v["status"] == "in_progress" and v["archived"] is False and v["legacy_status"] is None
+    assert v["waiting_reason"] in (None, "") and v["blocked_reason"] in (None, "")
+    assert any(h.get("op") == "reopen" for h in v["history"])
 
 
-check("the user's dismissal still blocks the item with its own reason",
-      the_users_dismissal_still_works)
+check("a legacy row archived as waiting stays archived (read as blocked) and reopens",
+      a_physically_archived_legacy_row_stays_archived_and_reopens)
 
 
-def it_survives_a_reload() -> None:
+def history_is_untouched_by_reading() -> None:
     slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    store._CACHE.clear() if hasattr(store, "_CACHE") else None
-    raw = store.load_org(slug)._work_find(wid)[0]
-    assert raw["status"] == "waiting" and raw["waiting_reason"] == EVENT, raw
-    v = store.load_org(slug).work_get(USER, wid)
-    assert v["waiting_reason"] == EVENT, v
+    wid = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, wid)
+    before = raw(slug, wid)["history"]
+    view(slug, wid)
+    store.load_org(slug).work_list(USER, include_archived=True)
+    assert raw(slug, wid)["history"] == before, "a read rewrote history"
 
 
-check("the state and its reason round-trip through storage", it_survives_a_reload)
+check("reading a legacy row rewrites nothing in its history", history_is_untouched_by_reading)
 
+
+print("\n§2  the item's next write converts it; every other exit clears the field")
+
+
+def the_next_update_converts_in_place() -> None:
+    slug = fixture()
+    wid = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, wid)
+    upd(slug, wid, done=["still stuck on the build"])       # no status named
+    it = raw(slug, wid)
+    assert it["status"] == "blocked", it["status"]
+    assert it["blocked_reason"] == EVENT, "the waiting reason was carried into blocked_reason"
+    assert it.get("waiting_reason") in (None, ""), "the leftover field was cleared"
+    last = it["history"][-1]
+    assert last["op"] == "update" and last["changes"]["legacy_status"] == {"from": "waiting", "read_as": "blocked"}
+    assert last["changes"]["status"] == {"from": "waiting", "to": "blocked"}, last["changes"]
+    v = view(slug, wid)
+    assert v["status"] == "blocked" and v["legacy_status"] is None, "converted rows carry no marker"
+
+
+check("the item's own next update converts a stored waiting row to blocked, carries the "
+      "reason, and records the conversion", the_next_update_converts_in_place)
+
+
+def an_update_naming_a_status_converts_to_that_status() -> None:
+    slug = fixture()
+    wid = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, wid)
+    upd(slug, wid, status="in_progress", done=["the build finished"])
+    it = raw(slug, wid)
+    assert it["status"] == "in_progress"
+    assert it.get("waiting_reason") in (None, "") and it.get("blocked_reason") in (None, "")
+    assert it["history"][-1]["changes"]["legacy_status"]["from"] == "waiting"
+
+
+check("an update that names a status moves the legacy row there and clears both reasons",
+      an_update_naming_a_status_converts_to_that_status)
+
+
+def a_legacy_row_with_no_reason_converts_without_being_refused() -> None:
+    slug = fixture()
+    wid = item(slug, "Recorded as waiting, no reason", status="in_progress")
+    plant_waiting(slug, wid, reason=None)
+    upd(slug, wid, done=["poking it"])
+    it = raw(slug, wid)
+    assert it["status"] == "blocked" and it.get("blocked_reason") in (None, ""), it
+    # CONTROL: a genuine entry into blocked still owes the field
+    fresh = item(slug, "Fresh", status="in_progress")
+    msg = refused(lambda: upd(slug, fresh, status="blocked"))
+    assert "blocked_reason" in msg, msg
+
+
+check("a legacy row that stored no reason converts without a refusal and without "
+      "invented prose; a real entry into blocked still owes its field (control)",
+      a_legacy_row_with_no_reason_converts_without_being_refused)
+
+
+def other_exits_clear_the_leftover_field() -> None:
+    for verb in ("accept", "supersede", "dismiss", "sendback"):
+        slug = fixture(peers=("peer",))
+        wid = item(slug, f"Left by {verb}", status="in_progress")
+        plant_waiting(slug, wid)
+        if verb == "accept":
+            do(slug, lambda o: o.work_accept(USER, wid))
+        elif verb == "supersede":
+            other = item(slug, "The replacement", status="in_progress")
+            do(slug, lambda o: o.work_supersede(USER, wid, other))
+        elif verb == "dismiss":
+            with store.DOC_LOCK:
+                o = store.load_org(slug)
+                it, _ = o._work_find(wid)
+                it["manual_attention_rev"] = 1
+                it["manual_attention"] = {"reason": "look", "at": "x", "by": "agent", "set_rev": 1}
+                store.save_org(o)
+            do(slug, lambda o: o.work_dismiss_attention(wid, 1))
+        else:
+            do(slug, lambda o: o.work_review_decide(USER, wid, "changes", "redo"))
+        it = raw(slug, wid)
+        assert it["status"] != "waiting", (verb, it["status"])
+        assert it.get("waiting_reason") in (None, ""), (verb, "leftover waiting reason")
+
+
+check("accept, supersede, the user's dismissal and a review sendback all leave the "
+      "stored state with the leftover field cleared", other_exits_clear_the_leftover_field)
+
+
+print("\n§3  the information blocked owes")
+
+
+def entering_blocked_needs_the_field() -> None:
+    slug = fixture()
+    wid = item(slug, "Moving", status="in_progress")
+    msg = refused(lambda: upd(slug, wid, status="blocked"))
+    assert "blocked_reason" in msg, msg
+    assert raw(slug, wid)["status"] == "in_progress", "a refused transition wrote"
+    upd(slug, wid, status="blocked", blocked_reason=BLOCK)
+    assert view(slug, wid)["blocked_reason"] == BLOCK
+
+
+check("entering blocked without its field is refused and writes nothing; with it it "
+      "goes through", entering_blocked_needs_the_field)
+
+
+def staying_may_omit_it_and_blank_never_erases() -> None:
+    slug = fixture()
+    wid = item(slug, "Stuck", status="blocked", blocked_reason=BLOCK)
+    upd(slug, wid, done=["still stuck"])
+    assert view(slug, wid)["blocked_reason"] == BLOCK
+    msg = refused(lambda: upd(slug, wid, blocked_reason="   "))
+    assert "blank" in msg and view(slug, wid)["blocked_reason"] == BLOCK
+    upd(slug, wid, blocked_reason="a newer reason")
+    assert view(slug, wid)["blocked_reason"] == "a newer reason"
+    upd(slug, wid, status="in_progress")
+    assert view(slug, wid)["blocked_reason"] in (None, ""), "a reason survived its state"
+
+
+check("staying blocked may omit the reason; a blank never erases it; a new value replaces "
+      "it; leaving clears it", staying_may_omit_it_and_blank_never_erases)
+
+
+
+print("\n§4  who owes the next action; blocked is never a reminder row")
 
 print("\n§3  who owes the next action")
 
@@ -467,243 +507,54 @@ check("a retired reviewer hands the item back to the owner rather than "
       "leaving it silent", a_retired_reviewer_hands_it_back)
 
 
-print("\n§4  exclusions are per item, before anyone is grouped")
 
 
-def waiting_excludes_only_itself() -> None:
-    slug = fixture(peers=("peer",))
-    waits = item(slug, "Waits on a build")
-    upd(slug, waits, status="waiting", waiting_reason=EVENT)
-    live = item(slug, "Still moving", status="in_progress")
+def blocked_is_never_a_reminder_row_but_its_neighbours_are() -> None:
+    """THE POLICY'S SECOND HALF (user 2026-09-07): a blocked item never wakes
+    its owner; an owner whose only items are blocked (stored so, or legacy
+    waiting) gets an empty list; an owner with actionable work beside a
+    blocked item is still listed for that work and nothing else."""
+    slug = fixture()
+    org = store.load_org(slug)
+    assert org.work_idle_reminder_items("agent") == []
+    stuck = item(slug, "Stuck on the vendor", status="blocked", blocked_reason=BLOCK)
+    legacy = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, legacy)
+    org = store.load_org(slug)
+    assert org.work_idle_reminder_items("agent") == [], "a blocked-only owner was listed"
+    moving = item(slug, "Alpha keeps moving", status="in_progress")
     org = store.load_org(slug)
     rows = org.work_idle_reminder_items("agent")
-    assert [r["slug"] for r in rows] == [live], rows
-    # CONTROL: the waiting item comes back the moment its event happens
-    upd(slug, waits, status="in_progress")
-    assert sorted(r["slug"] for r in
-                  store.load_org(slug).work_idle_reminder_items("agent")) \
-        == sorted([live, waits])
-
-
-check("a waiting item removes itself and nothing else (control: it returns "
-      "when the state changes)", waiting_excludes_only_itself)
-
-
-def a_waiting_review_is_excluded_from_the_reviewer_too() -> None:
-    """The exclusion is decided on the ITEM, before the recipient is asked
-    for — so it holds for a reviewer exactly as it does for an owner."""
-    slug = fixture(peers=("peer",))
-    wid = item(slug, "Under review", status="review")
-    name_reviewer(slug, wid, "peer")
-    assert store.load_org(slug).work_idle_reminder_items("peer"), "control"
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
+    assert [r["slug"] for r in rows] == [moving], rows
+    assert stuck not in {r["slug"] for r in rows} and legacy not in {r["slug"] for r in rows}
+    # CONTROL: unblocking puts it back on the list
+    upd(slug, stuck, status="in_progress", done=["the vendor answered"])
     org = store.load_org(slug)
-    assert org.work_idle_reminder_items("peer") == []
-    assert org.work_idle_reminder_items("agent") == []
+    assert sorted(r["slug"] for r in org.work_idle_reminder_items("agent")) == sorted([moving, stuck])
 
 
-check("a waiting item is excluded from its reviewer as well as its owner",
-      a_waiting_review_is_excluded_from_the_reviewer_too)
+check("blocked (stored or legacy waiting) is never a reminder row; actionable neighbours "
+      "still are; unblocking restores it (control)",
+      blocked_is_never_a_reminder_row_but_its_neighbours_are)
 
 
-def attention_still_excludes_before_grouping() -> None:
-    slug = fixture(peers=("peer",))
-    wid = item(slug, "Under review", status="review")
-    name_reviewer(slug, wid, "peer")
-    assert store.load_org(slug).work_idle_reminder_items("peer"), "control"
-    upd(slug, wid, status="review", attention=True,
-        attention_reason="the user must pick the export format")
-    org = store.load_org(slug)
-    assert org.work_idle_reminder_items("peer") == [], \
-        "an item waiting on the user reached its reviewer"
-    assert org.work_idle_reminder_items("agent") == []
+def the_working_checkup_reads_the_agents_own_word_not_the_docket() -> None:
+    """AUDIT of the other periodic nudge: the working-status checkup wakes an
+    agent whose REPORTED status is `working` and quiet — it never reads docket
+    items — so a blocked task cannot trigger it, and an agent that reports
+    `blocked` is never checked. Pinned at the source, since the pass itself is
+    driven by test_working_checkup.py."""
+    import inspect
+    from orgtree import supervisor as S
+    src = inspect.getsource(S._working_checkup_pass)
+    assert "work_items" not in src and "work_idle_reminder_items" not in src, \
+        "the working checkup started reading the docket"
+    assert '"working"' in src or "'working'" in src or "WORKING" in src, \
+        "positive control: the pass keys on the reported word"
 
 
-check("an attention-holding review item reaches nobody, reviewer included",
-      attention_still_excludes_before_grouping)
-
-
-def one_agent_one_list() -> None:
-    slug = fixture(peers=("peer",))
-    mine = item(slug, "My own work", status="in_progress")
-    theirs = item(slug, "Their work, my review", owner="peer", status="review")
-    name_reviewer(slug, theirs, "agent")
-    hidden = item(slug, "Their work, their problem", owner="peer",
-                  status="in_progress")
-    rows = store.load_org(slug).work_idle_reminder_items("agent")
-    assert sorted((r["slug"], r["role"]) for r in rows) == sorted(
-        [(mine, "owner"), (theirs, "reviewer")]), rows
-    assert hidden not in [r["slug"] for r in rows], rows
-
-
-check("own work and somebody else's review arrive in ONE list, each row "
-      "saying which it is", one_agent_one_list)
-
-
-print("\n§5  waiting ages out of the main list on the DONE clock, as waiting")
-
-
-def backdate(slug: str, wid: str, seconds: int) -> float:
-    """Push the item's docket clock into the past. Returns the `now` it has
-    been aged against, so the caller never compares against a second clock."""
-    with store.DOC_LOCK:
-        org = store.load_org(slug)
-        it, _ = org._work_find(wid)
-        dt = datetime.now(timezone.utc) - timedelta(seconds=seconds)
-        it["docket_at"] = dt.isoformat()
-        store.save_org(org)
-    return dt.timestamp() + seconds
-
-
-def sweep(slug: str, at: float) -> list[str]:
-    with store.DOC_LOCK:
-        org = store.load_org(slug)
-        moved = org._work_sweep(at)
-        store.save_org(org)
-    return moved
-
-
-def an_hour_old_waiting_item_archives_as_waiting() -> None:
-    """The user asked for waiting to be archived "like done tasks" — the same
-    clock, and nothing else about done. What that means in practice is that the
-    row moves LIST and keeps its STATE: it is not accepted, not completed, and
-    its reason survives the move."""
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    at = backdate(slug, wid, 3601)
-    assert sweep(slug, at) == [wid], "the sweep left an hour-old waiting item"
-    org = store.load_org(slug)
-    assert [i["slug"] for i in org._work_archive()] == [wid], "not moved"
-    assert not org._work_active(), org._work_active()
-    v = org.work_get(USER, wid, at)
-    assert v["archived"] is True, v["archived"]
-    assert v["status"] == "waiting", ("archived AS something else", v["status"])
-    assert v["waiting_reason"] == EVENT, v
-    assert v["accepted"] is None, ("the sweep recorded a completion", v)
-    lst = org.work_list(USER, include_archived=True, now_ts=at)
-    assert not lst["items"], lst["items"]
-    assert [r["slug"] for r in lst["archived"]] == [wid], lst["archived"]
-    assert lst["counts"]["archived"] == 1 and lst["counts"]["active"] == 0, \
-        lst["counts"]
-
-
-check("a waiting item over an hour old archives, still waiting and never done",
-      an_hour_old_waiting_item_archives_as_waiting)
-
-
-def the_boundary_is_the_same_strict_hour() -> None:
-    """No new clock and no new threshold: the same STRICTLY-greater-than-an-hour
-    rule `done` and `dropped` age out on. A waiting item one second short is
-    still on the main list, and a done item beside it behaves identically."""
-    slug = fixture()
-    young = item(slug, "Waits on a build")
-    upd(slug, young, status="waiting", waiting_reason=EVENT)
-    fine = item(slug, "Finished", status="review")
-    do(slug, lambda org: org.work_accept(USER, fine))
-    at = min(backdate(slug, young, 3599), backdate(slug, fine, 3599))
-    assert sweep(slug, at) == [], "something archived a second early"
-    org = store.load_org(slug)
-    assert not org.work_get(USER, young, at)["archived"], "derived too early"
-    assert not org.work_get(USER, fine, at)["archived"], \
-        "control: done archived early too, so this is the clock, not waiting"
-    # PAST the boundary both go, on the same call
-    at = max(backdate(slug, young, 3601), backdate(slug, fine, 3601))
-    assert sorted(sweep(slug, at)) == sorted([young, fine])
-
-
-check("the waiting archive is the same strict one-hour boundary as done "
-      "(control: done ages on exactly the same call)",
-      the_boundary_is_the_same_strict_hour)
-
-
-def the_durable_log_does_not_call_it_closed() -> None:
-    """The sweep writes an org-log row that used to say the batch was "closed
-    for over an hour". A waiting item is NOT closed, and the durable record is
-    the one place that mistake would outlive the screen."""
-    slug = fixture()
-    waits = item(slug, "Waits on a build")
-    upd(slug, waits, status="waiting", waiting_reason=EVENT)
-    fine = item(slug, "Finished", status="review")
-    do(slug, lambda org: org.work_accept(USER, fine))
-    at = max(backdate(slug, waits, 3601), backdate(slug, fine, 3601))
-    sweep(slug, at)
-    rows = [r for r in (store.load_org(slug).d.get("events") or [])
-            if r.get("op") == "work_archived"]
-    assert rows, "the sweep archived items and logged nothing"
-    d = rows[-1]["detail"]
-    assert d["outcomes"][waits] == "waiting", d["outcomes"]
-    # the CONTROL is in the same row: the accepted item still reads `done`
-    assert d["outcomes"][fine] == "done", d["outcomes"]
-    assert "closed" not in str(d["why"]), d["why"]
-    assert "done" not in str(d["why"]), d["why"]
-
-
-check("the durable archive log records the waiting item AS waiting, and the "
-      "batch reason no longer claims anything closed",
-      the_durable_log_does_not_call_it_closed)
-
-
-def the_timer_never_resumes_it() -> None:
-    """Ageing out changes where the row is served, never what state it is in.
-    Coming back is an explicit act — the same reopen an archived done item
-    takes — and the refusal that asks for it names the real status."""
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT)
-    sweep(slug, backdate(slug, wid, 3601))
-    msg = refused(lambda: upd(slug, wid, done=["the build finished"]))
-    assert "ARCHIVED (waiting for over an hour)" in msg, msg
-    assert "reopen=true" in msg, msg
-    # nothing about the refusal moved it back
-    assert [i["slug"] for i in store.load_org(slug)._work_archive()] == [wid]
-    upd(slug, wid, reopen=True, status="in_progress", done=["the build finished"])
-    org = store.load_org(slug)
-    assert [i["slug"] for i in org._work_active()] == [wid], "not brought back"
-    assert not org._work_archive(), org._work_archive()
-    v = org.work_get(USER, wid)
-    assert v["status"] == "in_progress" and v["archived"] is False, v
-    assert v["waiting_reason"] is None, "a reason outlived its state"
-    assert org.work_counts()["active"] == 1, org.work_counts()
-    # the history kept the whole trip: into waiting, and back out of the archive
-    ops = [h.get("op") for h in v["history"]]
-    assert "reopen" in ops, ops
-
-
-check("the timer archives a waiting item but never resumes or completes it — "
-      "coming back takes an explicit reopen", the_timer_never_resumes_it)
-
-
-def attention_still_holds_it_out_of_the_archive() -> None:
-    """The archive exemption is about the BADGE being able to open onto a
-    visible row, and it is decided before the status is looked at — so it must
-    hold for the newest status that ages out, not just for done."""
-    slug = fixture()
-    wid = item(slug, "Waits on a build")
-    upd(slug, wid, status="waiting", waiting_reason=EVENT,
-        attention=True, attention_reason="confirm the extra switch I added")
-    # ⚠ THE CONTROL IS A SECOND WAITING ITEM OF THE SAME AGE, flagged by
-    # nothing. Without it "the sweep moved neither" is exactly what a build
-    # where waiting never archives at all would print, and this check would
-    # pass while proving nothing about the exemption.
-    plain = item(slug, "Also waits on a build")
-    upd(slug, plain, status="waiting", waiting_reason=EVENT)
-    at = min(backdate(slug, wid, 3601), backdate(slug, plain, 3601))
-    assert sweep(slug, at) == [plain], \
-        "an attention-holding waiting item archived, or its control did not"
-    org = store.load_org(slug)
-    assert not org.work_get(USER, wid, at)["archived"], "derived as archived"
-    lst = org.work_list(USER, include_archived=True, now_ts=at)
-    assert [r["slug"] for r in lst["items"]] == [wid], lst["items"]
-    # and the badge that points at it is the ATTENTION number, never `active`
-    assert org.work_counts(at) == {"attention": 1, "active": 0,
-                                   "archived": 1, "backlogged": 0}, \
-        org.work_counts(at)
-
-
-check("an hour-old waiting item that holds attention stays in the main list, "
-      "counted as attention and not as active",
-      attention_still_holds_it_out_of_the_archive)
+check("AUDIT: the working-status checkup keys on the agent's reported word, never on "
+      "docket items", the_working_checkup_reads_the_agents_own_word_not_the_docket)
 
 
 print(f"\nALL {PASS} CHECKS PASS" if not FAIL else f"\n{FAIL} FAILED, {PASS} PASSED")

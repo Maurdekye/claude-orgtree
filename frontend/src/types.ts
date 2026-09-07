@@ -1894,19 +1894,26 @@ export interface WorkItem {
   kind: 'code' | 'non-code'
   title: string
   objective: string
-  /** backlogged | open | in_progress | blocked | waiting | review | done |
-   *  superseded | dropped. `backlogged` = not yet approached or approved:
-   *  served in its own group behind its own toggle and never counted as
-   *  active. `waiting` = active work whose next step is an EXTERNAL event
-   *  (never the user — that is the attention flag): it counts as active and
-   *  stays on the desk, and only its idle reminders stop. `dropped` = the
-   *  terminal NON-SUCCESS outcome (cancelled, or failed unrecoverably): it is
-   *  closed, it archives AT ONCE (user 2026-09-07), and it is never Done. */
+  /** backlogged | open | in_progress | blocked | review | done | superseded |
+   *  dropped. `backlogged` = not yet approached or approved: served in its
+   *  own group behind its own toggle and never counted as active. `blocked`
+   *  = cannot move until an answer or event outside the item happens: it
+   *  counts as active, stays on the desk, and is never nudged by the idle
+   *  reminder (user 2026-09-07). There is no `waiting` state any more (user
+   *  2026-09-07): a row recorded as waiting is SERVED as blocked, with
+   *  `legacy_status` saying so. `dropped` = the terminal NON-SUCCESS outcome
+   *  (cancelled, or failed unrecoverably): it is closed, it archives AT ONCE
+   *  (user 2026-09-07), and it is never Done. */
   status: string
+  /** the word a row was STORED under when `status` is a read-time mapping of
+   *  a removed state (today only "waiting" → blocked); null/absent otherwise.
+   *  Optional on the wire: an older backend does not send it. */
+  legacy_status?: string | null
   /** the state's own information, required on ENTRY to that state and cleared
-   *  on the way out, so at most one of them is ever set. `waiting_reason` and
-   *  `dropped_reason` are optional on the wire because an older backend does
-   *  not send them. */
+   *  on the way out, so at most one of them is ever set. For a legacy waiting
+   *  row `blocked_reason` is served from the recorded waiting reason.
+   *  `waiting_reason` and `dropped_reason` are optional on the wire because
+   *  an older backend does not send them. */
   blocked_reason: string | null
   waiting_reason?: string | null
   dropped_reason?: string | null

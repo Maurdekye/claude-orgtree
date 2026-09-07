@@ -78,9 +78,10 @@ def add_item(slug: str, title: str, *, owner: str | None = "agent",
              status: str = "open",
              participants: list[str] | None = None,
              reviewer: str | None = None) -> str:
-    """One item. `blocked` and `waiting` carry the state information the ledger
-    now requires; `reviewer` is planted directly because the field is
-    codex-sandbox's and is not written by any verb here yet."""
+    """One item. `blocked` carries the state information the ledger requires;
+    `reviewer` is planted directly because the field is codex-sandbox's and is
+    not written by any verb here yet. (`waiting` was removed as a state, user
+    2026-09-07; a legacy row is planted raw by `legacy_waiting` below.)"""
     with store.DOC_LOCK:
         org = store.load_org(slug)
         r = org.work_create(USER, title,
@@ -89,10 +90,7 @@ def add_item(slug: str, title: str, *, owner: str | None = "agent",
                             participants=participants,
                             blocked_reason=("the vendor has not answered; "
                                             "their support can unblock it"
-                                            if status == "blocked" else None),
-                            waiting_reason=("the nightly build finishes; the "
-                                            "build watchdog mails me"
-                                            if status == "waiting" else None))
+                                            if status == "blocked" else None))
         if reviewer is not None:
             it, _ = org._work_find(str(r["slug"]))
             it["reviewer"] = {"node": reviewer,
@@ -360,8 +358,25 @@ def unowned(slug: str) -> None:
     add_item(slug, "Nobody owns this", owner=None)
 
 
-def waiting_on_an_event(slug: str) -> None:
-    add_item(slug, "Waits for the nightly build", status="waiting")
+def blocked_on_something(slug: str) -> None:
+    """BLOCKED IS NEVER NUDGED (user 2026-09-07: "make blocked avoid periodic
+    status nudges"): the item already says what it is stuck on and how the
+    agent will hear of it; a twenty-minute reminder to re-read that is
+    pointless work. The event or answer itself resumes it, as mail."""
+    add_item(slug, "Stuck on the vendor", status="blocked")
+
+
+def legacy_waiting(slug: str) -> None:
+    """A row STORED as `waiting` before the state was removed: read as blocked,
+    so never nudged either — without any write to the document."""
+    wid = add_item(slug, "Recorded as waiting last week", status="blocked")
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        it, _ = org._work_find(wid)
+        it["status"] = "waiting"
+        it["blocked_reason"] = None
+        it["waiting_reason"] = "the nightly build finishes; the watchdog mails me"
+        store.save_org(org)
 
 
 def reviewed_by_a_peer(slug: str) -> None:
@@ -379,7 +394,8 @@ for _label, _prep in (
         ("otherowner", someone_elses),
         ("participant", participant_only),
         ("unowned", unowned),
-        ("waiting", waiting_on_an_event),
+        ("blocked", blocked_on_something),
+        ("legacywaiting", legacy_waiting),
         ("underpeerreview", reviewed_by_a_peer)):
     check(f"excluded: {_label} items never wake their agent (control fires)",
           excluded(_label, _prep))
@@ -407,12 +423,14 @@ def mixed_set_lists_only_the_eligible() -> None:
         assert len(calls) == 1, calls
         body = reminders(slug)[0]["body"]
         listed = [ln for ln in body.splitlines() if ln.startswith("- ")]
+        # Bravo is BLOCKED and therefore not listed (user 2026-09-07) — but its
+        # owner still holds actionable work, so the wake still fires for that
         assert sorted(listed) == sorted([
             f"- {live} (in_progress): Alpha keeps moving",
-            f"- {blocked} (blocked): Bravo is stuck",
             f"- {review} (review — NO REVIEWER NAMED: assign one, do not "
             f"review your own work): Charlie awaits agent review"]), listed
-        assert "3 unfinished docket item" in calls[0][2], calls[0][2]
+        assert blocked not in body, "a blocked item was listed in a nudge"
+        assert "2 unfinished docket item" in calls[0][2], calls[0][2]
     finally:
         park(slug)
 

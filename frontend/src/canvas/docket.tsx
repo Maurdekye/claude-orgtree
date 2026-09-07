@@ -52,15 +52,18 @@ const STATUS_LABEL: Record<string, string> = {
   open: 'Open',
   in_progress: 'In progress',
   blocked: 'Blocked',
-  waiting: 'Waiting',
+  // `waiting` was REMOVED as a state (user 2026-09-07): the backend serves a
+  // row recorded as waiting as `blocked` with `legacy_status: "waiting"`, so
+  // no label is needed for it; an older backend that still serves the word
+  // falls through to the raw status
   review: 'Agent review',
   done: 'Done',
   superseded: 'Superseded',
   dropped: 'Dropped',
 }
-// `waiting` is an EXTERNAL event, never the user — asking the user is the
-// attention flag (user ruling 2026-09-05)
-const WAITING_HELP = 'Waiting on an external event, not on the user — it names the event and how the agent will hear of it. It stops its own idle reminders, is out of the active count, and archives an hour after its last docket update unless attention holds it, still Waiting'
+// `blocked` names what it is stuck on and how the agent will hear of the
+// answer or event; it is never nudged by the idle reminder (user 2026-09-07)
+const BLOCKED_HELP = 'Cannot move until something outside the item happens — an answer, an event, another agent\'s work. It says what and how the agent will hear of it; it stays active and is never nudged by the idle reminder'
 // the word on its own could be read as "finished with"; it means the opposite
 // of Done, and the pane says which of the two ways it ended
 const DROPPED_HELP = 'Ended WITHOUT being completed — cancelled, or failed in a way it cannot be recovered from. Closed and archived at once (no one-hour wait), but never Done'
@@ -68,22 +71,21 @@ const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
 /** hover help, only where the status word can be read two ways */
 const statusHelp = (status: string): string | undefined =>
   (status === 'review' ? REVIEW_HELP
-    : status === 'waiting' ? WAITING_HELP
+    : status === 'blocked' ? BLOCKED_HELP
       : status === 'dropped' ? DROPPED_HELP : undefined)
 
 /** Group-by-status order, exactly as specified: effective attention first,
- *  then blocked, in_progress, review, open, waiting, done, then everything
- *  else that is closed. `waiting` sits below the states somebody can act on
- *  today and above the backlog, because it is real work with nothing to do
- *  right now. A status the backend adds later lands in "Other" rather than
- *  vanishing — an unknown row must still be reachable. */
+ *  then blocked, in_progress, review, open, done, then everything else that
+ *  is closed. (`waiting` had its own group until the state was removed, user
+ *  2026-09-07; such rows now arrive as blocked.) A status the backend adds
+ *  later lands in "Other" rather than vanishing — an unknown row must still
+ *  be reachable. */
 const STATUS_GROUPS: { key: string; heading: string }[] = [
   { key: 'attention', heading: 'Needs attention' },
   { key: 'blocked', heading: 'Blocked' },
   { key: 'in_progress', heading: 'In progress' },
   { key: 'review', heading: 'Agent review' },
   { key: 'open', heading: 'Open' },
-  { key: 'waiting', heading: 'Waiting on an event' },
   { key: 'backlogged', heading: 'Backlogged' },
   { key: 'done', heading: 'Done' },
   { key: 'other', heading: 'Other closed' },
@@ -840,7 +842,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
           <span className="spacer" />
           <label className="checkline docket-showarchived"
-            title="include archived work items — closed or waiting, with no docket update for over an hour">
+            title="include archived work items — done items an hour after their last docket update, dropped items at once">
             <input type="checkbox" checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived
@@ -1317,8 +1319,15 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   // rendered as if it described where the item stands now
   const stateInfo =
     item.status === 'blocked'
-      ? { heading: 'BLOCKED BECAUSE', text: item.blocked_reason ?? '' }
+      // a row recorded as `waiting` before the state was removed (user
+      // 2026-09-07) arrives as blocked with legacy_status set and its
+      // reason already carried into blocked_reason by the backend
+      ? { heading: item.legacy_status === 'waiting'
+            ? 'BLOCKED BECAUSE (recorded as waiting before 2026-09-07)'
+            : 'BLOCKED BECAUSE',
+          text: item.blocked_reason ?? '' }
       : item.status === 'waiting'
+        // an OLDER backend that still serves the word: show what it sent
         ? { heading: 'WAITING FOR', text: item.waiting_reason ?? '' }
         : item.status === 'dropped'
           // the heading says the outcome, not just the field name: `Dropped`
@@ -1401,7 +1410,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
               states its problem and proposed solution
             </div>}
       </div>
-      {/* STATE INFORMATION (user 2026-09-05). Blocked and waiting each owe an
+      {/* STATE INFORMATION (user 2026-09-05). Blocked and dropped each owe an
           explanation, so the pane shows the one that belongs to the state the
           item is actually in. Older blocked items may carry none: say that
           rather than render an empty box. Reasons for states the item has

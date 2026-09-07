@@ -300,15 +300,21 @@ def a_review_sending_work_back_clears_the_state_it_left() -> None:
     store.save_org(org)
     wid = item(slug, "Waits on a build", status="in_progress")
     do(slug, lambda o: o.work_assign(USER, wid, "junior"))
-    upd(slug, wid, status="waiting",
-        waiting_reason="the nightly build finishes; the watchdog mails me")
+    # a LEGACY row: stored as `waiting` (the state was removed 2026-09-07), so
+    # planted raw — the field it carries must still be cleared on the way out
+    with store.DOC_LOCK:
+        o = store.load_org(slug)
+        it0, _ = o._work_find(wid)
+        it0["status"] = "waiting"
+        it0["waiting_reason"] = "the nightly build finishes; the watchdog mails me"
+        store.save_org(o)
     assert raw(slug, wid)["waiting_reason"], "fixture planted nothing"  # not vacuous
     stamp(slug, wid, OLD)                       # a status clock we can read
     do(slug, lambda o: o.work_review_decide(USER, wid, "changes", "redo it"))
     it = raw(slug, wid)
     assert it["status"] == "in_progress", it["status"]
     assert it.get("waiting_reason") in (None, ""), \
-        "the item left `waiting` still carrying why it was waiting"
+        "the item left its stored `waiting` still carrying why it was waiting"
     # THE SAME MOVE IS ALSO A STATUS CHANGE, so it belongs in the status clock
     assert it["status_at"] != OLD, \
         "a sendback changed the status without stamping the status clock"
@@ -339,8 +345,13 @@ def the_map_is_the_single_source_of_truth() -> None:
     assert "dropped_reason" in fields, org.WORK_STATE_INFO
     missing = fields - set(org.WORK_STATE_INFO_ASKS)
     assert not missing, f"no sentence tells the writer what to say: {missing}"
-    unknown = set(org.WORK_STATE_INFO) - set(org.WORK_STATUSES)
+    # a REMOVED state may keep its field in the map so a legacy row is cleared
+    # on the way out; anything else here would be information for a state
+    # that never existed
+    unknown = (set(org.WORK_STATE_INFO) - set(org.WORK_STATUSES)
+               - set(org.WORK_LEGACY_STATUSES))
     assert not unknown, f"state information for statuses that do not exist: {unknown}"
+    assert set(org.WORK_LEGACY_STATUSES) == {"waiting"}, org.WORK_LEGACY_STATUSES
     planted = {f: "stale" for f in fields}
     it = dict(planted)
     org._work_clear_state_info(it)               # type: ignore[arg-type]
@@ -486,27 +497,26 @@ check("the archived-item refusal names the item's OWN outcome, so a cancelled "
       "item is never told it is done", the_refusal_does_not_call_it_done_either)
 
 
-def the_hour_edge_still_holds_for_done_and_waiting() -> None:
-    """CONTROL: the clock is untouched for the statuses that keep it. `done`
-    and `waiting` at EXACTLY one hour are still on the list (strict edge), and
-    at one second past they archive — so 'dropped at once' did not leak into
-    'everything at once'."""
+def the_hour_edge_still_holds_for_done() -> None:
+    """CONTROL: the clock is untouched for the status that keeps it. `done` at
+    EXACTLY one hour is still on the list (strict edge), and at one second
+    past it archives — so 'dropped at once' did not leak into 'everything at
+    once'. (`waiting` no longer exists as a state — user 2026-09-07 — and a
+    legacy row reads as blocked, which never ages out; see
+    test_docket_waiting_state.py.)"""
     slug = fixture()
     fine = item(slug, "Finished", status="review")
     do(slug, lambda org: org.work_accept(USER, fine))
-    waits = item(slug, "Waits", status="in_progress")
-    upd(slug, waits, status="waiting", waiting_reason="a build; the watchdog mails me")
-    # the LOWER of the two 'now's: each item is then at most exactly an hour old
-    at = min(backdate(slug, fine, 3600), backdate(slug, waits, 3600))
+    at = backdate(slug, fine, 3600)
     lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at)
-    assert {r["slug"] for r in lst["items"]} == {fine, waits}, "archived at exactly an hour"
+    assert [r["slug"] for r in lst["items"]] == [fine], "archived at exactly an hour"
     assert lst["archived"] == [] and lst["counts"]["archived"] == 0, lst["counts"]
     lst = store.load_org(slug).work_list(USER, include_archived=True, now_ts=at + 1)
-    assert {r["slug"] for r in lst["archived"]} == {fine, waits} and lst["items"] == []
+    assert [r["slug"] for r in lst["archived"]] == [fine] and lst["items"] == []
 
 
-check("CONTROL: done and waiting keep the strict one-hour edge — listed at exactly an "
-      "hour, archived a second later", the_hour_edge_still_holds_for_done_and_waiting)
+check("CONTROL: done keeps the strict one-hour edge — listed at exactly an hour, "
+      "archived a second later", the_hour_edge_still_holds_for_done)
 
 
 def done_still_archives() -> None:

@@ -9630,13 +9630,32 @@ class Org:
     # (`WORK_ARCHIVES_ITSELF`) — as `waiting`, never as done. Both user
     # 2026-09-06.
     WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
-                            "waiting", "review", "done", "superseded",
-                            "dropped")
+                            "review", "done", "superseded", "dropped")
     WORK_AGENT_STATUSES: Final = ("backlogged", "open", "in_progress",
-                                  "blocked", "waiting", "review", "dropped")
+                                  "blocked", "review", "dropped")
     WORK_CLOSED: Final = ("done", "superseded", "dropped")
     WORK_BACKLOG: Final = "backlogged"
-    WORK_WAITING: Final = "waiting"
+    #: STATES THE PRODUCT NO LONGER ASSERTS, read as their replacement (user
+    #: 2026-09-07 06:33Z: "remove waiting as a task state, and make blocked
+    #: avoid periodic status nudges"). `waiting` duplicated `blocked` and was
+    #: being used for internal dependencies. It cannot be asserted or created
+    #: any more — the refusal names `blocked` — but the documents already
+    #: holding it are NOT rewritten by a read:
+    #:   · READ: `_work_status` serves a stored `waiting` as `blocked`; the
+    #:     served `blocked_reason` falls back to the stored `waiting_reason`
+    #:     (`_work_blocked_reason`); the row carries `legacy_status: "waiting"`
+    #:     so a reader can tell; history stays exactly as written. Every
+    #:     predicate that decides by status (counts, archiving, reminders, the
+    #:     next-action recipient) reads the MAPPED status, so a legacy row
+    #:     behaves as blocked everywhere: counted active, never ages out by
+    #:     itself, never nudged.
+    #:   · WRITE: the item's next `work_update` converts it in place — status
+    #:     `blocked`, the waiting reason carried into `blocked_reason` unless
+    #:     one is already there — and records the conversion in history. A
+    #:     read never writes; nothing migrates the store wholesale.
+    #:   · A physically archived legacy row stays archived; `reopen=true`
+    #:     resumes it like any archived item.
+    WORK_LEGACY_STATUSES: Final = {"waiting": "blocked"}
     #: STATE INFORMATION, state → the field that must carry it (user
     #: 2026-09-05). Entering one of these states requires the field; the other
     #: states require nothing. The field is cleared on the way out, so it never
@@ -9650,6 +9669,9 @@ class Org:
     # having it, because without a documented way to end work unsuccessfully
     # the tidy path is `review` → accept, and the docket then records a
     # completion that never happened. Its reason says WHICH of the two it was.
+    #: `waiting` stays in this map ONLY so a legacy row's `waiting_reason` is
+    #: cleared when the row leaves that stored state (the conversion above
+    #: copies it into `blocked_reason` first); nothing can enter it.
     WORK_STATE_INFO: Final = {"blocked": "blocked_reason",
                               "waiting": "waiting_reason",
                               "dropped": "dropped_reason"}
@@ -9657,6 +9679,29 @@ class Org:
 
     def _work_active(self) -> list[WorkItem]:
         return cast("list[WorkItem]", self.d.get("work_items") or [])
+
+    def _work_status(self, it: Mapping[str, Any]) -> str:
+        """The item's status AS THE PRODUCT READS IT: a stored legacy state is
+        mapped to its replacement (`WORK_LEGACY_STATUSES`); everything else is
+        served as stored. Every status-driven predicate goes through here."""
+        raw = str(it.get("status") or "")
+        return self.WORK_LEGACY_STATUSES.get(raw, raw)
+
+    def _work_legacy_status(self, it: Mapping[str, Any]) -> str | None:
+        raw = str(it.get("status") or "")
+        return raw if raw in self.WORK_LEGACY_STATUSES else None
+
+    def _work_blocked_reason(self, it: Mapping[str, Any]) -> str | None:
+        """The served `blocked_reason`: the stored one, else — for a legacy
+        `waiting` row read as blocked — the waiting reason it was recorded
+        with, so the pane never shows a blocked row with its reason hidden in
+        a field the reader no longer knows to look at."""
+        own = it.get("blocked_reason")
+        if own:
+            return cast(str, own)
+        if it.get("status") == "waiting":
+            return cast("str | None", it.get("waiting_reason"))
+        return cast("str | None", own)
 
     def _work_archive(self) -> list[WorkItem]:
         return cast("list[WorkItem]", self.d.get("work_items_archive") or [])
@@ -10080,18 +10125,15 @@ class Org:
             dt = dt.replace(tzinfo=timezone.utc)
         return now_ts - dt.timestamp()
 
-    #: statuses the hourly sweep archives by itself. `dropped` joined `done`
+    #: statuses the sweep archives by itself. `dropped` joined `done`
     #: (user 2026-09-05, Astra 2026-09-05): work that was cancelled or failed
     #: unrecoverably is as finished as work that succeeded, and leaving only
     #: the successful kind to archive itself meant every dead item stayed on
     #: the main list for good. `superseded` is deliberately NOT here — its
     #: replacement pointer is the thing you follow, and it is left as it was.
-    #:
-    #: ⚠ `waiting` IS HERE AND IS NOT A CLOSED STATE (user 2026-09-06). It ages
-    #: out on the same clock, and only that: it archives AS `waiting`, keeping
-    #: its status, reason and history with no acceptance recorded, and the
-    #: timer never resumes it — coming back is the ordinary `reopen=true`.
-    WORK_ARCHIVES_ITSELF: Final = ("done", "dropped", "waiting")
+    #: `waiting` LEFT this tuple with the state itself (user 2026-09-07): a
+    #: legacy row reads as blocked, and blocked never ages out by itself.
+    WORK_ARCHIVES_ITSELF: Final = ("done", "dropped")
     #: …and of those, the statuses that archive THE MOMENT they are set, with
     #: no clock at all (user 2026-09-07: "dropped tasks should be immediately
     #: archived, no 1-hour timeout for them"). Dead work has nothing left to
@@ -10117,7 +10159,7 @@ class Org:
         """Ages out of the main list: a status that archives itself — done or
         waiting on an event — whose docket update is STRICTLY older than one
         hour; or `dropped`, which is eligible the instant it is set."""
-        status = it.get("status")
+        status = self._work_status(it)
         if status not in self.WORK_ARCHIVES_ITSELF:
             return False
         if status in self.WORK_ARCHIVES_AT_ONCE:
@@ -10129,7 +10171,7 @@ class Org:
         """The reason an archived item is archived, in the item's OWN terms —
         never "done" for work that was not, never "over an hour" for work
         that archives at once."""
-        status = str(it.get("status") or "")
+        status = self._work_status(it)
         if status in self.WORK_ARCHIVES_AT_ONCE:
             return f"{status} — a {status} item archives at once"
         return f"{status} for over an hour"
@@ -10157,7 +10199,7 @@ class Org:
     #: `_work_counts_active` for the org-wide number and `work_list` for a
     #: single viewer's readable set — and two copies are two chances to
     #: disagree about what the same number means.
-    WORK_UNCOUNTED: Final = (*WORK_CLOSED, WORK_BACKLOG, WORK_WAITING)
+    WORK_UNCOUNTED: Final = (*WORK_CLOSED, WORK_BACKLOG)
 
     def _work_counts_active(self, it: WorkItem) -> bool:
         """Does this item belong to the `active` number — work that needs
@@ -10169,7 +10211,7 @@ class Org:
         backlogged row is deliberately shown in the main list, and a waiting row
         stays in the main list for its first hour; being visible is not the same
         as being in flight, and this number means the latter."""
-        return it.get("status") not in self.WORK_UNCOUNTED
+        return self._work_status(it) not in self.WORK_UNCOUNTED
 
     def _work_sweep(self, now_ts: float | None = None) -> list[str]:
         """Physically move eligible, attention-free items into the archive —
@@ -10204,7 +10246,7 @@ class Org:
                 it["archived_at"] = now()
                 self.d.setdefault("work_items_archive", []).append(it)
                 moved.append(it["slug"])
-                outcomes[it["slug"]] = str(it.get("status") or "")
+                outcomes[it["slug"]] = self._work_status(it)
         if moved:
             self._log("work_archived", "orgtree",
                       {"items": moved,
@@ -10356,7 +10398,12 @@ class Org:
             "parent_visible": self._work_pointer_visible(
                 it.get("parent"), viewer),
             "delivery": self._work_delivery_view(it),
-            "blocked_reason": it.get("blocked_reason"),
+            # the status AS READ (a stored legacy `waiting` is served as
+            # blocked, with the reason it was recorded with) and, when that
+            # mapping applied, the word it was stored under
+            "status": self._work_status(it),
+            "legacy_status": self._work_legacy_status(it),
+            "blocked_reason": self._work_blocked_reason(it),
             "waiting_reason": it.get("waiting_reason"),
             "dropped_reason": it.get("dropped_reason"),
             "participants": list(it.get("participants") or []),
@@ -10501,8 +10548,16 @@ class Org:
                 continue        # pre-slug document: named on its next write
             if not self._work_counts_active(it) or self._work_attention(it):
                 continue
-            if it.get("status") == self.WORK_WAITING:
-                continue        # its next step is an event, not a nudge
+            if self._work_status(it) == "blocked":
+                # BLOCKED IS NEVER NUDGED (user 2026-09-07: "make blocked avoid
+                # periodic status nudges"): the item says what it is stuck on
+                # and who can act; waking its owner every twenty minutes to
+                # re-read that is pointless work. The row is excluded HERE,
+                # per item — an owner with actionable items beside a blocked
+                # one is still woken for those, and an owner whose every item
+                # is blocked gets no reminder at all. Resumption is the
+                # answer or event itself, delivered as mail.
+                continue
             who, role = self._work_next_recipient(it)
             if who != nid:
                 continue
@@ -10561,7 +10616,7 @@ class Org:
             "attention": sum(1 for v in items + arch + back
                              if v["effective_attention"]),
             "active": sum(1 for v in items
-                          if v["status"] not in self.WORK_UNCOUNTED),
+                          if v["status"] not in self.WORK_UNCOUNTED),   # v: served (mapped) status
             "archived": len(arch),
             "backlogged": len(back)})
         out: dict[str, Any] = {"items": items, "counts": counts, "now": now()}
@@ -10722,7 +10777,7 @@ class Org:
             raise LedgerError("kind must be code|non-code")
         if status not in self.WORK_AGENT_STATUSES or status == "dropped":
             raise LedgerError("a new item starts backlogged|open|in_progress"
-                              "|blocked|waiting|review")
+                              "|blocked|review")
         active = self.d.setdefault("work_items", [])
         if len(active) >= self.WORK_ACTIVE_MAX:
             raise LedgerError(
@@ -10997,6 +11052,12 @@ class Org:
                         "assert `review` — which means REVIEW BY AGENTS; "
                         "acceptance belongs to your superior or the user "
                         "(orgtree_work accept)")
+                if status in self.WORK_LEGACY_STATUSES:
+                    raise LedgerError(
+                        f"`{status}` is no longer a task state (user 2026-09-07): "
+                        f"use `{self.WORK_LEGACY_STATUSES[status]}` with a "
+                        f"blocked_reason that names what you are waiting on, who "
+                        f"or what will unblock it, and how you will hear of it")
                 raise LedgerError(
                     f"status must be one of {'|'.join(self.WORK_AGENT_STATUSES)}")
         # a participant's grant is NARROW: status updates and evidence. Closing
@@ -11026,7 +11087,7 @@ class Org:
             status = status or "in_progress"
             if status in self.WORK_CLOSED:
                 raise LedgerError("reopen needs an open status "
-                                  "(open|in_progress|blocked|waiting|review)")
+                                  "(open|in_progress|blocked|review)")
             if phys:
                 self._work_archive().remove(it)
                 self.d.setdefault("work_items", []).append(it)
@@ -11045,6 +11106,25 @@ class Org:
             it["superseded_by"] = None
         changes: dict[str, Any] = {}
         was = it.get("status")
+        if was in self.WORK_LEGACY_STATUSES:
+            # THE ONE WRITE THAT CONVERTS A LEGACY ROW: this item's own next
+            # update. The stored `waiting` becomes what it has been read as
+            # since the state was removed — `blocked`, unless the update names
+            # another status — and the waiting reason is carried into
+            # `blocked_reason` (when none is there) so the requirement below
+            # is met by the reason the item already had. Recorded in history
+            # as a conversion, not as the agent's own transition.
+            legacy = str(was)
+            status = status or self.WORK_LEGACY_STATUSES[legacy]
+            if status == "blocked" and not str(it.get("blocked_reason") or "").strip():
+                it["blocked_reason"] = it.get("waiting_reason")
+            changes["legacy_status"] = {"from": legacy, "read_as":
+                                        self.WORK_LEGACY_STATUSES[legacy]}
+            # the row has been READ as its replacement all along, so this is
+            # not an entry into `blocked` that owes a fresh reason: a legacy
+            # row that stored no reason converts with none, rather than being
+            # refused or given invented prose
+            was = self.WORK_LEGACY_STATUSES[legacy]
         if status is not None and status != it.get("status"):
             changes["status"] = {"from": it.get("status"), "to": status}
             it["status"] = status

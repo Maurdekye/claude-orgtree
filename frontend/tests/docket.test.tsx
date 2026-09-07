@@ -77,6 +77,10 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [],
 // So a test that names a title and not a slug gets that title as its slug.
 // Tests that care about slug SHAPE (kebab, substrings, boundaries) pass one
 // explicitly, and the reference-linking suite uses realistic slugs throughout.
+/** the row whose name line reads `t` — BY TITLE, never by index (grouping is a
+ *  persisted preference, so an index silently follows the previous test) */
+const rowFor = (el: HTMLElement, t: string) => rows(el)[titles(el).indexOf(t)] as HTMLElement
+
 const mkItem = (o: Partial<WorkItem>): WorkItem => ({
   ...mkItemBase(o),
   ...(o.title !== undefined && o.slug === undefined ? { slug: o.title } : {}),
@@ -1592,13 +1596,17 @@ uiTest('§34 the attention reason keeps every line the user is asked to read',
   })
 
 
-uiTest('§35 a Waiting item has its own group, below what somebody can act on today', async (mount) => {
+uiTest('§35 a row recorded as Waiting arrives as Blocked (the state was removed) and groups there', async (mount) => {
   mockWorkItems([
     mkItem({ title: 'Blocked One', status: 'blocked' }),
     mkItem({ title: 'Moving One', status: 'in_progress' }),
     mkItem({ title: 'Reviewed One', status: 'review' }),
     mkItem({ title: 'Open One', status: 'open' }),
-    mkItem({ title: 'Waiting One', status: 'waiting',
+    // THE WIRE SHAPE OF A LEGACY ROW (user 2026-09-07 removed `waiting`): the
+    // backend serves it as blocked, says what it was stored as, and carries
+    // the recorded reason into blocked_reason
+    mkItem({ title: 'Waiting One', status: 'blocked', legacy_status: 'waiting',
+      blocked_reason: 'the nightly build finishes; the watchdog mails me',
       waiting_reason: 'the nightly build finishes; the watchdog mails me' }),
   ], [], undefined, [
     mkItem({ title: 'Backlog One', status: 'backlogged' }),
@@ -1610,22 +1618,33 @@ uiTest('§35 a Waiting item has its own group, below what somebody can act on to
   await flush()
   await chooseGroup(el, 'status')
 
-  // the whole point of the order: waiting sits below every state somebody can
-  // act on today and above the backlog. An unknown status would fall into
-  // "Other closed" instead, which is what this pins down.
+  // there is no Waiting group any more: the legacy row sits in Blocked with
+  // the other blocked work, and the group list has no "Waiting on an event"
   assert.deepEqual(headings(el), ['Blocked', 'In progress', 'Agent review',
-    'Open', 'Waiting on an event', 'Backlogged — not yet approached'])
-  assert.deepEqual(titles(el), ['Blocked One', 'Moving One', 'Reviewed One',
-    'Open One', 'Waiting One', 'Backlog One'])
+    'Open', 'Backlogged — not yet approached'])
+  assert.deepEqual(titles(el), ['Blocked One', 'Waiting One', 'Moving One',
+    'Reviewed One', 'Open One', 'Backlog One'])
 
-  // it is REAL work and it is in the main list — what changed on 2026-09-06 is
-  // only that the toolbar stops counting it (a backend rule, pinned in
-  // test_docket_waiting_state.py §1) and that it ages into the archive after an
-  // hour. The row itself still says what it is, in words.
-  const waiting = rows(el)[4]!
-  assert.ok(waiting.querySelector('.docket-status.status-waiting'),
-    'the status word carries its own class, as every other status does')
-  assert.equal(waiting.querySelector('.docket-status')?.textContent, 'Waiting')
+  // the row reads as what it is served as — Blocked, with the blocked class —
+  // and the pane says it was recorded as waiting, with its reason
+  const legacy = rowFor(el, 'Waiting One')
+  assert.ok(legacy.querySelector('.docket-status.status-blocked'),
+    'the legacy row carries the blocked status class')
+  assert.equal(legacy.querySelector('.docket-status')?.textContent, 'Blocked')
+  assert.equal(el.querySelector('.docket-status.status-waiting'), null,
+    'nothing renders the removed status word')
+  await inAct(() => legacy.click())
+  await flush()
+  const box = [...(pane(el)?.querySelectorAll('.docket-desc') ?? [])]
+    .find((d) => /BLOCKED BECAUSE/.test(d.textContent ?? ''))
+  assert.match(box?.textContent ?? '', /recorded as waiting before 2026-09-07/)
+  assert.match(box?.textContent ?? '', /the watchdog mails me/)
+  // CONTROL: an ordinary blocked row's heading does not claim a legacy origin
+  await inAct(() => rowFor(el, 'Blocked One').click())
+  await flush()
+  const plain = [...(pane(el)?.querySelectorAll('.docket-desc') ?? [])]
+    .find((d) => /BLOCKED BECAUSE/.test(d.textContent ?? ''))
+  assert.ok(plain && !/recorded as waiting/.test(plain.textContent ?? ''))
 
   // ⚠ AND THE NAME LINE STARTS WITH THE NAME (user 2026-09-06 removed the
   // status dot for the width). Asserted across EVERY row rather than on this
@@ -1650,6 +1669,8 @@ uiTest('§36 the pane explains the state the item is IN, never a leftover one', 
     // not belong, so this shape should never reach the pane — which is exactly
     // why the pane must choose by STATUS and not by "whichever field is set".
     // Choosing by populated field passes every test that plants only one.
+    // a row an OLDER backend still serves under the removed word: the pane
+    // shows what it sent rather than guessing
     mkItem({ title: 'Waiting Both', status: 'waiting',
       waiting_reason: REASON, blocked_reason: BLOCK }),
     mkItem({ title: 'Blocked Both', status: 'blocked',

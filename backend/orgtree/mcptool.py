@@ -298,8 +298,8 @@ TOOLS: list[dict[str, Any]] = [
             "(THE status update: ALWAYS carries "
             "done_so_far AND working_on_next as lists of individual entries "
             "— either may be empty, both empty is refused — plus optional "
-            "status backlogged|open|in_progress|blocked|waiting|review|"
-            "dropped, blocked_reason, waiting_reason, dropped_reason, "
+            "status backlogged|open|in_progress|blocked|review|"
+            "dropped, blocked_reason, dropped_reason, "
             "attention:true + attention_reason for a concrete reason the user "
             "must see, reopen:true to resume an archived item), `assign` "
             "(owner), `participants` (add/remove collaborators: they may "
@@ -391,9 +391,8 @@ TOOLS: list[dict[str, Any]] = [
                 "working_on_next": {"type": "array", "items": {"type": "string"},
                                     "description": "update (required) / create: what you are doing now and the next steps"},
                 "status": {"type": "string",
-                           "description": "create/update: backlogged|open|in_progress|blocked|waiting|review|dropped (done only via accept). `review` = REVIEW BY AGENTS; asking the user to look at something is attention/orgtree_ask, not this status. `waiting` = work whose next step is an EXTERNAL EVENT, not yours: it stays on your desk and readable in the docket, and it stops producing idle reminders until the event happens. It is out of the ACTIVE count, and an hour after its last docket update it archives like done — still `waiting`, never marked done, unless attention holds it — so resuming it then takes the ordinary reopen=true (user 2026-09-06). `dropped` = the TERMINAL NON-SUCCESS outcome for work explicitly cancelled or failed unrecoverably: it needs a `dropped_reason`, archives AT ONCE (no one-hour grace — user 2026-09-07), and is never Done — never route dead work through review and acceptance instead"},
+                           "description": "create/update: backlogged|open|in_progress|blocked|review|dropped (done only via accept). `review` = REVIEW BY AGENTS; asking the user to look at something is attention/orgtree_ask, not this status. `blocked` = cannot move until something outside this update happens — an answer, an event, another agent's work: it stays on your desk, counted as active, and is NEVER nudged by the idle reminder (user 2026-09-07); the answer or event itself, arriving as mail, is what resumes it, so the blocked_reason must say how you will hear of it. There is no `waiting` state any more (removed by the user 2026-09-07 — it duplicated blocked); a row recorded as waiting before then reads as blocked, with its reason, and carries legacy_status. `dropped` = the TERMINAL NON-SUCCESS outcome for work explicitly cancelled or failed unrecoverably: it needs a `dropped_reason`, archives AT ONCE (no one-hour grace — user 2026-09-07), and is never Done — never route dead work through review and acceptance instead"},
                 "blocked_reason": {"type": "string", "description": "create/update: REQUIRED when you move an item to blocked — what is preventing progress, what would unblock it, and who can act when that is known. A blank string is refused rather than erasing what is recorded"},
-                "waiting_reason": {"type": "string", "description": "create/update: REQUIRED when you move an item to waiting — the external event this item is waiting for AND how you will learn it happened (a watchdog, a message, a build notification). Nothing detects the event for you: the wake that tells you is what prompts you to update the state. A blank string is refused rather than erasing what is recorded"},
                 "dropped_reason": {"type": "string", "description": "update: REQUIRED when you end an item as `dropped` — why this work ended without being completed. Say plainly whether it was CANCELLED or FAILED UNRECOVERABLY, who decided, and what would have to change for it to be worth resuming. A blank string is refused rather than erasing what is recorded"},
                 "attention": {"type": "boolean",
                               "description": "update: raise the manual attention flag (needs attention_reason)"},
