@@ -90,7 +90,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Final, NoReturn, cast
 
-from . import providers
+from . import providers, antigravity_provenance
 
 #: how long `start()` waits for the `init` event before declaring the CLI
 #: unresponsive. Turns themselves are bounded by the caller's turn timeout
@@ -417,6 +417,8 @@ class AntigravityTurn:
         self.token_usage: dict[str, Any] | None = None
         self._init: dict[str, Any] | None = None
         self._result: dict[str, Any] | None = None
+        self._provenance_boundary: antigravity_provenance.Boundary | None = None
+        self._input_text = ""
         self._interrupted = False
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
@@ -503,6 +505,8 @@ class AntigravityTurn:
         # Normalize last: caller extras may add org identity, but may not
         # re-enable agy's updater or reintroduce another provider's secret.
         env = providers.antigravity_env(env)
+        self._input_text = input_text
+        self._provenance_boundary = antigravity_provenance.capture(self.conversation_id, env)
         self.proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=env, cwd=self.cwd,
@@ -587,10 +591,12 @@ class AntigravityTurn:
         return the normalized result the policy layer consumes."""
         assert self.proc is not None
         deadline = time.time() + timeout if timeout else None
+        timed_out = False
         while True:
             if self.proc.poll() is not None:
                 break
             if deadline and time.time() >= deadline:
+                timed_out = True
                 kill_tree(self.proc)
                 break
             time.sleep(0.05)
@@ -598,6 +604,7 @@ class AntigravityTurn:
             self._reader.join(timeout=5)
         with self._lock:
             result = self._result
+            events = list(self.events)
             usage_seen = self._requests > 0
             tu: dict[str, Any] | None = None
             if usage_seen or (result and isinstance(result.get("usage"), dict)):
@@ -623,6 +630,12 @@ class AntigravityTurn:
                     tu["output"] = int(ru.get("output_tokens") or 0)
                     tu["thinking"] = int(ru.get("thinking_tokens") or 0)
             text = "".join(self.agent_text)
+        provenance = None
+        if (not self._interrupted and not timed_out and result is not None
+                and self._reader is not None and not self._reader.is_alive()):
+            provenance = antigravity_provenance.reconcile(
+                self._provenance_boundary, self._input_text,
+                self.conversation_id, result, events)
         if self._interrupted:
             self.status = STATUS_INTERRUPTED
             self.stop_reason = "interrupted"
@@ -634,7 +647,7 @@ class AntigravityTurn:
                 else "turn timeout")
         else:
             rstatus = str(result.get("status") or "")
-            if rstatus == "SUCCESS":
+            if rstatus == "SUCCESS" or provenance is not None:
                 self.status = STATUS_COMPLETED
                 self.stop_reason = "end_turn"
                 if not text and isinstance(result.get("response"), str):
@@ -646,7 +659,7 @@ class AntigravityTurn:
                     + (": " + " | ".join(self.stderr_tail[-2:])[:300]
                        if self.stderr_tail else ""))
         self.token_usage = tu
-        return {
+        normalized: dict[str, Any] = {
             "conversation_id": self.conversation_id,
             "status": self.status,
             "stop_reason": self.stop_reason,
@@ -657,6 +670,9 @@ class AntigravityTurn:
             # lane exposes no window telemetry in print mode
             "rate_limits": None,
         }
+        if provenance is not None:
+            normalized["result_provenance"] = provenance
+        return normalized
 
     def poll(self) -> int | None:
         """The process generation's exit observation, in the Popen
