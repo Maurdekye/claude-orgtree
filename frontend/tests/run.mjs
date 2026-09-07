@@ -159,7 +159,9 @@ const CONCURRENCY = process.env.ORGTREE_TEST_CONCURRENCY ?? '4'
 // peaks at 873 MB (measured above), so this is ~7x headroom — loose enough
 // that no honest run touches it, tight enough that a runaway dies at ~4 s of
 // the incident's rate rather than at 66 GB. Run limit 5 min: the whole suite is
-// ~36 s wall, so ~8x. Both scale with --reps like the per-test timeout does.
+// ~36 s wall, so ~8x. The RUN LIMIT scales with --reps like the per-test
+// timeout does; the ceiling does not (a stress run repeats work, it does not
+// hold more of it at once).
 // ORGTREE_TEST_JOB_MB overrides the ceiling (0 = no ceiling); ORGTREE_TEST_
 // RUN_TIMEOUT_MS overrides the run limit (0 = none). Both reach this file
 // through tools/run_tests.py too: its child_env() strips ORGTREE_* but

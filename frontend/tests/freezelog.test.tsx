@@ -27,6 +27,7 @@
  * §6c retention: stale rings and rings beyond the 10 most recent are pruned at install
  * §7 the page: newest first, the empty state, Clear empties storage
  * §8 the path test: /debug/freezes with and without the kiosk prefix
+ * §9 a denied localStorage getter (SecurityError) does not make install/read/clear/page throw (recorder only)
  *
  * Run:  cd frontend && node tests/run.mjs freezelog
  */
@@ -351,6 +352,53 @@ test('§7 the page lists entries newest first, shows an empty state, and Clear e
   await act(async () => { clear.click() })
   assert.equal(readFreezeLog().length, 0, 'Clear removes the stored rings')
   assert.ok(view.el.querySelector('[data-testid=freeze-empty]'), 'and the page shows the empty state')
+})
+
+test('§9 a denied storage getter does not make the recorder throw: install, read, clear and the page survive it', async () => {
+  // main.tsx installs the recorder BEFORE React mounts. Chromium throws from
+  // the localStorage GETTER itself when storage is blocked for the origin,
+  // so this is the control for that exact shape (coordinator review).
+  // ⚠ WHAT THIS DOES NOT SHOW: whether the APP starts on such a browser. In
+  // this rig window !== globalThis, so the bare `localStorage` identifier
+  // other startup code uses keeps working here; and crashReporter's
+  // flushPendingReports, which main.tsx calls first, is unguarded (a
+  // separate item). Only a real browser can answer the app-level question
+  // (redteam-opus measured it at b86ec41: the app still does not start).
+  const real = window.localStorage
+  const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
+  Object.defineProperty(window, 'localStorage', {
+    get() { throw new DOMException('Failed to read the localStorage property from Window: Access is denied', 'SecurityError') },
+    configurable: true,
+  })
+  try {
+    assert.throws(() => window.localStorage, /SecurityError|denied/, 'the control: the getter really throws')
+    let stop: (() => void) | undefined
+    assert.doesNotThrow(() => { stop = installFreezeLog() }, 'install must not throw into the page')
+    assert.equal(typeof stop, 'function')
+    assert.doesNotThrow(() => stop!())
+    assert.deepEqual(readFreezeLog(), [], 'reading is empty, not an error')
+    assert.doesNotThrow(() => clearFreezeLog())
+    // the debug page renders its empty state rather than crashing
+    const view = await mountView(<FreezeLogPage />, (el) => el.querySelector('[data-testid=freeze-empty]'))
+    assert.ok(view.frames[0])
+    // an explicitly supplied storage still works when the window's is denied
+    const mem = new Map<string, string>()
+    const given: Storage = {
+      get length() { return mem.size }, key: (i) => [...mem.keys()][i] ?? null,
+      getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => { mem.set(k, v) },
+      removeItem: (k) => { mem.delete(k) }, clear: () => mem.clear(),
+    }
+    let t = 0
+    let pending: ((t: number) => void) | null = null
+    const s2 = installFreezeLog({ storage: given, thresholdMs: 100, now: () => t, raf: (cb) => { pending = cb; return 1 }, caf: () => { pending = null } })
+    t += 500; pending!(t)
+    assert.equal(readFreezeLog(given).map((e) => e.kind).join(','), 'start,gap')
+    s2()
+  } finally {
+    if (descriptor) Object.defineProperty(window, 'localStorage', descriptor)
+    else delete (window as unknown as Record<string, unknown>)['localStorage']
+    assert.equal(window.localStorage, real, 'the real storage is back for the remaining tests')
+  }
 })
 
 test('§8 the debug path is recognised with and without the kiosk prefix, and nowhere else', () => {

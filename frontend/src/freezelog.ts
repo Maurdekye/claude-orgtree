@@ -112,21 +112,59 @@ function tabKeys(storage: Storage): string[] {
   return keys
 }
 
-/** Every tab's entries, merged and ordered by time (oldest first). */
-export function readFreezeLog(storage: Storage = localStorage): FreezeEntry[] {
-  const all: FreezeEntry[] = []
-  for (const k of tabKeys(storage)) all.push(...safeParse(storage.getItem(k)))
-  return all.sort((a, b) => a.at - b.at)
+/** The page's localStorage, or null when the browser denies it. The GETTER
+ *  itself throws (SecurityError) when storage is blocked for the origin,
+ *  and main.tsx installs the recorder BEFORE React mounts, so an unguarded
+ *  `localStorage` here would have the recorder throw at startup for the sake
+ *  of an optional instrument (coordinator review, 2026-09-07). Every entry
+ *  point acquires storage through this and treats null as "recorder off".
+ *  This guards THE RECORDER only: whether the app as a whole starts on a
+ *  storage-denied browser also depends on the other startup code that
+ *  touches storage (crashReporter's flushPendingReports runs first in
+ *  main.tsx and is not guarded — a separate item, redteam-opus 2026-09-07). */
+function storageOf(win: Window, given?: Storage): Storage | null {
+  if (given) return given
+  try {
+    return win.localStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Every tab's entries, merged and ordered by time (oldest first); empty
+ *  when storage is unavailable. */
+export function readFreezeLog(storage?: Storage): FreezeEntry[] {
+  const s = storageOf(window, storage)
+  if (!s) return []
+  try {
+    const all: FreezeEntry[] = []
+    for (const k of tabKeys(s)) all.push(...safeParse(s.getItem(k)))
+    return all.sort((a, b) => a.at - b.at)
+  } catch {
+    return []
+  }
 }
 
 /** One tab's ring, as stored. */
-export function readTabFreezeLog(tab: string, storage: Storage = localStorage): FreezeEntry[] {
-  return safeParse(storage.getItem(freezeLogKey(tab)))
+export function readTabFreezeLog(tab: string, storage?: Storage): FreezeEntry[] {
+  const s = storageOf(window, storage)
+  if (!s) return []
+  try {
+    return safeParse(s.getItem(freezeLogKey(tab)))
+  } catch {
+    return []
+  }
 }
 
-export function clearFreezeLog(storage: Storage = localStorage): void {
-  for (const k of tabKeys(storage)) storage.removeItem(k)
-  storage.removeItem(LEGACY_KEY)
+export function clearFreezeLog(storage?: Storage): void {
+  const s = storageOf(window, storage)
+  if (!s) return
+  try {
+    for (const k of tabKeys(s)) s.removeItem(k)
+    s.removeItem(LEGACY_KEY)
+  } catch {
+    // denied mid-way: nothing to clear that we can reach
+  }
 }
 
 /** Retention: drop tab rings whose newest entry is older than maxAge, then
@@ -182,13 +220,17 @@ export function trimRing(ring: FreezeEntry[], cap: number): void {
 }
 
 /** Start recording. Returns a function that stops it (and detaches every
- *  listener), which is what a test needs and what production never calls. */
+ *  listener), which is what a test needs and what production never calls.
+ *  A denied storage getter does not make this throw: the recorder is simply
+ *  off and the returned stop is a no-op (see storageOf for what this does
+ *  and does not cover). */
 export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
   const threshold = opts.thresholdMs ?? 250
   const cap = opts.cap ?? FREEZE_LOG_CAP
   const win = opts.win ?? window
   const doc = opts.doc ?? document
-  const storage = opts.storage ?? localStorage
+  const storage = storageOf(win, opts.storage)
+  if (!storage) return () => {}
   const raf = opts.raf ?? ((cb) => win.requestAnimationFrame(cb))
   const caf = opts.caf ?? ((id) => win.cancelAnimationFrame(id))
   const now = opts.now ?? (() => win.performance.now())
@@ -213,7 +255,7 @@ export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
         storage.setItem(key, JSON.stringify(ring.slice(-20)))
       }
     } catch {
-      // storage unavailable: an instrument must never throw into the page
+      // storage unavailable: the recorder stays quiet rather than throwing
     }
   }
 
