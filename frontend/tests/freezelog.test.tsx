@@ -44,7 +44,11 @@ import FreezeLogPage, { isFreezeLogPath } from '../src/FreezeLogPage'
 // every recorder a test installs is stopped after it, so a failing assertion
 // before its own stop() cannot leak listeners into the next test
 const active: Array<() => void> = []
-test.afterEach(() => { for (const s of active.splice(0)) s() })
+test.afterEach(() => {
+  for (const s of active.splice(0)) s()
+  // a case that fails while it has the document 'hidden' must not leave it so
+  Object.defineProperty(document, 'visibilityState', { value: 'prerender', configurable: true })
+})
 
 function rig(opts: { thresholdMs?: number; cap?: number } = {}) {
   let t = 1000

@@ -45,6 +45,14 @@
 //
 // NOT A GPU MEASUREMENT: there is no web API for GPU memory. This shows
 // freezes as the page experienced them; the sampler shows the budget.
+//
+// WHAT A LONE HUGE GAP CAN ALSO MEAN (redteam-opus, 2026-09-07), for whoever
+// reads /debug/freezes: a Chromium window that is fully covered by another
+// window still reports 'visible' but stops painting, so any frame-based
+// detector logs that as one long gap; and a "before the tab was hidden" entry
+// right after a `start` measures from install, i.e. it can be page load.
+// Neither is a freeze of the page's own making; both are still real time
+// during which the page did not paint.
 
 export type FreezeKind = 'gap' | 'longtask' | 'visibility' | 'lifecycle' | 'start'
 
