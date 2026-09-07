@@ -1,5 +1,5 @@
 """Multiple real temporary repositories, actual UI, no live API or browser routing."""
-import functools, http.server, json, os, sys, threading
+import functools, http.server, json, os, sys, threading, time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'backend/tests'))
 # The existing fixture sets throwaway data/config BEFORE importing store.
 from test_git_workspace import Fixture, git, gw, gitsettings, store, DATA
-from orgtree import gitapi
+from orgtree import gitapi, appsettings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from playwright.sync_api import sync_playwright
@@ -23,6 +23,7 @@ def run():
     b.commit(b.clone, 'beta.txt', 'beta\n'); b.history(160)
     second = gw.register(a.slug, str(b.clone))['id']
     gitsettings.change(lambda d: d['selected_by_org'].update({a.slug: a.rid}))
+    appsettings.set_git_periodic_fetch_enabled(True)
     app = FastAPI(); app.include_router(gitapi.router)
     client = TestClient(app)
     requests, errors, results = [], [], []
@@ -39,12 +40,13 @@ def run():
         def api(self):
             path = urlsplit(self.path).path
             content = self.rfile.read(int(self.headers.get('content-length', '0')))
-            requests.append(dict(method=self.command, path=self.path))
+            entry=dict(method=self.command, path=self.path); requests.append(entry)
             if path.endswith('/chat'):
                 self.reply(dict(messages=messages, total=2, busy=False, pending_mail=[], session_id='width-fixture', node='reader')); return
             if '/git' not in path:
                 self.reply({}); return
             response = client.request(self.command, self.path, content=content, headers={'content-type':'application/json'})
+            if path.endswith('/observation') or path.endswith('/watch'): entry['response']=response.json()
             self.reply(response.content, response.status_code)
         def do_GET(self):
             if self.path.startswith('/api/'): self.api()
@@ -61,6 +63,23 @@ def run():
             context = browser.new_context(viewport=dict(width=1800,height=1000))
             context.set_default_timeout(15000)
             page = context.new_page(); page.on('pageerror',lambda e:errors.append(str(e)))
+            page.add_init_script('window.gitPending=0; const originalFetch=window.fetch; window.fetch=async(...args)=>{window.gitPending++;try{return await originalFetch(...args)}finally{window.gitPending--}}')
+            page.clock.install(); page.clock.pause_at(time.time() * 1000 + 100)
+            def counts():
+                return {(rid,kind):sum(r['path'].endswith('/'+rid+'/'+kind) for r in requests) for rid in [a.rid,second] for kind in ['observation','watch']}
+            def tick(milliseconds, expected):
+                before=counts(); page.clock.run_for(milliseconds)
+                # Virtual time advances production intervals; real responses still finish over local HTTP.
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    delta={key:value-before[key] for key,value in counts().items()}
+                    if all(delta[key]>=value for key,value in expected.items()) and page.evaluate('gitPending===0'): break
+                    page.wait_for_timeout(50)
+                page.wait_for_timeout(250)
+                delta={key:value-before[key] for key,value in counts().items()}
+                assert delta==expected, ('mounted polling/watch mismatch',delta,expected,requests[-12:],page.evaluate('({pending:gitPending,now:performance.now()})'))
+                gw.scheduler.stop()  # Drain real throwaway Git fetch jobs before the next virtual tick.
+                return {rid+':'+kind:value for (rid,kind),value in delta.items()}
             page.goto(f'http://127.0.0.1:{server.server_port}')
             page.get_by_role('button',name='Open Git repositories',exact=True).click()
             first = page.locator('.git-workspace').nth(0)
@@ -78,10 +97,19 @@ def run():
             ra, rb = first.bounding_box(),second_panel.bounding_box()
             assert ra['x']+ra['width'] <= rb['x']+1, (ra,rb)
             assert first.get_by_label('Repository',exact=True).input_value()==a.rid
+            same_repo=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):1,(second,'observation'):0,(second,'watch'):0})
+            # Hold the actual repository lock for one observation: busy is not disabled.
+            mutex=gw.lock(gw.repository(a.slug,a.rid)); mutex.acquire()
+            try:
+                busy_poll=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):0,(second,'watch'):0})
+                assert requests[-1]['response']=={'busy':True}, 'INERT busy observation control'
+            finally: mutex.release()
+            cadence=[tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):int(i==4),(second,'observation'):0,(second,'watch'):0}) for i in range(5)]
             second_panel.get_by_label('Repository',exact=True).select_option(second)
             second_panel.locator('.git-node').first.wait_for()
             assert first.get_by_label('Repository',exact=True).input_value()==a.rid
             assert second_panel.get_by_label('Repository',exact=True).input_value()==second
+            different_repo=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):1,(second,'watch'):1})
             assert first.locator('.git-viewport').evaluate('e=>e.scrollHeight>e.clientHeight+500'), 'INERT scroll fixture'
             first.locator('.git-viewport').evaluate('e=>e.scrollTop=500')
             assert first.locator('.git-viewport').evaluate('e=>e.scrollTop')==500
@@ -102,8 +130,11 @@ def run():
                 assert vp['height']>35 and vp['y']+vp['height']<=bounds['y']+bounds['height'],(bounds,vp)
                 assert footer['y']+footer['height']<=bounds['y']+bounds['height']+1,(bounds,footer)
             results.append('short and tall pinned panels keep graph and footer inside panel')
+            # Branch selection has refreshed B; settle that new subscription before detaching.
+            before_detach=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):1,(second,'watch'):1})
             with page.expect_popup() as popped: second_panel.get_by_role('button',name='Open in new window',exact=True).click()
             child=popped.value;child.on('pageerror',lambda e:errors.append(str(e)))
+            detached_poll=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):1,(second,'watch'):0})
             child.locator('.git-viewport').evaluate('e=>e.scrollTop=300')
             widths=[]
             for width,height in [(1900,1100),(2400,1400)]:
@@ -136,11 +167,17 @@ def run():
             assert page.locator('.git-workspace').count()==1 and child.locator('.git-workspace').count()==1, 'closing extra panel removed siblings'
             child.close();second_panel.locator('.git-viewport').wait_for()
             assert page.evaluate('document.querySelectorAll(".git-viewport")[1]===secondViewport')
+            returned_poll=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):1,(second,'watch'):1})
+            page.evaluate('window.leakClosedGitObserver=true')  # Activated only by the explicit cleanup mutant.
             second_panel.get_by_role('button',name='close this window',exact=True).click()
             assert page.locator('.git-workspace').count()==1
             assert page.evaluate('document.querySelector(".git-viewport")===originalPanel')
             assert first.get_by_label('Repository',exact=True).input_value()==a.rid
             assert first.locator('.git-viewport').evaluate('e=>e.scrollTop')==500
+            last_b_close=tick(5000,{(a.rid,'observation'):1,(a.rid,'watch'):0,(second,'observation'):0,(second,'watch'):0})
+            first.get_by_role('button',name='close this window',exact=True).click()
+            last_close=tick(35000,{(a.rid,'observation'):0,(a.rid,'watch'):0,(second,'observation'):0,(second,'watch'):0})
+            results.append('same-repo mounted views share observation/watch; different repos poll independently; detached/returned view stays subscribed; last close stops requests')
             results.append('detached panel fills both wide child sizes, graph drags, native return preserves DOM; closing it leaves sibling intact')
             page.goto(f'http://127.0.0.1:{server.server_port}/?desk=1')
             page.locator('[data-mail-id="width-row"]').wait_for()
@@ -153,8 +190,8 @@ def run():
                 desk.append(dict(window=width,content=boxes))
             child.close();browser.close()
             assert not errors,errors
-        print(json.dumps(dict(passed=results,git_widths=widths,typed_desk_widths=desk,data=str(DATA)),indent=2))
+        print(json.dumps(dict(passed=results,git_widths=widths,typed_desk_widths=desk,data=str(DATA),polling=dict(busy_poll=busy_poll,cadence=cadence,same_repo=same_repo,different_repo=different_repo,before_detach=before_detach,detached=detached_poll,returned=returned_poll,last_b_close=last_b_close,last_close=last_close)),indent=2))
     finally:
-        server.shutdown();thread.join();server.server_close();client.close()
+        server.shutdown();thread.join();server.server_close();gw.scheduler.stop();client.close()
 
 if __name__=='__main__':run()

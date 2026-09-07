@@ -4,6 +4,8 @@ import path from 'node:path'
 const out = path.resolve('node_modules/.orgtree-gitpanels')
 const mutation = process.argv[2]
 const mutations = {
+  'duplicate-observers': ['src/git/observers.ts', 'const key = JSON.stringify([slug, rid])', 'const key = JSON.stringify([slug, rid, crypto.randomUUID()])'],
+  'leaked-observer': ['src/git/observers.ts', 'watch.listeners.delete(listener)', 'if (!(globalThis as any).leakClosedGitObserver) watch.listeners.delete(listener)'],
   'wrong-resize-owner': ['src/GitWorkspace.tsx', 'const owner = useSurfaceDocument()', 'const owner = document'],
   'shared-pin': ['src/git/panels.tsx', 'panelId={panel.kind}', 'panelId={`git:${panel.context.slug}`}'],
   'close-all': ['src/git/panels.tsx', 'old.filter(p => p.id !== id)', '[]'],
@@ -13,7 +15,7 @@ const mutations = {
 if (mutation && !mutations[mutation]) throw new Error('Unknown mutation')
 const plugins = mutation ? [{ name: mutation, setup(build) {
   const [file, before, after] = mutations[mutation]
-  build.onLoad({ filter: /\.(tsx|css)$/ }, ({ path: target }) => {
+  build.onLoad({ filter: /\.(tsx?|css)$/ }, ({ path: target }) => {
     if (path.resolve(file) !== target) return
     const text = readFileSync(target, 'utf8')
     if (text.split(before).length !== 2) throw new Error(`INERT mutation ${mutation}`)
