@@ -25,6 +25,10 @@ test('inbox preserves reply, attachment and retract controls while showing uniqu
   const click = async (selector: string) => inAct(() => { (view.el.querySelector(selector) as HTMLElement).click() })
   assert.match(view.el.querySelector('.event-row-kind')!.textContent!, /Presentation reply/)
   await click('.mailrow')
+  const message = view.el.querySelector('.mailer-read.event-linked_reply')!
+  assert.ok(message, 'family styling belongs to the existing reading pane')
+  assert.equal(message.querySelectorAll('.event-card').length, 0, 'no nested panel')
+  assert.match(message.querySelector(':scope > .mailer-head')!.textContent!, /Presentation reply/)
   assert.match(view.el.querySelector('.event-body')!.textContent!, /Unique reply C/)
   assert.doesNotMatch(view.el.querySelector('.mailer-read')!.textContent!, /Compatibility envelope/)
   assert.equal(view.el.querySelector('a.attach-chip')!.getAttribute('href'), '/download/outbox/sample.txt')

@@ -31,7 +31,7 @@ import { fmtFull, fmtShort } from '../timefmt'
 import { decodeEventRow } from '../events/decode'
 import { eventSummary, projectEvent } from '../events/project'
 import type { EventView } from '../events/project'
-import { EventCard } from '../events/card'
+import { EventCard, eventSurface } from '../events/card'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
@@ -152,12 +152,12 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
     views.set(m, view)
     return view
   }
-  const messageContent = (m: MailRow) => {
+  const messageContent = (m: MailRow, standalone = false) => {
     const decoded = decodeEventRow(m, profile)
     return decoded.kind === 'legacy'
       ? <RefMdBody className="mailer-body md" html={md(m.body, mdBase?.(m) || undefined)}
           world={refs?.world} onOpen={refs?.onOpen} />
-      : <div className="mailer-body"><EventCard row={m} profile={profile}
+      : <div className="mailer-body"><EventCard part={standalone ? undefined : "body"} row={m} profile={profile}
           org={org ?? refs?.world.org ?? ''} imgBase={mdBase?.(m) || undefined}
           world={refs?.world} onOpen={refs?.onOpen} actor={id => S(id, m)} /></div>
   }
@@ -359,6 +359,7 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
   const replyable = Boolean(onReply && cur && !outgoing && !cur._ask
     && !String(party(cur) ?? '').startsWith('@'))
   const custom = cur ? renderBody?.(cur) ?? null : null
+  const surface = cur && !(curPile && curPile.length > 1) ? eventSurface(cur, profile) : { className: '' }
   // alt+↑/↓ walks the list (user feature 2026-08-17) — but never while an
   // ask card owns the chord: focus inside a credit request steps the grant
   // (asks.tsx preventDefaults), and switching mail mid-answer would unmount
@@ -532,10 +533,12 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
             {piles.length - vis} earlier
           </div>)}
       </div>
-      <div className="mailer-read">
+      <div {...surface} className={"mailer-read " + surface.className}>
         {cur && (
           <>
-            <div className="mailer-head">
+            <div className="mailer-head event-head">
+              {!(curPile && curPile.length > 1) && <EventCard part="header" row={cur} profile={profile}
+                org={org ?? refs?.world.org ?? ""} world={refs?.world} onOpen={refs?.onOpen} actor={id => S(id, cur)} />}
               {outgoing && !customS && <span className="dim">to</span>}
               {(outgoing || !typedView(cur)) && S(displayParty(cur)!, cur)}
               <span className="dim">
@@ -575,7 +578,7 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
                         <span className="notepile-at">{when(n.at)}</span>
                         {/* a folded notice is a body like any other — a
                             reference written in one is followed the same way */}
-                        {messageContent(n)}
+                        {messageContent(n, true)}
                       </div>
                     ))}
                   </div>

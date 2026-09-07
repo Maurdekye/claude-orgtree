@@ -1345,7 +1345,7 @@ button.cc-name:hover {
   margin-bottom: 4px; color: var(--dim); font-size: 10.5px; line-height: 1.3;
 }
 .turn-mail-head b { color: var(--ink); font-size: 11.5px; }
-.turn-mail-head span:not(:last-child)::after { content: '·'; margin-left: 7px; color: var(--line); }
+.turn-mail-head > span:not(:last-child):not(.event-actor):not(.event-family)::after { content: '·'; margin-left: 7px; color: var(--line); }
 .turn-mail-head time { font-variant-numeric: tabular-nums; }
 /* THE SENDER'S IDENTITY IN A TRANSCRIPT MAIL CARD. The header draws the shared
    `AgentName`; these rules make that a chip and a click, not a restyle.
@@ -5699,9 +5699,11 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 }
 
 /* Typed message families share layout, but their identity is always explicit. */
-.event-card { --event-color: var(--dim); border: 1px solid var(--line-soft);
-  border-left: 3px solid var(--event-color); border-radius: 5px; margin: 6px 0;
+.event-surface { border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--event-color, var(--dim)); border-radius: 5px; margin: 6px 0;
   min-width: 0; overflow-wrap: anywhere; background: var(--bg); }
+.event-ordinary { --event-color: var(--dim); }
+.msg.user.event-surface { border-left: 3px solid var(--event-color, var(--dim)); }
 .event-linked_reply { --event-color: var(--work); }
 .event-assignment { --event-color: var(--accent); }
 .event-review { --event-color: var(--review); }
@@ -5719,7 +5721,21 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
   border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; }
 .event-head strong { color: var(--ink-strong); }
 .event-head-field { display: inline-flex; align-items: baseline; gap: 3px; }
-.event-actor { color: var(--ink); }
+.event-actor { color: var(--ink); display: inline-flex; align-items: center; gap: 5px;
+  flex: none; white-space: nowrap; }
+.event-actor .cc-name { flex: none; min-width: 0; white-space: nowrap; }
+.event-actor .tier { flex: none; }
+.event-head .event-actor::after { content: none; }
+.typed-input { align-self: stretch; min-width: 0; }
+.typed-input .msgtext { margin: 0; }
+.turn-mail.event-surface { padding: 0; }
+.turn-mail.event-surface > .attach-row { padding: 0 10px 8px; }
+.mailer-read.event-surface { margin: 0; border-top: 0; border-right: 0; border-bottom: 0; border-radius: 0; }
+.mailer-read > .event-head { padding-left: 0; padding-right: 0; }
+.mailer-read .mailer-body .event-body { padding-left: 0; padding-right: 0; }
+.event-member { margin: 4px 0; min-width: 0; }
+.event-member > .event-head { border-bottom: 0; }
+
 .event-body { padding: 8px 10px; min-width: 0; }
 .event-prose > :first-child { margin-top: 0; }
 .event-prose > :last-child { margin-bottom: 0; }
@@ -5735,12 +5751,12 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .event-values > li + li { margin-top: 5px; }
 .event-unsupported { display: block; color: var(--dim); font-size: 11px; }
 .event-fallback { overflow-wrap: anywhere; }
-.event-card .turn-mail-preview { margin: 0; }
+.event-surface .turn-mail-preview { margin: 0; }
 
 .mailrow .event-row-kind { font-size: 10px; color: var(--accent); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
 
 .hist-event { padding: 8px; border-bottom: 1px solid var(--border); }
-.hist-event > .event-card { margin-top: 5px; }
+.hist-event.event-surface { padding: 0; }
 /* Movable surfaces keep a stable portal target in both documents. */
 .movable-anchor, .movable-surface, .movable-content, .movable-overlays,
 .movable-events, .desk-slot { display: contents; }

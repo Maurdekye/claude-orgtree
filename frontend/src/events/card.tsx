@@ -40,7 +40,7 @@ function Value({ value, ...props }: ValueProps & { value: HumanValue }): ReactNo
       : <span className="dim">None</span>
     case 'record': return <dl className="event-record">{value.fields.map(field=><div key={field.key} data-event-field={field.key}>
       <dt>{field.label}</dt><dd><Value value={field.value} {...props}/></dd></div>)}</dl>
-    case 'event': return <EventCard {...props} row={props.profile === 'public' ? {ev_public:value.event} : {ev:value.event}}/>
+    case 'event': return <EventCard {...props} embedded row={props.profile === 'public' ? {ev_public:value.event} : {ev:value.event}}/>
     case 'unavailable': return <span className="dim">Unavailable</span>
   }
   const unhandled: never = value
@@ -82,14 +82,27 @@ function ObjectLabel({ event, org, world, onOpen }: { event: Event | PublicEvent
 export interface EventCardProps extends ContentProps {
   row: unknown; profile: EventProfile; org: string; preview?: boolean
   actor?: (id: string) => ReactNode
+  part?: "header" | "body"
+  headerMeta?: ReactNode
+  embedded?: boolean
+}
+/** The owning message wrapper receives the family treatment; content never adds a panel. */
+export function eventSurface(row: unknown, profile: EventProfile) {
+  const decoded = decodeEventRow(row, profile)
+  return decoded.kind === 'known'
+    ? { className: 'event-surface event-card event-' + projectEvent(decoded.event).family,
+        'data-event-variant': decoded.event.variant }
+    : { className: '', 'data-event-variant': undefined }
 }
 /** A single presentation path for mailbox, pending/live and settled transcript rows.
  *  Envelope time, delivery badges, attachments and existing actions stay with callers. */
-export function EventCard({ row, profile, org, preview = false, actor, ...content }: EventCardProps) {
+export function EventCard({ row, profile, org, preview = false, actor, part, headerMeta, embedded = false, ...content }: EventCardProps) {
   const decoded = decodeEventRow(row, profile)
   if (decoded.kind !== 'known') {
+    if (part === 'header') return null
     const text = <Text text={decoded.fallback} {...content} />
     return <div className="event-fallback">
+      {headerMeta && <header className="event-head">{headerMeta}</header>}
       {decoded.kind === 'unsupported' && <span className="event-unsupported">Unsupported message format</span>}
       {preview ? <ReceivedMailBody>{text}</ReceivedMailBody> : text}
     </div>
@@ -103,8 +116,7 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
   const objectDetails = objectValue?.kind === 'record'
     ? { ...objectValue, fields: objectValue.fields.filter(f => f.key !== 'kind') } : null
   const bodyContent = <div className="event-body"><Fields fields={body} {...content} profile={profile} org={org} actor={actor} /></div>
-  return <section className={'event-card event-' + view.family} data-event-variant={event.variant}>
-    <header className="event-head">
+  const heading = <>
       <span className="event-family" aria-label={FAMILY_MARK[view.family]} title={FAMILY_MARK[view.family]}>{FAMILY_ICON[view.family]}</span>
       <strong>{view.title}</strong>
       <span className="event-actor" data-actor-kind={event.actor.kind}>
@@ -115,7 +127,9 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
       {header.map(f => <div className="event-head-field" key={f.key} data-event-field={f.key}>
         <span className="dim">{f.label}: </span><Value value={humanValue(f.value, f.type, profile)} {...content} profile={profile} org={org} actor={actor} />
       </div>)}
-    </header>
+    </>
+  if (part === 'header') return heading
+  const contents = <>
     {body.length > 0 && (preview
       ? <ReceivedMailBody>{bodyContent}</ReceivedMailBody> : bodyContent)}
     {(context.length > 0 || Boolean(objectDetails?.fields.length)) && <details className="event-context">
@@ -123,5 +137,10 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
       {objectDetails && <div className="event-object-details"><Value value={objectDetails} {...content} profile={profile} org={org} actor={actor} /></div>}
       <Fields fields={context} {...content} profile={profile} org={org} actor={actor} />
     </details>}
+  </>
+  if (part === 'body') return contents
+  return <section {...eventSurface(row, profile)} className={embedded ? "event-member event-" + view.family : eventSurface(row, profile).className}>
+    <header className="event-head">{heading}{headerMeta}</header>
+    {contents}
   </section>
 }

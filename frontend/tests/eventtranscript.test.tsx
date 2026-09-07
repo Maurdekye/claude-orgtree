@@ -66,3 +66,27 @@ test('machine-only segments leave no empty card and preserve mixed readable comp
     assert.equal(view.el.querySelectorAll('.event-segment-state').length,1,'no empty wrappers for hidden state')
   }
 })
+
+test('each typed transcript message owns its header, body and family styling in both profiles', async t => {
+  for (const profile of ['operator', 'public'] as const) {
+    const fixture = f('status.report')[profile === 'operator' ? 'private' : 'public']
+    const event = {...fixture, actor: {kind:'agent',id:'alpha'}, summary:'Meaningful summary C'}
+    const row = {id:'single',from:'@user',at:'now',kind:'status',body:'Stored compatibility copy',
+      ...(profile==='operator' ? {ev:event} : {ev_public:event})}
+    const v=await mountView(<SegmentList slug="org" nid="worker" profile={profile}
+      segments={[{kind:'mail',rows:[row]}]}
+      actor={id=><><span className="tier">M</span><span className="cc-name">{id}</span></>}/>, h=>h)
+    t.after(()=>v.unmount())
+    const message=v.el.querySelector('.turn-mail.event-status')!
+    assert.ok(message, 'the existing message box carries the family')
+    assert.equal(message.querySelectorAll('.event-card').length,0,'body adds no second box')
+    const header=message.querySelector(':scope > .turn-mail-head')!
+    assert.match(header.textContent!,/alpha/)
+    assert.match(header.textContent!,/Status/)
+    assert.equal(header.querySelectorAll('.event-actor > .tier').length,1)
+    assert.equal(header.querySelectorAll('.event-actor > .cc-name').length,1)
+    assert.match(message.querySelector('.event-body')!.textContent!,/Meaningful summary C/)
+    assert.doesNotMatch(message.textContent!,/Stored compatibility copy/)
+    assert.equal(message.querySelectorAll('header').length,1)
+  }
+})

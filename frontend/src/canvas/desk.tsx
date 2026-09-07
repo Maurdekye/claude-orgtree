@@ -55,7 +55,7 @@ import { mailRefTarget, useRefRoutes } from './reflinks'
 import type { RefRoutes } from './reflinks'
 import type { TypedRef } from './workrefs'
 import { RefMdBody } from './refmd'
-import { EventCard } from '../events/card'
+import { EventCard, eventSurface } from '../events/card'
 import { decodeEventRow } from '../events/decode'
 import { authoredUserLabel, isSegments, SegmentList } from '../events/segments'
 import { isMobile } from '../mobile'
@@ -1510,7 +1510,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // something different). Kept as a function rather than a component so it
   // keeps closing over this desk's slug/node/refresh exactly as it did inline.
   const pendBubble = (m: PendingMail) => (
-    <div key={m.id ?? m.at} className="msg user pending pendrow">
+    <div key={m.id ?? m.at} {...eventSurface(m, BASE ? 'public' : 'operator')} className={"msg user pending pendrow " + eventSurface(m, BASE ? 'public' : 'operator').className}>
       {/* ⚠ THIS IS A PREVIEW OF `Msg`, SO IT IS BUILT LIKE `Msg`
           (user, 2026-08-28): text in its own block, then the attachments in an
           `.attach-row` beneath it — a COLUMN. It used to lay text and
@@ -1526,7 +1526,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           what keeps the delivery tag / retract ✕ pinned at the top right where
           it already was, which the user asked for by name. */}
       <div className="pendbody">
-        <EventCard row={m} profile={BASE ? 'public' : 'operator'} org={slug} preview
+        {eventSurface(m, BASE ? 'public' : 'operator').className && <header className="event-head"><EventCard part="header" row={m} profile={BASE ? 'public' : 'operator'} org={slug}
+          world={deskRefs.world} onOpen={deskRefs.onOpen} actor={id => <MailFrom from={id} />} /></header>}
+        <EventCard part="body" row={m} profile={BASE ? 'public' : 'operator'} org={slug} preview
           world={deskRefs.world} onOpen={deskRefs.onOpen} actor={id => <MailFrom from={id} />}
           imgBase={fileBase(slug, node.id)} />
         {/* a queued image renders viewable (dimmed like the bubble) — the
@@ -2593,10 +2595,13 @@ export function HistoryView({ slug, nid, refs }: { slug: string; nid: string; re
           .filter(([k]) => k !== 'gist').map(([k, v]) => `${k}=${v}`).join(' · '))
         const row = {...it, text}
         const decoded = decodeEventRow(row, profile)
-        return <div key={i} className={decoded.kind === 'legacy' ? 'hist-row' : 'hist-event'}>
-          <span className="dim">{fmtFull(it.at)}</span>
+        return <div key={i} {...eventSurface(row, profile)} className={decoded.kind === 'legacy' ? 'hist-row' : 'hist-event ' + eventSurface(row, profile).className}>
+          {decoded.kind === 'legacy' ? <span className="dim">{fmtFull(it.at)}</span>
+            : <header className="event-head"><span className="dim">{fmtFull(it.at)}</span>
+              <EventCard part="header" row={row} profile={profile} org={slug}
+                world={refs?.world} onOpen={refs?.onOpen} actor={id => <MailFrom from={id}/>} /></header>}
           {decoded.kind === 'legacy' ? <><b>{it.kind}</b><span className="dim">{it.actor}</span><span>{text}</span></>
-            : <EventCard row={row} profile={profile} org={slug} world={refs?.world} onOpen={refs?.onOpen}
+            : <EventCard part="body" row={row} profile={profile} org={slug} world={refs?.world} onOpen={refs?.onOpen}
                 actor={id => <MailFrom from={id}/>} imgBase={fileBase(slug,nid)}/>}
         </div>
       })}
@@ -2914,7 +2919,7 @@ function MailFrom({ from, nameClass }: { from: string; nameClass?: string }) {
 function LiveSteerRow({ text, segments, slug, nid, truncated, refs }:
   { text: string; segments?: unknown; slug: string; nid: string; truncated?: boolean; refs?: RefRoutes }) {
   const profile = BASE ? 'public' : 'operator'
-  return <div className="msg user live">
+  return <div className={isSegments(segments, profile) ? "typed-input live" : "msg user live"}>
     {isSegments(segments, profile)
       ? <SegmentList segments={segments} profile={profile} slug={slug} nid={nid}
           world={refs?.world} onOpen={refs?.onOpen} actor={id => <MailFrom from={id} />} />
@@ -3036,7 +3041,7 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink, ref
 }) {
   if (m.role === 'system') return <SysLine m={m} />
   const profile = BASE ? 'public' : 'operator'
-  if (m.role === 'user' && isSegments(m.segments, profile)) return <div className="msg user typed-input">
+  if (m.role === 'user' && isSegments(m.segments, profile)) return <div className="typed-input">
     <SegmentList segments={m.segments} profile={profile} slug={slug} nid={nid}
       world={refs?.world} onOpen={refs?.onOpen} actor={id => <MailFrom from={id} />} />
     {m.truncated && <div className="trunc-note">Shown truncated ? the agent received the full message</div>}

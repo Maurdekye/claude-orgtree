@@ -918,7 +918,7 @@ async function liveDesk(t: TestContext, opts: {
 }
 
 const liveRowOf = (el: HTMLElement) => {
-  const r = q(el, '.msg.user.live')
+  const r = q(el, '.typed-input.live, .msg.user.live')
   assert.equal(r.length, 1,
     'positive control: exactly one LIVE user row is on screen')
   return r[0]!
@@ -936,7 +936,7 @@ test('§9.1 a mid-turn mail identifies its sender — and is still a live row, '
     'and its name is a route to its desk')
   assert.ok(txt(r).includes('a word about the build'), 'the body is still there')
   // ⚠ THE OTHER HALF: it has NOT been promoted to the settled card.
-  absent(el, '.msg.user:not(.live) .turn-mail',
+  absent(el, '.typed-input:not(.live) .turn-mail',
     'a message still arriving must not be dressed as one that has landed')
   assert.ok(!txt(r).includes('[MAIL'),
     `and the envelope chrome is still hidden: ${JSON.stringify(txt(r).slice(0, 80))}`)
@@ -976,9 +976,9 @@ test('§9.4 the handover to the stored transcript loses nothing and duplicates '
   const count = (hay: string, needle: string) => hay.split(needle).length - 1
   assert.equal(count(txt(el), 'a word about the build'), 1,
     'positive control: the body is on screen exactly once while live')
-  assert.equal(q(el, '.msg.user:not(.live) .turn-mail').length, 0, 'and not yet as a settled card')
+  assert.equal(q(el, '.typed-input:not(.live) .turn-mail').length, 0, 'and not yet as a settled card')
   await settle()
-  assert.equal(q(el, '.msg.user.live').length, 0, 'the live row retired')
+  assert.equal(q(el, '.typed-input.live, .msg.user.live').length, 0, 'the live row retired')
   const cards = q(el, '.event-head')
   assert.equal(cards.length, 1, 'and exactly one settled card took its place')
   assert.equal(count(txt(el), 'a word about the build'), 1,
@@ -1080,7 +1080,7 @@ test('typed live composition survives handover independently of capped transport
   assert.ok(txt(el).includes('Unique complete content'))
   assert.equal(q(el,'.trunc-note').length,1)
   await settle()
-  assert.equal(q(el,'.msg.user.live').length,0)
+  assert.equal(q(el,'.typed-input.live, .msg.user.live').length,0)
   assert.equal(q(el,'.event-card').length,1)
   assert.equal(q(head(el),'.tier').length,1)
   assert.equal(q(el,'.trunc-note').length,0)

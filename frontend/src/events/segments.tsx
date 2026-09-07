@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { Event, PublicEvent, Segment, PublicSegment } from '../generated/events'
 import { decodeEventRow, isAuthoredUser, record } from './decode'
 import type { EventProfile } from './decode'
-import { EventCard } from './card'
+import { EventCard, eventSurface } from './card'
 import { eventSummary } from './project'
 import { RefMdBody } from '../canvas/refmd'
 import type { RefWorld, ResolvedRef } from '../canvas/reflinks'
@@ -53,11 +53,11 @@ interface SegmentProps { segments: AnySegment[]; profile: EventProfile; slug: st
   world?: RefWorld | null; onOpen?: (ref: ResolvedRef) => void; actor?: (id: string) => ReactNode }
 export function SegmentList({ segments, profile, slug, nid, world, onOpen, actor }: SegmentProps) {
   const base = fileBase(slug, nid)
-  const card = (row: unknown, preview: boolean) => <EventCard row={row} profile={profile} org={slug}
-    preview={preview} world={world} onOpen={onOpen} actor={actor} imgBase={base} />
+  const card = (row: unknown, preview: boolean, part?: "header" | "body", headerMeta?: ReactNode) => <EventCard row={row} profile={profile} org={slug}
+    preview={preview} part={part} headerMeta={headerMeta} world={world} onOpen={onOpen} actor={actor} imgBase={base} />
   return <div className="turn-mail-batch">{segments.map((segment, i) => {
     switch (segment.kind) {
-      case 'text': return <RefMdBody key={i} className="msgtext md" html={md(segment.text, base)} world={world} onOpen={onOpen} />
+      case 'text': return <RefMdBody key={i} className="msg user msgtext md" html={md(segment.text, base)} world={world} onOpen={onOpen} />
       case 'state': case 'drive': {
         const row = 'event' in segment ? { ev: segment.event, text: segment.text }
           : 'event_public' in segment ? { ev_public: segment.event_public, text: segment.text }
@@ -67,15 +67,15 @@ export function SegmentList({ segments, profile, slug, nid, world, onOpen, actor
         return <div key={i} className={'event-segment-' + segment.kind}>{card(row, false)}</div>
       }
       case 'notices': return <div key={i} className="event-notices">{segment.rows.map((row, j) => <div key={j}>
-        <time className="event-time">{fmtFull(row.at)}</time>{card(row, false)}</div>)}</div>
+        {card(row, false, undefined, <time className="event-time">{fmtFull(row.at)}</time>)}</div>)}</div>
       case 'mail': return <div key={i} className="event-mail">{segment.rows.map((row, j) => <section key={row.id ?? j}
-        className={'turn-mail' + (row.kind === 'notice' ? ' passive' : '')} data-mail-id={row.id}>
-        <header className="turn-mail-head"><time>{fmtFull(row.at)}</time>
+        {...eventSurface(row, profile)} className={'turn-mail ' + eventSurface(row, profile).className + (row.kind === 'notice' ? ' passive' : '')} data-mail-id={row.id}>
+        <header className="turn-mail-head event-head">{card(row, false, "header")}<time>{fmtFull(row.at)}</time>
           {decodeEventRow(row, profile).kind !== 'known' && <><b>{row.from}</b><span>{row.kind}</span></>}
           {row.relationship && <span>{row.relationship}</span>}
           {row.kind === 'notice' && <span className="turn-mail-passive">no reply expected</span>}
         </header>
-        {card(row, true)}<SegmentAttachments values={row.attachments} slug={slug} nid={nid}/>
+        {card(row, true, "body")}<SegmentAttachments values={row.attachments} slug={slug} nid={nid}/>
         {row.attachments_missing?.map((name,k)=><div key={k} className="dim">Attachment unavailable: {name}</div>)}
       </section>)}</div>
     }
