@@ -9764,6 +9764,11 @@ class Org:
                 continue
             if it.get("slug"):
                 names.add(str(it["slug"]))
+        # a DELETED item's name stays taken (user 2026-09-07): the record is
+        # gone, but an old chip, closed ask or mail row may still carry the
+        # name, and minting it again would make that reference point at a
+        # different ticket. Names only — nothing of the ticket is retained.
+        names.update(str(n) for n in (self.d.get("work_deleted_names") or []))
         return names
 
     def _work_unique_slug(self, title: str, taken: set[str]) -> str:
@@ -11827,7 +11832,10 @@ class Org:
     #
     # What goes: the record itself, from the active list or the archive, and
     # every pointer another item holds to it (`dependencies` entries and a
-    # `superseded_by` naming it), each recorded on THAT item's history. What
+    # `superseded_by` naming it), each recorded on THAT item's history. Its
+    # NAME is retired (`work_deleted_names`, names only): a later item with
+    # the same title mints `title-2`, so an old chip, closed ask or mail row
+    # carrying the name can never resolve to a different ticket. What
     # refuses: children still nested under it (move or delete them first) and
     # an OPEN attached question (it belongs to its asker — withdraw or answer
     # it first). What stays: mail, notices and ask history that mention the
@@ -11838,7 +11846,8 @@ class Org:
     def _work_can_delete(self, actor: str, it: WorkItem) -> bool:
         if actor == USER:
             return True
-        anchor = self._work_actor_node(it.get("owner"))             or self._work_actor_node(it.get("created_by"))
+        anchor = self._work_actor_node(it.get("owner")) \
+            or self._work_actor_node(it.get("created_by"))
         if not anchor or anchor not in self.nodes:
             return False
         if self.is_ancestor(actor, cast(str, anchor)):
@@ -11887,6 +11896,9 @@ class Org:
                 cleared.append({"item": str(other["slug"]),
                                 "field": "superseded_by"})
         (self._work_archive() if phys else self._work_active()).remove(it)
+        reserved = self.d.setdefault("work_deleted_names", [])   # type: ignore[typeddict-item]
+        if me not in reserved:
+            reserved.append(me)
         own = self._work_actor_node(it.get("owner"))
         self._log("work_deleted", actor, {
             "slug": me, "title": str(it.get("title") or ""),
@@ -11894,12 +11906,14 @@ class Org:
             "archived": bool(phys), "note": (note or "").strip() or None,
             "pointers_cleared": cleared}, [])
         told: str | None = None
-        if own and own != actor and own != USER and own in self.nodes                 and self.nodes[own].get("state") == "live":
+        if own and own != actor and own != USER and own in self.nodes \
+                and self.nodes[own].get("state") == "live":
             body = (f"Your docket item {me} (\"{it.get('title') or ''}\") was "
                     f"PERMANENTLY DELETED by {actor}"
                     + (f": {(note or '').strip()}" if (note or "").strip() else ".")
-                    + " It is gone from the docket and its archive; nothing "
-                    "remains to reopen.")
+                    + " The record is gone from the docket and its archive; "
+                    "nothing remains to reopen (mail and the org log keep "
+                    "their history).")
             try:
                 self.post_mail(actor, own, body, "message")
                 told = own

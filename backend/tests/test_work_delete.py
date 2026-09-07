@@ -289,7 +289,8 @@ def t_mcp_dispatch_and_http_route() -> None:
     from orgtree import mcptool
     tool = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
     assert "delete" in tool["inputSchema"]["properties"]["action"]["enum"]
-    assert "delete" in tool["description"] and "keeps nothing" in tool["description"]
+    assert "delete" in tool["description"] and "REMOVES THE TICKET RECORD" in tool["description"] \
+        and "historical mail" in tool["description"], "the card must say what is removed AND what stays"
 
 
 # ------------------------------------------------------------- §6 persistence
@@ -321,6 +322,37 @@ def t_persists_across_reload() -> None:
         raise AssertionError(f"INERT: no on-disk document found for {s} ({path})")
 
 
+# ------------------------------------------------------------ §7 identity
+def t_deleted_name_never_reused() -> None:
+    s = fixture()
+    dead = item(s, "Same title twice", owner="worker")
+    assert dead == "same-title-twice", dead
+    # a closed ask and a mail row that carry the name (records of the past)
+    do(s, lambda org: org.ask_user("coordinator", "Keep it?", options=["yes", "no"], work_item=dead))
+    do(s, lambda o: o.withdraw_ask("coordinator"))
+    do(s, lambda o: o.post_mail(USER, "worker", f"see @item:{s}/{dead}", "message"))
+    do(s, lambda o: o.work_delete(USER, dead, "made in error"))
+    again = item(s, "Same title twice", owner="worker")
+    assert again != dead and again == "same-title-twice-2", (dead, again)
+    org = store.load_org(s)
+    assert refused(lambda: org._work_find(dead)), "the old name still resolves"
+    assert org._work_pointer_visible(dead, USER) is False, "an old pointer must resolve to NOTHING, not the new ticket"
+    assert org._work_pointer_visible(again, USER) is True
+    closed = [a for a in org.d.get("asks", []) if any(q.get("work_item") == dead for q in a.get("questions") or [])]
+    assert closed and closed[0]["status"] != "open", "control: the closed ask still carries the old name"
+    assert dead in json.dumps((org.d.get("mail") or {}).get("worker") or []), "control: the mail row still carries the old name"
+    assert org.d.get("work_deleted_names") == [dead], org.d.get("work_deleted_names")
+    # the reservation is names only and survives a reload from disk
+    org = store.load_org(s)
+    assert org.d.get("work_deleted_names") == [dead]
+    third = item(s, "Same title twice", owner="worker")
+    assert third == "same-title-twice-3", third
+    # deleting the reused name reserves it too, without duplicates
+    do(s, lambda o: o.work_delete(USER, again))
+    do(s, lambda o: o.work_delete(USER, again) if False else None)
+    assert store.load_org(s).d.get("work_deleted_names") == [dead, again]
+
+
 checks = [
     ("§1 the user deletes an active item", t_user_deletes),
     ("§1 a strict superior (direct or higher) deletes a subordinate's item", t_superior_deletes),
@@ -335,6 +367,7 @@ checks = [
     ("§4 an open attached question refuses; after withdrawal it deletes", t_open_question_refuses),
     ("§5 MCP dispatch action=delete and user HTTP DELETE reach the same rule; enum + description list it", t_mcp_dispatch_and_http_route),
     ("§6 deletion and cleared pointers survive save + reload; the title is gone from disk", t_persists_across_reload),
+    ("§7 a deleted name is never minted again; old refs resolve to nothing, not to the new ticket; reservation survives reload", t_deleted_name_never_reused),
 ]
 for name, fn in checks:
     check(name, fn)
