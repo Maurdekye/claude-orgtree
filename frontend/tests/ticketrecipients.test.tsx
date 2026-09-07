@@ -5,6 +5,8 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { DocketModal } from '../src/canvas/docket'
 import type { WorkItem, TreePayload } from '../src/types'
+// MUI's owner-document portal checks this browser constructor.
+Object.assign(globalThis, { DocumentFragment: window.DocumentFragment })
 
 const fixture = (slug = 'addressed-reply'): WorkItem => ({
   slug, title: slug, rev: 1, kind: 'code', objective: 'Check addressed replies',
@@ -48,11 +50,17 @@ async function setup(t: TestContext, items: WorkItem[]) {
   await flush()
   return { el: view.el, sent, toasts, server }
 }
-const picker = (el: HTMLElement) => el.querySelector('select[aria-label="Reply to"]') as HTMLSelectElement
+const picker = (el: HTMLElement) => el.querySelector('.docket-reply-select input') as HTMLInputElement
+const trigger = (el: HTMLElement) => el.querySelector('[role="combobox"][aria-label="Reply to"]') as HTMLElement
+async function openPicker(el: HTMLElement) {
+  await inAct(() => trigger(el).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })))
+  await flush()
+}
 const area = (el: HTMLElement) => el.querySelector('.mail-reply textarea') as HTMLTextAreaElement
 const button = (el: HTMLElement) => el.querySelector('.mail-reply button') as HTMLButtonElement
 async function choose(el: HTMLElement, value: string) {
-  await inAct(() => { picker(el).value = value; picker(el).dispatchEvent(new Event('change', { bubbles: true })) })
+  await openPicker(el)
+  await inAct(() => { (document.querySelector(`[role="option"][data-value="${value}"]`) as HTMLElement).click() })
   await flush()
 }
 async function type(el: HTMLElement, value = 'Keep this draft') {
@@ -67,10 +75,12 @@ async function send(el: HTMLElement) { await inAct(() => button(el).click()); aw
 test('participant display and default owner; hidden retired predecessor selectable, gone disabled', async (t) => {
   const { el, toasts } = await setup(t, [fixture()])
   assert.equal(picker(el).value, 'owner')
-  assert.equal(picker(el).options.length, 4)
-  assert.equal(picker(el).options[2]!.disabled, false)
-  assert.equal(picker(el).options[3]!.disabled, true)
-  assert.match(picker(el).options[2]!.textContent!, /retired; waits for rehire/)
+  await openPicker(el)
+  const options = document.querySelectorAll('[role="option"]')
+  assert.equal(options.length, 4)
+  assert.notEqual(options[2]!.getAttribute('aria-disabled'), 'true')
+  assert.equal(options[3]!.getAttribute('aria-disabled'), 'true')
+  assert.match(options[2]!.getAttribute('aria-label')!, /retired; waits for rehire/)
   assert.match(el.querySelector('.docket-participants')!.textContent!, /collaborator/)
   assert.ok(el.querySelector('.docket-participant .fit-retired'))
   await choose(el, 'retired'); await type(el); await send(el)
@@ -103,7 +113,7 @@ test('removing all participants during draft preserves unavailable choice and bl
   item.reply_recipients = [{ node: 'owner', role: 'owner', state: 'live' }]
   await advance(5100); await flush()
   assert.equal(picker(el).value, 'collaborator')
-  assert.match(picker(el).selectedOptions[0]!.textContent!, /unavailable/)
+  assert.match(trigger(el).getAttribute('aria-description')!, /Unavailable recipient/)
   assert.equal(area(el).value, 'Keep this draft')
   assert.equal(area(el).disabled, false)
   assert.equal(button(el).disabled, true)

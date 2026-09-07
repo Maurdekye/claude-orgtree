@@ -5667,7 +5667,16 @@ html.mobile .modalpin-win.gallery-modal > .gallery-head {
 .docket-participant { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .docket-participant .docket-actor { min-width: 0; }
 .docket-reply-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
-.docket-reply-picker select { min-width: 0; max-width: 100%; }
+.docket-reply-select.MuiInputBase-root { min-width: 0; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; }
+.docket-reply-select.docket-reply-select .MuiSelect-select.MuiInputBase-input { min-height: 0; padding: 0; margin-right: 18px; border: 0; background: transparent; }
+.docket-reply-select .MuiSelect-select:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+.docket-reply-select .MuiSelect-icon { color: var(--dim); font-size: 16px; right: 0; }
+.docket-reply-identity, .docket-reply-menu .MuiMenuItem-root { display: flex; align-items: center; gap: 5px; }
+.docket-reply-identity .cc-name, .docket-reply-menu .cc-name { font: inherit; color: var(--accent); }
+.docket-reply-identity .tier, .docket-reply-menu .tier { flex: none; }
+.docket-reply-menu.MuiPaper-root { background: var(--panel); color: var(--ink); }
+.docket-reply-menu .MuiMenuItem-root { min-height: 28px; font: inherit; font-size: 12px; }
+.docket-reply-menu .MuiMenuItem-root.Mui-focusVisible, .docket-reply-menu .MuiMenuItem-root.Mui-selected { background: var(--accent-soft); }
 .docket-reply-note { font-size: 12px; margin-bottom: 6px; }
 
 /* HTML presentations use native links for reliable new-tab activation. */

@@ -23,6 +23,9 @@
 // look up and for the "who is asking" header — never to answer directly.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import Select from '@mui/material/Select'
+import MenuItem from '@mui/material/MenuItem'
 import type {
   AskInfo, ToastFn, TreeNode, TreePayload, WorkActor, WorkItem,
 } from '../types'
@@ -35,7 +38,7 @@ import { DocReader } from './docs'
 import { closeIfCentred, PinFrame } from './modalpin'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
-import { ago, jumpKey, usePolled } from './shared'
+import { ago, jumpKey, useEsc, usePolled } from './shared'
 import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
@@ -1298,6 +1301,10 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   // This pane is keyed by ticket slug. Polling must never redirect a draft.
   const [replyTo, setReplyTo] = useState(assignee?.node ?? '')
   const [replyBusy, setReplyBusy] = useState(false)
+  const [recipientOpen, setRecipientOpen] = useState(false)
+  const recipientSearch = useRef({ text: '', at: 0 })
+  // Join the owning window's overlay stack: Escape closes this menu first.
+  useEsc(() => setRecipientOpen(false), recipientOpen)
   const currentOwner = useRef(assignee?.node ?? '')
   currentOwner.current = assignee?.node ?? ''
   const recipient = recipients.find((r) => r.node === replyTo)
@@ -1464,23 +1471,53 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <>
           <div className="dim docket-reply-label">
             {showRecipientPicker ? (
-              <label className="docket-reply-picker">
+              <div className="docket-reply-picker">
                 Reply to
-                <select aria-label="Reply to" value={replyTo} disabled={replyBusy}
+                <Select className="docket-reply-select" variant="standard" disableUnderline
+                  displayEmpty value={replyTo} disabled={replyBusy}
+                  open={recipientOpen} onOpen={() => { recipientSearch.current = { text: '', at: 0 }; setRecipientOpen(true) }}
+                  onClose={() => setRecipientOpen(false)}
+                  inputProps={{ 'aria-label': 'Reply to' }}
+                  SelectDisplayProps={{ 'aria-description': recipient
+                    ? `${recipient.role === 'owner' ? 'Assignee' : 'Participant'}${recipient.state === 'retired'
+                      ? ' — retired; waits for rehire' : recipient.state === 'missing' ? ' — unavailable' : ''}`
+                    : replyTo ? 'Unavailable recipient' : 'Choose a recipient' }}
+                  renderValue={(node) => node ? <span className="docket-reply-identity">
+                    <AgentName id={node} tier={recipient?.state === 'missing' || !recipient ? undefined : facts.get(node)?.tier} />
+                  </span> : 'Choose a recipient'}
+                  MenuProps={{ slotProps: {
+                    paper: { className: 'docket-reply-menu' },
+                    list: { onKeyDownCapture: (e: ReactKeyboardEvent<HTMLUListElement>) => {
+                      // The badge has a letter too; typeahead must use the slug.
+                      if (e.key.length !== 1 || e.key === ' ' || e.ctrlKey || e.metaKey || e.altKey) return
+                      e.preventDefault(); e.stopPropagation()
+                      const now = Date.now(), search = recipientSearch.current
+                      const prefix = (now - search.at < 500 ? search.text : '') + e.key.toLowerCase()
+                      recipientSearch.current = { text: prefix, at: now }
+                      const match = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')]
+                        .find((option) => option.getAttribute('aria-disabled') !== 'true'
+                          && option.dataset.value?.toLowerCase().startsWith(prefix))
+                      match?.focus()
+                    } },
+                  } }}
                   onChange={(e) => setReplyTo(e.target.value)}>
-                  {!replyTo && <option value="" disabled>Choose a recipient</option>}
+                  {!replyTo && <MenuItem value="" disabled>Choose a recipient</MenuItem>}
                   {replyTo && !recipient && (
-                    <option value={replyTo} disabled>{replyTo} — unavailable</option>
+                    <MenuItem value={replyTo} disabled aria-label={`${replyTo} — unavailable`}>
+                      <AgentName id={replyTo} tier={facts.get(replyTo)?.tier} />
+                    </MenuItem>
                   )}
                   {recipients.map((r) => (
-                    <option key={r.node} value={r.node} disabled={r.state === 'missing'}>
-                      {r.node}{r.role === 'owner' ? ' (assignee)' : ''}
-                      {r.state === 'retired' ? ' — retired; waits for rehire'
-                        : r.state === 'missing' ? ' — unavailable' : ''}
-                    </option>
+                    <MenuItem key={r.node} value={r.node} disabled={r.state === 'missing'}
+                      title={`${r.role === 'owner' ? 'Assignee' : 'Participant'}${r.state === 'retired'
+                        ? ' — retired; waits for rehire' : r.state === 'missing' ? ' — unavailable' : ''}`}
+                      aria-label={`${r.node}, ${r.role === 'owner' ? 'assignee' : 'participant'}${r.state === 'retired'
+                        ? ', retired; waits for rehire' : r.state === 'missing' ? ', unavailable' : ''}`}>
+                      <AgentName id={r.node} tier={r.state === 'missing' ? undefined : facts.get(r.node)?.tier} />
+                    </MenuItem>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </div>
             ) : <>
               Reply to{' '}
               <ActorName actor={assignee} facts={facts}
