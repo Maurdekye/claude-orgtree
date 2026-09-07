@@ -679,12 +679,18 @@ button.badge.audience-fold.alert {
 .sq-workstate .statusdot { flex: none; margin-right: 4px; }
 .sq-idle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 600 10px/1 var(--mono); color: var(--dim); }
+/* The provider theme (--accent, rebound per provider) is the ACTIVE-in-turn
+   colour and nothing else (user 2026-09-07 15:32Z). Every other state carries
+   a fixed colour shared across providers, so a card's colour says what the
+   agent is doing rather than who serves it. `active` is put on the span by
+   desk.tsx when the node is in a turn; a RECORDED "working" status - an agent
+   that reported working and then stopped - is not in a turn and stays --work,
+   which is why there is no ancestor override on .sq.busy any more. */
 .sq-idle.working { color: var(--work); }
 .sq-idle.working.active,
-.sq-idle.active,
-.sq.busy .sq-idle.working { color: var(--accent); }
+.sq-idle.active { color: var(--accent); }
 .sq-idle.waiting, .sq-idle.queued { color: var(--work); }
-.sq-idle.compacting { color: var(--accent); }
+.sq-idle.compacting { color: var(--warn, #e5c07b); }
 .sq-idle.done { color: var(--ok); }
 .sq-idle.blocked { color: var(--bad); }
 /* the age beside the state word; flex:none so the WORD truncates first and the
@@ -4106,7 +4112,9 @@ svg.MuiSvgIcon-root {
 .tray-status-label.working.active,
 .tray-status-label.active { color: var(--accent); }
 .tray-status-label.waiting, .tray-status-label.queued { color: var(--work); }
-.tray-status-label.compacting { color: var(--accent); }
+/* fixed, like the banner's .compacting: not an in-turn state, so not the
+   provider theme (user 2026-09-07 15:32Z) */
+.tray-status-label.compacting { color: var(--warn, #e5c07b); }
 .tray-status-label.blocked { color: var(--bad); }
 .tray-status-label.done { color: var(--ok); }
 .tray-status-label.idle { color: var(--dim); }

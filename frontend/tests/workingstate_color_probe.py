@@ -1,7 +1,15 @@
-"""Real-browser verification of fixed non-provider color for Working state vs provider-themed Active turn.
+"""What the CSS RULES do, measured in a real browser. NOT an app probe.
 
     python -B frontend/tests/workingstate_color_probe.py
     python -B frontend/tests/workingstate_color_probe.py --expect-fail
+
+WHAT THIS IS AND IS NOT. It loads the real `frontend/src/styles.css` into
+Chromium over HAND-WRITTEN markup and reads back `getComputedStyle().color`.
+So it establishes that a given COMBINATION OF CLASSES resolves to the colour
+intended, under each provider theme. It does NOT establish that `desk.tsx`
+puts those classes on those elements - `turnspinner.test.tsx` is what covers
+that, and the two are only worth anything together. If the component stopped
+emitting `active` entirely, every check here would still pass.
 
 Verifies:
 1. Out-of-turn Working state receives fixed non-provider color var(--work) (rgb(124, 192, 255))
@@ -15,8 +23,14 @@ Verifies:
    - OpenAI: rgb(34, 196, 189)
    - Google: rgb(80, 144, 245)
    - OpenRouter: rgb(118, 36, 244)
-3. Known-negative control (--expect-fail) restores pre-fix CSS where Working used var(--accent)
-   and verifies detection of provider leak on non-active Working nodes.
+3. Compacting is the fixed caution colour var(--warn) on all three surfaces, not the
+   provider theme: it is not an in-turn state, and the desk banner already read --warn
+   while the card and the tray read --accent (corrected 2026-09-07).
+4. A RECORDED "working" status inside a busy card (`.sq.busy .sq-idle.working`, no
+   `active`) stays var(--work). An agent that reported working and then stopped is not
+   in a turn; the ancestor override that painted it with the provider theme is gone.
+5. Known-negative control (--expect-fail) restores the pre-fix CSS for all of the above
+   and verifies each check can actually fail.
 """
 import argparse
 import pathlib
@@ -30,6 +44,7 @@ CSS_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
 
 # Expected colors matching styles.css tokens
 COLOR_WORK = "rgb(124, 192, 255)"        # --work (#7cc0ff)
+COLOR_WARN = "rgb(229, 192, 123)"        # --warn (#e5c07b), the caution band
 COLOR_CLAUDE = "rgb(217, 119, 87)"       # --accent default (#d97757)
 COLOR_OPENAI = "rgb(34, 196, 189)"       # --prov-openai (#22c4bd)
 COLOR_GOOGLE = "rgb(80, 144, 245)"       # --prov-google (#5090f5)
@@ -108,6 +123,40 @@ def generate_markup() -> str:
           </div>
         </div>
         """)
+
+        # Compacting: a caution state, never the provider theme
+        parts.append(f"""
+        <!-- {prov_key} compacting -->
+        <div class="test-group" data-provider="{prov_key}" data-mode="compacting">
+          <div class="{card_pcls}">
+            <div class="sq-workstate">
+              <span class="sq-idle compacting" id="{prov_key}-card-compacting">Compacting</span>
+            </div>
+          </div>
+          <div class="{desk_pcls}">
+            <span class="turn-status-banner compacting" id="{prov_key}-banner-compacting">
+              <span class="turn-status-label">Compacting</span>
+            </span>
+          </div>
+          <div class="{tray_pcls}">
+            <span class="tray-status">
+              <span class="tray-status-label compacting" id="{prov_key}-tray-compacting">Compacting</span>
+            </span>
+          </div>
+        </div>
+        """)
+
+        # A RECORDED "working" status on a busy card - no `active` class
+        parts.append(f"""
+        <!-- {prov_key} recorded working inside a busy card -->
+        <div class="test-group" data-provider="{prov_key}" data-mode="recorded">
+          <div class="{card_pcls} busy">
+            <div class="sq-workstate">
+              <span class="sq-idle working" id="{prov_key}-card-recorded">Working</span>
+            </div>
+          </div>
+        </div>
+        """)
     return "\n".join(parts)
 
 
@@ -116,6 +165,10 @@ PRE_FIX_REGRESSION_CSS = """
 .sq-idle.working { color: var(--accent) !important; }
 .turn-status-banner.working { color: var(--accent) !important; }
 .tray-status-label.working { color: var(--accent) !important; }
+/* ...and the two corrections of 2026-09-07, so checks 3 and 4 have a control too */
+.sq-idle.compacting { color: var(--accent) !important; }
+.tray-status-label.compacting { color: var(--accent) !important; }
+.sq.busy .sq-idle.working { color: var(--accent) !important; }
 """
 
 
@@ -128,11 +181,13 @@ def measure_colors(css: str) -> dict[str, str]:
         page = browser.new_page()
         page.set_content(full_html)
         for prov_key in PROVIDERS:
-            for mode in ("working", "active"):
+            for mode in ("working", "active", "compacting"):
                 for surface in ("card", "banner", "tray"):
                     elem_id = f"#{prov_key}-{surface}-{mode}"
                     color = page.eval_on_selector(elem_id, "el => getComputedStyle(el).color")
                     results[f"{prov_key}_{surface}_{mode}"] = color
+            results[f"{prov_key}_card_recorded"] = page.eval_on_selector(
+                f"#{prov_key}-card-recorded", "el => getComputedStyle(el).color")
         browser.close()
     return results
 
@@ -158,6 +213,23 @@ def evaluate_results(results: dict[str, str]) -> list[str]:
                 failures.append(
                     f"Active in-turn on {prov_key} {surface} has color {actual}, expected provider {expected_active}"
                 )
+
+        # 3. Compacting is the caution colour, never the provider theme
+        for surface in ("card", "banner", "tray"):
+            key = f"{prov_key}_{surface}_compacting"
+            actual = results.get(key)
+            if actual != COLOR_WARN:
+                failures.append(
+                    f"Compacting on {prov_key} {surface} has color {actual}, expected fixed {COLOR_WARN}"
+                )
+
+        # 4. A recorded "working" status on a busy card is not in a turn
+        actual = results.get(f"{prov_key}_card_recorded")
+        if actual != COLOR_WORK:
+            failures.append(
+                f"Recorded Working inside a busy {prov_key} card has color {actual}, "
+                f"expected fixed {COLOR_WORK} (no `active` class = not in a turn)"
+            )
 
     return failures
 
@@ -193,9 +265,12 @@ def main() -> int:
             print(f"  - {f}")
         return 1
 
-    print("ALL 24 BROWSER CHECKS PASSED:")
+    print("ALL 40 CSS-RULE CHECKS PASSED (real Chromium, hand-written markup, real styles.css):")
     print("  - Out-of-turn Working is fixed rgb(124, 192, 255) across Claude, OpenAI, Google, OpenRouter on Card, Banner, Tray (12 checks)")
-    print("  - Active in-turn is provider-themed across Claude, OpenAI, Google, OpenRouter on Card, Banner, Tray (12 checks)")
+    print("  - Active in-turn is provider-themed across the same four providers and three surfaces (12 checks)")
+    print("  - Compacting is fixed rgb(229, 192, 123) across the same four and three (12 checks)")
+    print("  - A recorded Working inside a busy card stays fixed, on all four providers (4 checks)")
+    print("  These are the CSS rules only; turnspinner.test.tsx is what checks desk.tsx emits the classes.")
     return 0
 
 
