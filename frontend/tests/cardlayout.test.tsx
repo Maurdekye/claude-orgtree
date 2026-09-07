@@ -178,7 +178,7 @@ test('a busy card shows spinning arrow, working state word, and elapsed turn tim
     const word = seat?.querySelector('.sq-idle.working')
     const time = seat?.querySelector('.sq-idle-time')
     assert.equal(Boolean(spin), true, 'the busy spinning arrow is missing from sq-workstate')
-    assert.equal(word?.textContent, 'active', 'the executing-turn state text is missing')
+    assert.equal(word?.textContent, 'Active', 'the executing-turn state text is missing (Title Case)')
     assert.equal(Boolean(time), true, 'the elapsed turn time is missing from sq-workstate')
     assert.match(time?.textContent ?? '', /\d|—/, 'the elapsed time rendered')
     // the spinning arrow is on the left (first element in sq-workstate)

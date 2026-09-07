@@ -42,7 +42,7 @@
 import { useCallback, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CanvasNode, LiveRow, ProviderId } from './shared'
-import { ago, PROVIDER_LABEL, providerOf } from './shared'
+import { ago, PROVIDER_LABEL, providerOf, stateLabel } from './shared'
 import type { Convo } from '../convo'
 import type { ChatMessage } from '../types'
 import { Written } from './reflinks'
@@ -507,7 +507,7 @@ export function ProgressView({ model, refs }:
       <Fold id="reported" title="reported status" open={open.reported} toggle={toggle}>
         {m.reported.status && (
           <div className="progress-reported-row">
-            <span className={'statuschip ' + m.reported.status}>{m.reported.status}</span>
+            <span className={'statuschip ' + m.reported.status}>{stateLabel(m.reported.status)}</span>
             {m.reported.summary && <span className="progress-summary">
               <Written text={m.reported.summary} refs={refs} /></span>}
           </div>

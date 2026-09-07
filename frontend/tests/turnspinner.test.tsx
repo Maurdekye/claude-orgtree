@@ -190,7 +190,7 @@ test('NodeSquare: recorded state outside turn displays state text and idle time 
   const root = view.el.querySelector('.sq')!
   const idleWord = root.querySelector('.sq-idle')
   assert.ok(idleWord, '.sq-idle mounted')
-  assert.equal(idleWord.textContent, 'working', 'displays recorded non-idle state')
+  assert.equal(idleWord.textContent, 'Working', 'displays recorded non-idle state, Title Case like the desk banner')
   assert.ok(idleWord.classList.contains('working'), 'has appropriate state class')
   assert.equal(root.querySelectorAll('.cc-spin').length, 0,
     'recorded working outside a turn must never show active-turn spinning arrow')
@@ -229,7 +229,7 @@ test('NodeSquare: active turn renders spinning arrow on the left, active text, a
     assert.equal(seat.firstElementChild, destSpin, 'spinning arrow must be on the left of sq-workstate')
     const workWord = seat.querySelector('.sq-idle.working')
     assert.ok(workWord, 'literal working text element mounted')
-    assert.equal(workWord.textContent, 'active', 'literal executing-turn text rendered')
+    assert.equal(workWord.textContent, 'Active', 'literal executing-turn text rendered, Title Case like the desk banner')
     const time = seat.querySelector('.sq-idle-time')
     assert.ok(time, 'elapsed turn time mounted')
     assert.match(time.textContent ?? '', /\d|—/, 'elapsed turn time rendered')
@@ -337,7 +337,7 @@ test('OrgCanvas tray-main: idle shows status and idle time; active turn shows sp
     'idle tray row shows recorded status dot without spinner')
   const idleLabel = trayButtons[0]!.querySelector('.tray-status-label')
   assert.ok(idleLabel, 'idle tray row has status label')
-  assert.equal(idleLabel.textContent, 'working', 'idle tray row shows recorded state')
+  assert.equal(idleLabel.textContent, 'Working', 'idle tray row shows recorded state, Title Case')
   const idleTime = trayButtons[0]!.querySelector('.tray-status-time')
   assert.ok(idleTime, 'idle tray row has idle elapsed time')
   assert.match(idleTime.textContent ?? '', /\d/, 'idle elapsed time has number')
@@ -349,7 +349,7 @@ test('OrgCanvas tray-main: idle shows status and idle time; active turn shows sp
   assert.ok(activeSpinner, 'active tray row has cc-spin with prov-openai color')
   const activeLabel = trayButtons[1]!.querySelector('.tray-status-label.working')
   assert.ok(activeLabel, 'active tray row has working status label')
-  assert.equal(activeLabel.textContent, 'active', 'active tray row label is active (the executing turn)')
+  assert.equal(activeLabel.textContent, 'Active', 'active tray row label is Active (the executing turn), Title Case')
   const activeTime = trayButtons[1]!.querySelector('.tray-status-time')
   assert.ok(activeTime, 'active tray row has elapsed turn time')
   assert.match(activeTime.textContent ?? '', /\d|—/, 'active turn time rendered')
@@ -450,7 +450,7 @@ test('Activity component renders spinning arrow and active text without gears or
   try {
     assert.ok(fullView.el.querySelector('.actlabel'), 'renders .actlabel container')
     assert.ok(fullView.el.querySelector('.cc-spin.prov-claude'), 'renders themed spinning arrow')
-    assert.equal(fullView.el.querySelector('.actlabel-text')?.textContent, 'active', 'renders literal active text')
+    assert.equal(fullView.el.querySelector('.actlabel-text')?.textContent, 'Active', 'renders literal Active text')
     assert.equal(fullView.el.querySelectorAll('.actgear').length, 0, 'no actgear')
     assert.equal(fullView.el.querySelectorAll('.actdots').length, 0, 'no actdots')
   } finally {
@@ -529,7 +529,7 @@ test('NodeSquare and mapMode render queued and compacting even when node.busy is
     assert.ok(seat.querySelector('.statusdot.waiting'), 'queued card has waiting status dot')
     const word = seat.querySelector('.sq-idle.waiting')
     assert.ok(word, 'queued card has .sq-idle.waiting word')
-    assert.equal(word.textContent?.trim(), 'queued', 'queued card says queued, not old recorded working')
+    assert.equal(word.textContent?.trim(), 'Queued', 'queued card says Queued, not old recorded working')
     const time = seat.querySelector('.sq-idle-time')
     assert.ok(time, 'queued card has elapsed time')
 
@@ -561,7 +561,7 @@ test('NodeSquare and mapMode render queued and compacting even when node.busy is
     assert.equal(seat.querySelectorAll('.cc-spin').length, 0, 'compacting card has no spinning arrow')
     const word = seat.querySelector('.sq-idle.compacting')
     assert.ok(word, 'compacting card has .sq-idle.compacting word')
-    assert.equal(word.textContent?.trim(), 'compacting')
+    assert.equal(word.textContent?.trim(), 'Compacting')
 
     // In mapMode:
     assert.equal(compactingMap.el.querySelectorAll('.cc-spin').length, 0, 'compacting map has no spinning arrow')
@@ -584,3 +584,34 @@ test('DeskChat derives turnBannerState from shared deriveTurnState with chat.bus
 })
 
 
+
+test('zoom card, tray and desk banner agree on the Title Case word for every state (user 2026-09-07)', async () => {
+  const wordOf = async (render: () => Promise<{ el: HTMLElement; unmount: () => void }>, sel: string) => {
+    const v = await render()
+    try { return v.el.querySelector(sel)?.textContent?.trim() } finally { v.unmount() }
+  }
+  // reported statuses out of turn: the card word, the tray word and the desk
+  // banner word are the SAME string — and it is Title Case
+  for (const status of ['working', 'blocked', 'idle', 'done'] as const) {
+    const node = makeNode({ busy: false, last_status: { status, summary: 's' } as any })
+    const expected = status.charAt(0).toUpperCase() + status.slice(1)
+    assert.equal(await wordOf(() => renderCard(node), '.sq-idle'), expected, `card word for ${status}`)
+    assert.equal(await wordOf(() => mountView(<TrayStatus node={node} turn={null} />, (el) => el),
+      '.tray-status-label'), expected, `tray word for ${status}`)
+    assert.equal(await wordOf(() => mountView(
+      <TurnStatusBanner state="idle" recordedState={status} tier="haiku" />, (el) => el),
+      '.turn-status-label'), expected, `desk word for ${status}`)
+  }
+  // the executing turn: Active on all three, and the class stays the raw value
+  const busy = makeNode({ busy: true, inflight_at: new Date().toISOString() })
+  const card = await renderCard(busy)
+  try {
+    assert.equal(card.el.querySelector('.sq-idle')?.textContent?.trim(), 'Active')
+    assert.ok(card.el.querySelector('.sq-idle.working'), 'class names stay the raw value')
+  } finally { card.unmount() }
+  assert.equal(await wordOf(() => mountView(<TrayStatus node={busy} turn={null} />, (el) => el),
+    '.tray-status-label'), 'Active')
+  assert.equal(await wordOf(() => mountView(
+    <TurnStatusBanner state="working" inflightAt={busy.inflight_at} tier="haiku" />, (el) => el),
+    '.turn-status-label'), 'Active')
+})

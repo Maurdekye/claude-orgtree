@@ -1496,6 +1496,18 @@ export function edgeJumpPlacement(
 
 export const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
+/** The VISIBLE form of a state word — the agent's reported status
+ *  (working|done|blocked|idle), the observed turn state (active|queued|
+ *  compacting) or a node state (archived…) — in Title Case, the same on the
+ *  zoom card, the tray and the desk (user 2026-09-07: "match Working/Active/
+ *  Idle/Blocked between zoom and desk"). Display only: the value itself, the
+ *  class names built from it and sentence-case tooltips are untouched. An
+ *  underscore reads as a space ("in_progress" → "In progress"). */
+export const stateLabel = (word: string | null | undefined): string => {
+  const w = String(word ?? '').replace(/_/g, ' ')
+  return w ? w.charAt(0).toUpperCase() + w.slice(1) : w
+}
+
 export const ago = (at: string | null | undefined) => {
   if (!at) return ''
   const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000)

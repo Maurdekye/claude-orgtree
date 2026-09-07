@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, tierCapabilityNotes, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, stateLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -1432,7 +1432,7 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
               <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
               <span className="pile-name">{id}</span>
               {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
-              {n.busy && <span className="badge">active</span>}
+              {n.busy && <span className="badge">{stateLabel('active')}</span>}
               {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
               {(n.mail_pending ?? 0) > 0 &&
                 <span className={'badge free prov-' + providerOf(n.tier ?? '')}>

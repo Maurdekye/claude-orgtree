@@ -31,7 +31,7 @@ import {
   PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, stateLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, usePolled } from './shared'
 import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import type { ProviderPresence } from './shared'
 import {
@@ -260,7 +260,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
         <DestinationBusy tier={node.tier} />
         <span className="sq-idle working"
           title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
-          active
+          {stateLabel('active')}
         </span>
         <span className="sq-idle-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -273,7 +273,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
       <>
         <span className="statusdot waiting" title="queued — waiting for a free turn slot" />
         <span className="sq-idle waiting" title="queued">
-          queued
+          {stateLabel('queued')}
         </span>
         <span className="sq-idle-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -285,7 +285,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
     return (
       <>
         <span className="sq-idle compacting" title="compacting">
-          compacting
+          {stateLabel('compacting')}
         </span>
         <span className="sq-idle-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -298,7 +298,7 @@ export function AgentWorkstate({ node, turn, live = true }: {
     <>
       <span className={'sq-idle ' + recorded}
         title={node.last_status?.summary ?? undefined}>
-        {recorded}
+        {stateLabel(recorded)}
       </span>
       {turn && (
         <span className="sq-idle-time"
@@ -324,7 +324,7 @@ export function TrayStatus({ node, turn, live = true }: {
         <DestinationBusy tier={node.tier} />
         <span className="tray-status-label working"
           title={node.inflight_at ? `active for ${ago(node.inflight_at)}` : 'active'}>
-          active
+          {stateLabel('active')}
         </span>
         <span className="tray-status-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -338,7 +338,7 @@ export function TrayStatus({ node, turn, live = true }: {
         <span className="statusdot waiting"
           title="queued — waiting for a free turn slot" />
         <span className="tray-status-label waiting" title="queued">
-          queued
+          {stateLabel('queued')}
         </span>
         <span className="tray-status-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -350,7 +350,7 @@ export function TrayStatus({ node, turn, live = true }: {
     return (
       <span className="tray-status">
         <span className="tray-status-label compacting" title="compacting">
-          compacting
+          {stateLabel('compacting')}
         </span>
         <span className="tray-status-time">
           {node.inflight_at ? ago(node.inflight_at) : '—'}
@@ -370,7 +370,7 @@ export function TrayStatus({ node, turn, live = true }: {
       <span className={'statusdot ' + recorded}
         title={node.last_status?.summary ?? undefined} />
       <span className={'tray-status-label ' + recorded}>
-        {recorded}
+        {stateLabel(recorded)}
       </span>
       {turn && (
         <span className="tray-status-time"
@@ -1076,7 +1076,7 @@ export function Activity({ act, dotOnly, tier }: { act?: ActivityInfo; dotOnly?:
   return (
     <div className="actlabel" title="active">
       <DestinationBusy tier={tier} />
-      <span className="actlabel-text">active</span>
+      <span className="actlabel-text">{stateLabel('active')}</span>
     </div>
   )
 }
@@ -1931,7 +1931,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <CacheForecastMark forecast={node.cache_forecast} busy={processActive} />
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
-            title={node.last_status.summary}>{node.last_status.status}</span>}
+            title={node.last_status.summary}>{stateLabel(node.last_status.status)}</span>}
         {/* the collapsed count of what this agent is answerable for; click →
             the tab that lists it. It counts EXACTLY the rows the tab shows
             (both read `agentItems`), because a chip that disagrees with the

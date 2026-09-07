@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  ago, anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
+  ago, anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, stateLabel, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -1419,7 +1419,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
               <>
                 <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
                   title={node.last_status?.summary ?? undefined}>
-                  {node.last_status?.status ?? (live ? 'idle' : node.state)}
+                  {stateLabel(node.last_status?.status ?? (live ? 'idle' : node.state))}
                 </span>
                 <LastTurnAge turn={lastTurn} busy={node.busy} variant="inline" />
               </>
