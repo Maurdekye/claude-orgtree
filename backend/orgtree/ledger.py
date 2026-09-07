@@ -9618,16 +9618,17 @@ class Org:
     # moves an item there, because plenty of open items are authorised and
     # under way (Astra ruling 2026-09-05).
     #
-    # `waiting` (user 2026-09-05) is work whose next step is not the agent's to
-    # take: it names an external event and how the agent will hear of it. It
-    # stays on the assigned desk, it stays readable, and it stops producing idle
-    # reminders until its event happens. It is NOT a second backlog and NOT a
-    # closed state. `blocked` stays reminder-eligible: being stuck is a thing an
-    # agent can be nudged about.
+    # `blocked` (user 2026-09-07) is work that cannot move until an answer or
+    # event outside the item happens: it names what it is stuck on and how the
+    # agent will hear of it, it stays on the assigned desk and in the active
+    # count, and it is NEVER nudged — not by the idle-docket reminder and, when
+    # it is all an agent owes, not by the working-status checkup either
+    # (`work_blocked_only`). The answer or event itself, arriving as mail, is
+    # what resumes it.
     #
-    # (`waiting` — out of the active count and archived after an hour, user
-    # 2026-09-06 — was REMOVED as a state on 2026-09-07; see
-    # `WORK_LEGACY_STATUSES` below for how the rows that still hold it read.)
+    # (`waiting` — 2026-09-05/06: out of the active count, its own idle-reminder
+    # exemption, archived after an hour — was REMOVED as a state on 2026-09-07;
+    # see `WORK_LEGACY_STATUSES` below for how the rows that still hold it read.)
     WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
                             "review", "done", "superseded", "dropped")
     WORK_AGENT_STATUSES: Final = ("backlogged", "open", "in_progress",
