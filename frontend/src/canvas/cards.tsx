@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
-  CheckIcon, CloseIcon, FocusIcon, FullscreenIcon, FrozenIcon, LayersIcon,
+  CheckIcon, CloseIcon, DocketIcon, FocusIcon, FullscreenIcon, FrozenIcon, LayersIcon,
   LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
@@ -1186,6 +1186,7 @@ interface NodeSquareProps {
   onSpawnTop?: (tier: string) => void
   onConfig: () => void
   onInbox: () => void
+  onDocket?: () => void
   onLineage: () => void
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
@@ -1231,7 +1232,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
-  toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
+  toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onDocket, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onWorkLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
   mapMode, dogs, oneShotDogs, pinned, pinnedFocus, onPin, onShowPin }: NodeSquareProps) {
@@ -1429,6 +1430,12 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
         </div>
       </div>}
       {!focused && <div className="sq-actions">
+        {onDocket && <button className="mailbtn docketbtn" aria-label={`Docket for ${node.id}`}
+          title={`Docket for ${node.id}`}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onDocket() }}>
+          <DocketIcon fontSize="inherit" />
+        </button>}
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>

@@ -29,6 +29,7 @@ import { mailRefTarget, useRefRoutes, Written } from './reflinks'
 import type { ResolvedRef } from './reflinks'
 import type { TypedRef } from './workrefs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
+import { AgentDocketModal } from './agentdocket'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
 import { addPin, clampRect, PinLayer, prunePins, renamePin, showPin, usePins } from './pins'
@@ -137,6 +138,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   const [trayArch, setTrayArch] = useState(false)   // archived rows shown (user
                                                     // spec: hidden by default)
   const [inboxId, setInboxId] = useState<string | null>(null)
+  const [agentDocketId, setAgentDocketId] = useState<string | null>(null)
   const [oiOpen, setOiOpen] = useState(false)       // the ORG-inbox viewer
   // inline mail links (user spec 2026-07-31): a chat's send chip opens the
   // box that HOLDS the mail, selected on it — user inbox, a node's inbox, or
@@ -535,6 +537,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     setConfigId((v) => v === from ? to : v)
     setLineageId((v) => v === from ? to : v)
     setInboxId((v) => v === from ? to : v)
+    setAgentDocketId((v) => v === from ? to : v)
     setSheetId((v) => v === from ? to : v)
   }, [slug])
   const nodeDrag = useRef<{
@@ -2456,6 +2459,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
               onSpawnTop={(t) => spawnAbove(n, t)}
               onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
+              onDocket={() => setAgentDocketId(n.id)}
               onOpenDoc={setDocView}
               onMailLink={openMail} onWorkLink={openWork}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
@@ -2824,6 +2828,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
           jumpTo={nodeInboxJump?.id ?? null} jumpSeq={nodeInboxJump?.seq}
           onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>
+      )}
+      {agentDocketId && map.has(agentDocketId) && (
+        <MaybePortal><AgentDocketModal key={`${slug}/${agentDocketId}`} slug={slug}
+          nid={agentDocketId} tree={tree} toast={toast} refs={canvasRefs}
+          close={() => setAgentDocketId(null)} /></MaybePortal>
       )}
       {pileOpen && piles.get(pileOpen) && (
         <MaybePortal><PilePicker pile={piles.get(pileOpen)!} map={map} op={op} toast={toast}
