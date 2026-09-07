@@ -142,6 +142,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     set: (v: string | null | ((current: string | null) => string | null)) => void) => {
     set((current) => isModalPinned(kind) && current === id ? null : id)
   }, [])
+  const toggleDog = useCallback((id: string) => {
+    setDogView((current) => isModalPinned('watchdog') && current === id ? null : id)
+  }, [])
   const [lineageId, setLineageId] = useState<string | null>(null)
   const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
@@ -2548,7 +2551,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 + `${w.spent ? 'departing after its spark' : w.state}; `
                 + 'click for detail'}
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); setDogView(isModalPinned('watchdog') ? null : w.id) }}>
+              onClick={(e) => { e.stopPropagation(); toggleDog(w.id) }}>
               <span className="wd-glyph">{w.state === 'armed' ? '◉'
                 : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
               {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}
@@ -2907,7 +2910,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 <div className="ms-doglist">
                   {myDogs.map((w) => (
                     <button key={w.id} className={(w.once ? 'oneshot ' : '') + w.state}
-                      onClick={() => { setDogView(isModalPinned('watchdog') ? null : w.id); setSheetDogs(false) }}>
+                      onClick={() => { toggleDog(w.id); setSheetDogs(false) }}>
                       <span className="wd-glyph">{w.state === 'armed' ? '◉'
                         : w.state === 'paused' ? '◫' : w.spent ? '↗' : '✕'}</span>
                       {w.once && <span className="wd-once" aria-label="one-shot dog">1×</span>}

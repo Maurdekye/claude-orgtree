@@ -1037,7 +1037,7 @@ export default function App() {
                 }}
                 onWorkItem={(item: string) => {
                   setDocketJump(jumpTo(item))
-                  setShowDocket(v => isModalPinned('docket') ? !v : true)
+                  setShowDocket(true)
                 }} />
               {/* hard-full is a STATE, not an event: the alert persists (and
                   survives reloads) until usage drops; it never auto-opens
