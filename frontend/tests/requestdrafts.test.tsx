@@ -75,7 +75,7 @@ for(const modern of [true,false]) {
     await view.render(card(base(modern,[first],3)))
     await view.render(card(base(modern,[first,second],4)))
     await click(view.el,'.ask-tabbtn','Timing');assert.equal(input(view.el)?.value,'','removed draft does not resurrect')
-    for(const [next,slug] of [[{...base(modern),id:'replacement'},'mine'],[base(modern),'other-org'],[{...base(modern),node:'beta'},'other-org']] as const){
+    for(const [next,slug] of [[{...base(modern),id:'replacement'},'mine'],[{...base(modern),id:'replacement'},'other-org'],[{...base(modern),id:'replacement',node:'beta'},'other-org']] as const){
       await type(view.el,'Must not cross');await view.render(card(next,slug))
       await click(view.el,'.ask-tabbtn','Timing');assert.equal(input(view.el)?.value,'')
     }
