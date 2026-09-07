@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 from types import SimpleNamespace
+from fastapi import HTTPException
 
 os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-agent-unstick-")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -61,14 +62,22 @@ def main():
                                   "resume_views": ["retained view"]}
     store.save_org(org)
     sent = []
+    observed_during_send = []
     old_send, old_notify = api.supervisor.send_message, api.supervisor.notify
-    api.supervisor.send_message = lambda *args, **kwargs: sent.append((args, kwargs)) or {}
+    def send_and_observe(*args, **kwargs):
+        target = store.load_org(org.d["slug"]).node("kid")
+        observed_during_send.append(dict(target))
+        sent.append((args, kwargs))
+        return {}
+    api.supervisor.send_message = send_and_observe
     api.supervisor.notify = lambda *args: sent.append((args, {}))
     dispatched = api.agent_call(
         AgentCall(org=org.d["slug"], node="boss", tool="orgtree_unstick",
                   args={"node": "kid"}),
         SimpleNamespace(state=SimpleNamespace(bridge_slug=None)))
     assert dispatched["released"] == ["frozen"]
+    assert observed_during_send[0]["unstuck"]["by"] == "boss"
+    assert "frozen" not in observed_during_send[0]
     assert sent[0][0][2] == "retained text"
     assert sent[0][1]["view"] == "retained view"
     assert sent[-1][0][-1] == "turn_started"
@@ -108,19 +117,21 @@ def main():
     assert noop["released"] == [] and len(sent) == before_noop
 
     # An unauthorized target is refused before mutation or drive.
-    peer_before = dict(store.load_org(org.d["slug"]).node("peer"))
+    org.node("kid")["frozen"] = {"limit": True, "resume_texts": ["denied"]}
+    store.save_org(org)
+    target_before = dict(store.load_org(org.d["slug"]).node("kid"))
     denied_before = len(sent)
     try:
         api.agent_call(
             AgentCall(org=org.d["slug"], node="peer", tool="orgtree_unstick",
                       args={"node": "kid"}),
             SimpleNamespace(state=SimpleNamespace(bridge_slug=None)))
-    except Exception:
-        pass
+    except HTTPException as exc:
+        assert exc.status_code == 422 and "authority" in str(exc.detail).lower()
     else:
         raise AssertionError("unauthorized API unstick was allowed")
     assert len(sent) == denied_before
-    assert store.load_org(org.d["slug"]).node("peer") == peer_before
+    assert store.load_org(org.d["slug"]).node("kid") == target_before
     api.supervisor.send_message, api.supervisor.notify = old_send, old_notify
 
     names = {t["name"] for t in mcptool.TOOLS}

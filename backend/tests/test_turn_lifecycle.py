@@ -718,9 +718,8 @@ def hermetic() -> None:
             src = open(os.path.join(_REPO, "backend", "orgtree",
                                     "mcptool.py"), encoding="utf-8").read()
             assert "unstick" not in src, (
-                "an agent-facing `unstick` appeared in mcptool's catalogue. "
-                "The user ruling grants this override to the USER; an agent "
-                "that can clear its own spend freeze makes the cap advisory")
+                "an agent-facing `unstick` appeared in mcptool's catalogue "
+                "before the implementation was present")
             return
         org = store.create_org("zz unstick authority")
         org.hire(USER, None, "opus", 20, "boss", **hspec())
@@ -729,9 +728,8 @@ def hermetic() -> None:
         try:
             unstick(org, "boss", "boss")            # self is still refused
         except Exception as e:                    # noqa: BLE001
-            assert "user" in str(e).lower(), (
-                f"unstick refused a non-user actor, but not on authority "
-                f"grounds: {e}")
+            assert "authority" in str(e).lower() and "downward" in str(e).lower(), (
+                f"unstick refused self with an unexpected error: {e}")
             return
         raise AssertionError(
             "an unauthorized agent unstick was allowed")
