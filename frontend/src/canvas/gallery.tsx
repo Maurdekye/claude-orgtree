@@ -349,7 +349,10 @@ export function AgentGalleryView({ slug, nid, node, toast, onFocusAgent, onReply
 
   const rows = useMemo(() => {
     const polled = data?.documents?.filter((r) => r.node === nid && !r.evicted)
-    const source = (polled && polled.length > 0) ? polled : (fallbackRows.length > 0 ? fallbackRows : (polled ?? []))
+    // A response is authoritative even when its filtered result is empty:
+    // falling back then resurrects dismissed, evicted, or stale node rows.
+    // Node payloads are only a bootstrap fallback while the list is absent.
+    const source = data ? (polled ?? []) : fallbackRows
     return source.filter((r) => !dismissed.includes(r.id))
   }, [data, nid, fallbackRows, dismissed])
 

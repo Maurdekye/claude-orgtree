@@ -614,3 +614,23 @@ uiTest('AgentGalleryView: renders empty state when agent has no presentations', 
   assert.match(el.textContent ?? '', /No presented documents/)
   assert.equal(rows(el).length, 0)
 })
+
+uiTest('AgentGalleryView: authoritative empty list does not resurrect stale node documents', async (mount) => {
+  mockDocs([])
+  const { el } = await mount(agentGallery('agent-1', {
+    node: { id: 'agent-1', state: 'live', tier: 'opus', documents: [{ id: 'stale', title: 'stale node copy' }] },
+  }))
+  await flush()
+  assert.equal(rows(el).length, 0)
+  assert.match(el.textContent ?? '', /No presented documents/)
+})
+
+uiTest('AgentGalleryView: authoritative evicted result stays empty over node fallback', async (mount) => {
+  mockDocs([row({ id: 'evicted', node: 'agent-1', evicted: true })])
+  const { el } = await mount(agentGallery('agent-1', {
+    node: { id: 'agent-1', state: 'live', tier: 'opus', documents: [{ id: 'evicted', title: 'old copy' }] },
+  }))
+  await flush()
+  assert.equal(rows(el).length, 0)
+  assert.match(el.textContent ?? '', /No presented documents/)
+})
