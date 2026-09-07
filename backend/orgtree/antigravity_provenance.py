@@ -64,8 +64,24 @@ class _Decline(Exception):
         self.detail = detail
 
 
+_SAFE = re.compile(r"[0-9,?]{0,64}\Z")
+
+
 def _fmt(detail: dict[str, Any]) -> str:
-    return "".join(f" {k}={v}" for k, v in detail.items())
+    """Only validated numbers, this module's own index lists and '?' reach
+    the line. A value that came from the store or the wire as anything else
+    (a protobuf field of the wrong wire type, a text SQL column) is a
+    marker, never the value: content-free means the bytes cannot leak
+    through the diagnostic either."""
+    def safe(v: Any) -> str:
+        if isinstance(v, bool):
+            return "?"
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, str) and _SAFE.fullmatch(v):
+            return v
+        return "nonnumeric"
+    return "".join(f" {k}={safe(v)}" for k, v in detail.items())
 
 
 def _varint(b: bytes, pos: int) -> tuple[int, int]:

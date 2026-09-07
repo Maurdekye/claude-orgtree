@@ -283,7 +283,8 @@ class ProvenanceTests(unittest.TestCase):
                 self.declines("final_text_mismatch", final=7, wire_bytes=len(text.encode()), stored_bytes=len(ANSWER))
 
     def test_stored_body_with_trailing_lf_needs_the_same_on_wire(self):
-        # if the CLI ever stores the LF too, exact still fires and one MORE LF still declines
+        # if the CLI ever stores the LF too: exact fires, exactly one extra LF
+        # fires (the same tolerance), two extra or none at all decline
         save(self.path, [step(7, 15, ANSWER + "\n")])
         self.final_delta(ANSWER + "\n")
         self.fires(wire_tail="none")
@@ -356,6 +357,25 @@ class ProvenanceTests(unittest.TestCase):
                 self.assertIn(key, self.declines(reason))
         save(self.path, [step(7, 15), step(8, 17)])
         self.declines("step_type", step=8, step_type=17)
+
+    def test_diagnostic_details_never_carry_store_or_wire_bytes(self):
+        # a malformed protobuf: stop_reason (field 12) arriving as BYTES must
+        # decline AND must not put those bytes on the retained line
+        marker = "SECRET-FIELD-MARKER"
+        row = list(step(7, 15))
+        row[-1] = field(1, 15) + field(4, 3) + field(20, field(1, ANSWER) + field(12, marker))
+        save(self.path, [tuple(row)])
+        line = self.declines("final_stop_reason", final=7, stop_reason="nonnumeric")
+        self.assertNotIn(marker, line)
+        # a text value in a numeric SQL column is a marker too, never the value
+        save(self.path, [step(7, 15)])
+        with sqlite3.connect(self.path) as db:
+            db.execute("UPDATE steps SET step_type=? WHERE idx=6", ("SQL-TEXT-MARKER",))
+        line = self.declines("step_type", step=6, step_type="nonnumeric")
+        self.assertNotIn("SQL-TEXT-MARKER", line)
+        # the formatter itself: only numbers, index lists and '?' pass
+        self.assertEqual(p._fmt({"a": 7, "b": "4,5", "c": "?", "d": b"x", "e": "text", "f": 1.5, "g": True}),
+                         " a=7 b=4,5 c=? d=nonnumeric e=nonnumeric f=nonnumeric g=?")
 
     def test_isolated_second_user_and_contiguity_controls(self):
         # a SECOND user step inside the appended interval, everything else
