@@ -552,11 +552,18 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   // tells "still loading" from "no such document" by itself, which is the
   // judgement this panel cannot make (it holds no document list).
   const [docView, setDocView] = useState<string | null>(null)
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const optionsToggle = useRef<HTMLButtonElement>(null)
   // ⚠ ESCAPE BELONGS TO THE TOP-MOST THING ON SCREEN. Both listeners sit on
   // `window`, so an unguarded Escape with the reader open closes the reader
   // AND the docket underneath it — the user asked to back out of a document
   // and lost the panel they were reading from.
-  const escClose = useCallback(() => { if (!docView) close() }, [docView, close])
+  const escClose = useCallback(() => {
+    if (docView) return
+    if (optionsOpen && optionsToggle.current?.getClientRects().length) {
+      setOptionsOpen(false); optionsToggle.current.focus()
+    } else close()
+  }, [docView, close, optionsOpen])
   // ⚠ AND A PINNED DOCKET DOES NOT CLOSE ITSELF TO GET OUT OF THE WAY. Every
   // jump below hands `navClose` down instead of `close`: centred, the panel
   // covers what it just opened and must go; pinned, it is a window the user
@@ -846,17 +853,24 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     <>
     <PinFrame kind="docket" title="Work docket" panel="settings wide docket-modal"
       close={close} onEsc={escClose}>
-        {/* THE FILTERS SIT AT THE RIGHT END, which is where the gallery's own
-            show-retired checkbox ends up: `.gallery-modal .gallery-head` uses
-            justify-content: space-between over two children, so its checkbox is
-            pushed to the far right rather than sitting beside its heading. The
-            user asked for that POSITION (2026-09-05, confirmed by Astra after a
-            measurement disproved the earlier "adjacent to the heading" reading),
-            so the spacer goes BEFORE the filters here. The close button is the
-            one thing further right, and the gallery has no equivalent. */}
-        <div className="gallery-head docket-head">
+        {/* One mounted set of controls: inline when wide, disclosed when narrow. */}
+        <div className="gallery-head docket-head" onKeyDown={e => {
+          // Pinned and detached frames deliberately do not register modal Escape.
+          if (e.key === 'Escape' && !e.defaultPrevented && optionsOpen
+            && optionsToggle.current?.getClientRects().length) {
+            e.preventDefault(); e.stopPropagation(); setOptionsOpen(false); optionsToggle.current.focus()
+          }
+        }}>
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
-          <span className="spacer" />
+          <button ref={optionsToggle} type="button" className="docket-options-toggle"
+            aria-expanded={optionsOpen} aria-controls="docket-view-options"
+            onClick={() => setOptionsOpen(open => !open)}>View options {optionsOpen ? '\u25b4' : '\u25be'}</button>
+          <button className="chip-x docket-header-close" title="close" onClick={close}>
+            <CloseIcon fontSize="inherit" />
+          </button>
+          <div id="docket-view-options" className="docket-options" data-open={optionsOpen}
+            role="group" aria-label="Docket view options">
+          <div className="docket-filterbar">
           <label className="checkline docket-showarchived"
             title="include archived work items — done items an hour after their last docket update, dropped items at once">
             <input type="checkbox" checked={showArchived}
@@ -871,12 +885,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
             Show backlogged
             {backlogCount > 0 && <span className="dim"> · {backlogCount}</span>}
           </label>
-          <button className="chip-x" title="close" onClick={close}>
-            <CloseIcon fontSize="inherit" />
-          </button>
-        </div>
-        {/* its own strip, so the header above stays as uncrowded as the
-            gallery's (Astra 2026-09-05) */}
+          </div>
         <div className="docket-sortbar">
           <label className="dim" htmlFor="docket-group">Arrange</label>
           <select id="docket-group" className="docket-group-select" value={groupMode}
@@ -898,6 +907,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
             {SORT_MODES.find((s) => s.value === sortMode)?.why ?? SORT_MODES[0]!.why}
             {groupMode !== 'none' && ', inside each group'}
           </span>
+        </div>
+          </div>
         </div>
         <div className="mailpane">
           {!data
