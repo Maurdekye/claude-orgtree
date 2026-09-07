@@ -76,11 +76,14 @@ test('every lane and label starts inside the canvas, however many side lanes the
   const layout4 = layoutGraph([{ oid: 'trunk', parents: [], at: 0, subject: 't' }, ...four.map(oid => ({ oid, parents: ['trunk'], at: 0, subject: oid }))], snap4)
   const leftLane = Math.min(...[...layout4.points.values()].map(p => p.x))
   assert.equal(layout4.trunkX - leftLane, 660, 'two columns out, as the lane rule places it')
-  // the trunk lands where the margin formula puts it. Honest note: the extents
-  // guard alone would land it in the SAME place (measured: with the old 100px
-  // margin and the guard on, this passes; with the guard off it fails), so the
-  // guard is the load-bearing layer and the margin is the readable intent.
+  // the trunk lands where the margin formula puts it. Honest note: WHEN THE
+  // TRUNK IS AMONG THE BRANCHES the extents guard alone would land it in the
+  // SAME place (measured: with the old 100px margin and the guard on, this
+  // passes; with the guard off it fails). Without a trunk (next test) the
+  // margin formula is short by a lane and only the guard saves the label, so
+  // the guard is the load-bearing layer and the margin is the readable intent.
   assert.equal(layout4.trunkX, 2 * 330 + 277 + EDGE)
+  assert.equal(layout4.trunkX, 952, 'the literal margin, so EDGE cannot drift unnoticed')
   assert.equal(Math.min(...layout4.annotations.map(a => a.x)), leftLane - 277)
   assert.ok(leftLane - 277 >= EDGE)
   // one side lane: geometry unchanged from before (trunk at 750)
@@ -102,4 +105,70 @@ test('server-assigned lanes that reach past the left edge are shifted into view,
   const label = layout.annotations.find(a => a.branch.ref === 'refs/heads/far')!
   assert.equal(label.x, EDGE, 'the furthest-left thing sits exactly at the edge margin')
   assert.equal(label.anchor, far, 'the label anchors the shifted point itself')
+})
+
+test('a repository without a trunk (local-only, no remote) keeps its leftmost label inside the canvas', () => {
+  // Found by redteam-opus on a real local-only repository (2026-09-07 13:12Z):
+  // configuration() leaves config.trunk null when there is no remote, so the
+  // server lays out ALL N branches as side lanes (gitworkspace.py, offsets
+  // -330, +330, -660, +660, -990 ...), while the client margin is sized from
+  // branches.length - 1. With an odd N the leftmost server lane is a whole
+  // 330px column further left than the margin reserves; only the extents
+  // guard brings it back. Real snapshot numbers: N=3 leftmost lane -660,
+  // N=5 leftmost lane -990; pre-fix labels at -187 / -507, post-fix at 15.
+  const serverOffset = (side: number) => (side % 2 ? -1 : 1) * Math.ceil(side / 2) * 330
+  for (const n of [3, 4, 5]) {
+    const refs = Array.from({ length: n }, (_, i) => `refs/heads/b${i}`)
+    const nodes: GitCommit[] = refs.map((ref, i) => ({ oid: `tip${i}`, parents: [], at: 0, subject: ref, lane: { offset: serverOffset(i + 1), owner: ref } }))
+    const snap = snapshot(refs.map((ref, i) => branch(ref, `tip${i}`)))
+    snap.config = { ...snap.config, trunk: null }
+    const layout = layoutGraph(nodes, snap)
+    assert.equal(layout.annotations.length, n)
+    const leftmostLane = Math.min(...nodes.map(nd => nd.lane!.offset))
+    assert.equal(leftmostLane, -330 * Math.ceil(n / 2), 'the server shape under test is the real one')
+    // the margin formula alone: where would the leftmost label have started?
+    const marginOnly = Math.max(750, Math.ceil((n - 1) / 2) * 330 + 277 + EDGE)
+    const unguarded = marginOnly + leftmostLane - 277
+    if (n % 2) assert.ok(unguarded < EDGE, `n=${n}: margin alone leaves the label at ${unguarded}, the guard must act`)
+    else assert.equal(unguarded, EDGE, `n=${n}: even N is covered by the margin alone`)
+    const leftmostLabel = Math.min(...layout.annotations.map(a => a.x))
+    assert.equal(leftmostLabel, EDGE, `n=${n}: leftmost label sits exactly at the edge`)
+    assert.equal(layout.trunkX, marginOnly + Math.max(0, EDGE - unguarded), `n=${n}: trunk shifted by exactly the shortfall`)
+    for (const p of layout.points.values()) assert.equal(p.x - layout.trunkX, nodes.find(nd => nd.oid === p.oid)!.lane!.offset, 'relative lanes preserved')
+    const rightmost = Math.max(...layout.annotations.map(a => a.x + LABEL_WIDTH), ...[...layout.points.values()].map(p => p.x))
+    assert.ok(layout.width >= rightmost + EDGE, `n=${n}: width ${layout.width} covers ${rightmost + EDGE}`)
+  }
+  // the two odd shapes Opus measured on the real snapshot, as literals
+  const at = (n: number) => {
+    const refs = Array.from({ length: n }, (_, i) => `refs/heads/b${i}`)
+    const snap = snapshot(refs.map((ref, i) => branch(ref, `tip${i}`)))
+    snap.config = { ...snap.config, trunk: null }
+    return layoutGraph(refs.map((ref, i) => ({ oid: `tip${i}`, parents: [], at: 0, subject: ref, lane: { offset: serverOffset(i + 1), owner: ref } })), snap)
+  }
+  assert.equal(at(3).trunkX, 952)
+  assert.equal(at(5).trunkX, 1282)
+})
+
+test('the canvas width follows the right extent, after the shift, and a bare point is measured by its half width', () => {
+  // right extent alone: a far-right server lane's label ends past trunkX*2+300
+  const right = layoutGraph([{ oid: 'trunk', parents: [], at: 0, subject: 't', lane: { offset: 0, owner: 'refs/heads/main' } },
+    { oid: 'r', parents: ['trunk'], at: 0, subject: 'r', lane: { offset: 1320, owner: 'refs/heads/r' } }],
+    snapshot([branch('refs/heads/main', 'trunk'), branch('refs/heads/r', 'r')]))
+  const rLabel = right.annotations.find(a => a.branch.ref === 'refs/heads/r')!
+  assert.ok(rLabel.x + LABEL_WIDTH > 750 * 2 + 300, 'the fixture really exceeds the base width')
+  assert.equal(right.width, rLabel.x + LABEL_WIDTH + EDGE)
+  // both at once: the shift moves the right extent too, and width must include it
+  const both = layoutGraph([{ oid: 'trunk', parents: [], at: 0, subject: 't', lane: { offset: 0, owner: 'refs/heads/main' } },
+    { oid: 'l', parents: ['trunk'], at: 0, subject: 'l', lane: { offset: -1320, owner: 'refs/heads/l' } },
+    { oid: 'r', parents: ['trunk'], at: 0, subject: 'r', lane: { offset: 1320, owner: 'refs/heads/r' } }],
+    snapshot([branch('refs/heads/main', 'trunk'), branch('refs/heads/l', 'l'), branch('refs/heads/r', 'r')]))
+  assert.equal(both.annotations.find(a => a.branch.ref === 'refs/heads/l')!.x, EDGE)
+  const bothRight = both.annotations.find(a => a.branch.ref === 'refs/heads/r')!
+  assert.equal(both.width, bothRight.x + LABEL_WIDTH + EDGE, 'width measured from the SHIFTED right label')
+  // a point with no label of its own is the leftmost thing: its half width binds
+  const bare = layoutGraph([{ oid: 'trunk', parents: [], at: 0, subject: 't', lane: { offset: 0, owner: 'refs/heads/main' } },
+    { oid: 'orphan', parents: ['trunk'], at: 0, subject: 'o', lane: { offset: -1320, owner: null } }],
+    snapshot([branch('refs/heads/main', 'trunk')]))
+  assert.equal(bare.annotations.length, 1, 'only the trunk has a label')
+  assert.equal(bare.points.get('orphan')!.x, EDGE + 12, 'the node box (24px) begins exactly at the edge')
 })
