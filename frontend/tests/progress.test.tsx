@@ -489,7 +489,7 @@ test('§3 ProgressView: a sentence in every state; a checklist only with items; 
   } finally { await v.unmount() }
   const withStatus = await mountView(<ProgressView model={deriveProgress(node({ last_status: { status: 'working', summary: 'the summary text', at: new Date().toISOString() } }), convo())} />, (el) => el)
   try {
-    assert.equal(withStatus.el.querySelector('.progress-reported-row .statuschip.working')?.textContent, 'working')
+    assert.equal(withStatus.el.querySelector('.progress-reported-row .statuschip.working')?.textContent, 'Working')
     assert.equal(withStatus.el.querySelector('.progress-summary')?.textContent, 'the summary text')
   } finally { await withStatus.unmount() }
 })

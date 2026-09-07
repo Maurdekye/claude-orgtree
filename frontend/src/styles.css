@@ -1765,6 +1765,23 @@ button.cc-name:hover {
   max-width: 260px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
+.desk-presented {
+  display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  padding: 4px 0;
+}
+.desk-presented-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  min-width: 0;
+}
+.desk-presented-head .dim { overflow-wrap: anywhere; }
+.desk-presented-list {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+  min-height: 0; max-height: min(45vh, 420px); overflow-y: auto;
+  padding: 1px 4px 4px 0;
+}
+.desk-presented-card { max-width: 100%; }
+.desk-presented-card span { overflow-wrap: anywhere; white-space: normal; }
+.desk-presented-empty { margin: 0; }
 .doc-reader { width: min(760px, 92vw); display: flex;
   flex-direction: column; }
 /* height only, in a compound selector: equal specificity against
