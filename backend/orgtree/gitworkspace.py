@@ -435,7 +435,15 @@ def _history_page(repo: dict[str, Any], snap: dict[str, Any], offset: int) -> di
             page_oids = list(dict.fromkeys(page_oids + snap["tips"]))
         else:
             page_oids = [oid for oid in page_oids if oid not in snap["tips"]]
-        raw = git(repo["root"], ["show", "--no-patch", "--format=%H%x00%P%x00%at%x00%s%x00%b%x00", *page_oids, "--"], timeout=30) if page_oids else b""
+        # `log --no-walk=unsorted`, NOT `show --no-patch`: both print exactly
+        # these fields in the given order (byte-identical on 193 real commits
+        # and on 20 merges), but `show` still runs the diff machinery per
+        # commit even with --no-patch (trace2: 438 diff regions for 193
+        # commits, none for log), reading trees and, for merges, blobs for
+        # rename detection. On the real orgtree repository that was the
+        # whole of a cold open: 4.27 s of a 4.78 s snapshot, 0.16 s warm
+        # (feature-fable, 2026-09-07). log reads only the commit objects.
+        raw = git(repo["root"], ["log", "--no-walk=unsorted", "--format=%H%x00%P%x00%at%x00%s%x00%b%x00", *page_oids, "--"], timeout=30) if page_oids else b""
         fields = raw.decode("utf-8", "replace").split("\0")
         nodes = []
         for i in range(0, len(fields) - 4, 5):
