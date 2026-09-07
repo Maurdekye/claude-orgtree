@@ -5303,6 +5303,12 @@ label.set-row { cursor: pointer; }
   border: 1px solid color-mix(in srgb, var(--warn, #b3541e) 40%, transparent);
 }
 /* ---- the header usage modal's per-account sections ---- */
+.usage-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px; align-items: start; flex: none; overflow-wrap: anywhere; }
+.usage-cards > .usage-acct { min-width: 0; }
+.usage-cards .u-head { flex-wrap: wrap; }
+.usage-cards .u-label { min-width: 0; }
+
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .usage-acct-head { font-size: 13px; }

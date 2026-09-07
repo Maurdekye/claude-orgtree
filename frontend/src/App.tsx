@@ -1422,7 +1422,7 @@ export function UsageModal({ close }: { close: () => void }) {
         {!all && !(shown.openai && codex) && !(shown.google && agy)
           && !(shown.openrouter && orr)
           ? <div className="dim">loading…</div>
-          : <>
+          : <div className="usage-cards">
           {(all?.accounts ?? []).map((a) => (
             <div className="usage-acct" key={a.account}>
               <div className="usage-acct-head">
@@ -1455,7 +1455,7 @@ export function UsageModal({ close }: { close: () => void }) {
             </div>
             <UsageBars u={orr} />
           </div>}
-          </>}
+          </div>}
         {all && !(all.accounts ?? []).length &&
           <div className="dim">no accounts registered</div>}
         <div className="row">
