@@ -62,6 +62,8 @@ export interface MailListProps {
   onReply?: (m: MailRow, text: string) => void
   onRetract?: (m: MailRow) => void
   jumpTo?: string | null
+  /** Only human per-message unread mail opts in; agent delivery is not read state. */
+  selectOldestUnread?: boolean
   /** the REQUEST's identity: a repeat click on the same target is a new
    *  request, an unrelated repoll is not (`jumpKey`) */
   jumpSeq?: number | null
@@ -121,7 +123,7 @@ export interface MailListProps {
 const MAIL_WINDOW = 40
 
 export function MailList({ org, pending = [], delivered = [], waitLabel, sender, rowSender,
-  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, onFound,
+  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, selectOldestUnread, lookup, onFound,
   askState, onAskRetry, fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
@@ -174,12 +176,13 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
     m?.id ?? `${m?.at}|${m?.from}|${(m?.body ?? '').slice(0, 24)}`
   // jumpTo (user spec 2026-07-31): a chat's inline mail link opens the box
   // SELECTED on that mail — identity selection means the reading pane shows
-  // it; the scroll + flash happen on the row ref below. Without a jump the
-  // box opens with NOTHING selected (user spec 2026-08-05 — the reading
-  // pane invites a click instead of auto-opening the newest), and clicking
-  // the selected row deselects it again; either way off a viewed unread
-  // mail marks it read.
-  const [selId, setSelId] = useState<string | null>(jumpTo ?? null)
+  // it; the scroll + flash happen on the row ref below. Human unread inboxes
+  // select their oldest unread on this initial, loaded mount only. All-read
+  // and agent-delivery folders keep the unselected opening; later arrivals
+  // never steal the selection. Clicking a selected row still deselects it.
+  const [initialUnread] = useState(() => selectOldestUnread && !jumpTo && !outgoing
+    ? [...all].reverse().find(m => m._wait && !m._ask) : undefined)
+  const [selId, setSelId] = useState<string | null>(jumpTo ?? (initialUnread ? keyOf(initialUnread) : null))
   // ⚠ WHICH JUMP HAS BEEN HANDLED, NOT WHETHER ONE HAS. A boolean latch meant
   // the FIRST link into an open mailbox worked and every one after it did
   // nothing at all — the box was already mounted, so the initial `useState`
@@ -208,7 +211,8 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
   // bound and every row is a live DOM node. Newest MAIL_WINDOW render, the
   // rest page in. ⚠ the filter runs over the WHOLE set before the window, so
   // hunting an old message never depends on how far you have paged.
-  const [vis, setVis] = useState(MAIL_WINDOW)
+  const [vis, setVis] = useState(() => Math.max(MAIL_WINDOW,
+    initialUnread ? all.findIndex(m => keyOf(m) === keyOf(initialUnread)) + 1 : 0))
   // ONE page per commit. A flick emits a burst of scroll events and React
   // batches them, so every event in the burst reads the same `vis` and every
   // one of them adds a window: measured at eight events rendering a whole
@@ -431,9 +435,11 @@ export function MailList({ org, pending = [], delivered = [], waitLabel, sender,
             ref={(el) => {
               // a jump aimed at a folded member lands on the row that now
               // carries it, not on nothing
-              if (el && jumpTo && g.some((x) => keyOf(x) === jumpTo)
-                && scrolledRef.current !== jumpKey(jumpTo, jumpSeq)) {
-                scrolledRef.current = jumpKey(jumpTo, jumpSeq)
+              const target = jumpTo ?? (initialUnread ? keyOf(initialUnread) : null)
+              const request = jumpTo ? jumpKey(jumpTo, jumpSeq) : 'initial-unread'
+              if (el && target && g.some((x) => keyOf(x) === target)
+                && scrolledRef.current !== request) {
+                scrolledRef.current = request
                 el.scrollIntoView({ block: 'center' })
               }
             }}

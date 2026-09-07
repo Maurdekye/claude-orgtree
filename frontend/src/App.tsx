@@ -2226,14 +2226,28 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
                   // SENDER — the file sits in that agent's own outbox/.
                   fileHref={(p, m) => fileUrl(slug, m.from, p)}
                   mdBase={(m) => fileBase(slug, m.from)}
-                  waitLabel="unread" jumpTo={jumpTo} jumpSeq={jumpSeq}
+                  waitLabel="unread" selectOldestUnread jumpTo={jumpTo} jumpSeq={jumpSeq}
                   lookup={userLookup} refs={mailRefs}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })
                     .catch(() => {})}
                   onReply={(m: MailEntry, text: string) => {
                     return sendLinkedReply(slug, m.from, text, { kind: 'mail', org: slug, box: 'user', id: m.id })
-                      .then(() => { toast([`sent to ${m.from}`]) })
+                      .then(async (receipt) => {
+                        toast([`sent to ${m.from}`])
+                        // Commands have no mail receipt. Read only after a
+                        // durable reply, using the captured original identity.
+                        if (!receipt.id) return
+                        try {
+                          await markRead(slug, [m.id])
+                          setReadBump((n) => n + 1)
+                          refresh?.()
+                        } catch {
+                          // The reply already exists: do not retain its draft
+                          // as though sending failed and invite a duplicate.
+                          toast(['Reply sent, but could not mark the original mail read.'])
+                        }
+                      })
                       .catch((e: Error) => {
                         toast([`error: ${e.message}`])
                         throw e

@@ -9,6 +9,8 @@ import path from 'node:path'
 import { AgentDocketView, DocketModal, DocketToolbarButton } from '../src/canvas/docket'
 import { ago } from '../src/canvas/shared'
 import { InboxPanel, SenderChip } from '../src/App'
+// The inbox now scrolls to its oldest unread on mount; jsdom has no layout.
+window.HTMLElement.prototype.scrollIntoView = () => {}
 import { NodeInboxModal, OrgInboxModal } from '../src/canvas/mail'
 import type { AskInfo, CanvasNode, MailEntry, MailPayload, OrgInboxEntry, TreePayload, TreeNode, WorkItem } from '../src/types'
 
@@ -752,8 +754,7 @@ uiTest('§14 InboxPanel sender chip is clickable agent jump that closes inbox', 
   await flush()
   const mRow = el.querySelector('.mailer-list .mailrow') as HTMLElement
   assert.ok(mRow, 'mail row exists')
-  await inAct(() => mRow.click())
-  await flush()
+  assert.ok(mRow.classList.contains('on'), 'oldest unread opens selected')
 
   const jumpBtn = el.querySelector('.mailer-read .mailer-head button.cc-name-jump') as HTMLButtonElement
   assert.ok(jumpBtn, 'clickable agent jump button in mailer-head')
@@ -780,8 +781,8 @@ uiTest('§15 InboxPanel system and user senders are NOT clickable jumps', async 
   )
   await flush()
   const mRow = el.querySelector('.mailer-list .mailrow') as HTMLElement
-  await inAct(() => mRow.click())
-  await flush()
+  assert.ok(mRow.classList.contains('on'), 'oldest unread opens selected')
+  assert.match(el.querySelector('.mailer-body')?.textContent ?? '', /System note/)
 
   const jumpBtn = el.querySelector('.mailer-read .mailer-head button.cc-name-jump')
   assert.equal(jumpBtn, null, 'system sender is not clickable')

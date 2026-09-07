@@ -109,6 +109,11 @@ export function EventCard({ row, profile, org, preview = false, actor, part, hea
   }
   const view = projectEvent(decoded.event)
   const event = decoded.event
+  // A self-report's subject is its sender. Keep the qualified agent link
+  // once, while retaining both identities for reports about someone else.
+  const selfStatus = view.family === 'status' && event.actor.kind === 'agent'
+    && event.object?.kind === 'node' && event.object.id === event.actor.id
+    && (!('org' in event.object) || event.object.org === org)
   const body = view.fields.filter(f => f.placement === 'body')
   const header = view.fields.filter(f => f.placement === 'header')
   const context = view.fields.filter(f => f.placement === 'context')
@@ -120,10 +125,11 @@ export function EventCard({ row, profile, org, preview = false, actor, part, hea
       <span className="event-family" aria-label={FAMILY_MARK[view.family]} title={FAMILY_MARK[view.family]}>{FAMILY_ICON[view.family]}</span>
       <strong>{view.title}</strong>
       <span className="event-actor" data-actor-kind={event.actor.kind}>
-        {event.actor.kind === 'agent' && actor ? actor(event.actor.id)
+        {selfStatus ? <ObjectLabel event={event} org={org} world={content.world} onOpen={content.onOpen} />
+          : event.actor.kind === 'agent' && actor ? actor(event.actor.id)
           : event.actor.kind === 'system' ? 'System' : event.actor.kind === 'user' ? 'User' : event.actor.id}
       </span>
-      <ObjectLabel event={event} org={org} world={content.world} onOpen={content.onOpen} />
+      {!selfStatus && <ObjectLabel event={event} org={org} world={content.world} onOpen={content.onOpen} />}
       {header.map(f => <div className="event-head-field" key={f.key} data-event-field={f.key}>
         <span className="dim">{f.label}: </span><Value value={humanValue(f.value, f.type, profile)} {...content} profile={profile} org={org} actor={actor} />
       </div>)}
