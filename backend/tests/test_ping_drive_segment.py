@@ -28,7 +28,10 @@ to MINT it, at both sites, for every `ping` carrier:
         (`_owned_segments`, root ruling 04:29Z), after anything newly drained,
         with no duplicate composition across journal rows
     §5  the same reuse at the envelope (boundary feed), and the fallbacks: a
-        carrier whose token has no journal row composes its text as before
+        carrier whose token has no journal row composes its text as before —
+        INCLUDING when it is a ping (Opus F1/F2): tokens present but unresolved
+        (unknown token, v1 row) never mint, at the envelope or the real turn
+        start; the meaningful text stays a text segment
     §6  TOKEN ORDER IS TEXT ORDER (feature-astra's seam): each drain site puts
         its new token at the FRONT, because the envelope prepends the new batch
         to the text the carrier already held — so a carrier reconstructed with
@@ -559,6 +562,73 @@ def _owned_fallbacks():
 
 check("owned · fallbacks: no tokens / unknown token / v1 row → None, text composed as before",
       _owned_fallbacks)
+
+
+def _ping_unresolved_never_mints_envelope():
+    """Opus F1: with ping=True and tokens that do not resolve, the old guard
+    (`owned is None`) minted a drive from the WHOLE envelope and hid it. The guard
+    keys on the presence of tokens: an envelope is never wrapped."""
+    slug = fresh()
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "meaningful words", "message", typed=True)
+    store.save_org(org)
+    etext, tok, _ = S._envelope(slug, "boss", NUDGE, via="steer", ping=True)
+    assert "[MAIL" in etext and "meaningful words" in etext
+    for held in (["missing"], ["v1"], iter(["missing"])):        # a generator too (spent once)
+        if held == ["v1"]:
+            with store.DOC_LOCK:
+                o = store.load_org(slug)
+                o.d["delivering"]["boss"].append({"tok": "v1", "at": "x", "mail": [], "notices": []})
+                store.save_org(o)
+        out: list = []
+        t, tk, _ = S._envelope(slug, "boss", etext, via="turn", segments_out=out,
+                               ping=True, ping_reason="user_mail", owned_toks=held)
+        assert tk is None and t == etext
+        assert out[0] == [{"kind": "text", "text": etext}], out[0]
+        assert not any(sg["kind"] == "drive" for sg in out[0]), \
+            "an unresolved carrier minted a hidden drive from its whole envelope"
+    # positive control: the SAME call without tokens is a bare ping and mints
+    out2: list = []
+    S._envelope(slug, "boss", NUDGE, via="turn", segments_out=out2, ping=True)
+    assert [sg["kind"] for sg in out2[0]] == ["drive"]
+
+
+check("ping+unresolved · envelope: tokens present but unresolved (unknown / v1 / spent "
+      "iterable) never mint; the envelope stays a text segment; bare ping still mints (control)",
+      _ping_unresolved_never_mints_envelope)
+
+
+def _ping_unresolved_never_mints_turn_start():
+    """Opus F2 (M9): a mutant removing `and not toks` from the turn-start guard
+    survived — no check drove a ping carrier whose tokens do NOT resolve through
+    the real turn start. This one does: the meaningful text must reach the human
+    row as a text segment, never inside a hidden drive."""
+    marker = "F2-" + os.urandom(4).hex()
+    with store.DOC_LOCK:
+        org = store.load_org(SLUG)
+        org.post_mail(USER, NID, "meaningful " + marker, "message", typed=True)
+        store.save_org(org)
+    etext, tok, _ = S._envelope(SLUG, NID, NUDGE, via="steer", ping=True)
+    # retire the journal row so the token cannot resolve — the carrier still holds
+    # the enveloped text, which is the only copy the human can see
+    S._confirm_delivered(SLUG, NID, [tok])
+    org = store.load_org(SLUG)
+    assert S._owned_segments(org, NID, [tok]) is None, "fixture: the token must not resolve"
+    run_turn(S._mark_ping({"toks": [tok], "text": etext}, "user_mail"))
+    ev_texts = [t for t in transcript_user_texts() if marker in t]
+    assert ev_texts and ev_texts[-1].rstrip().endswith(NUDGE), "agent text retained"
+    rows = [m for m in chat_user_rows() if isinstance(m.get("segments"), list)
+            and marker in json.dumps(m["segments"])]
+    assert rows, "no persisted chat row"
+    body = [sg for sg in rows[-1]["segments"] if sg["kind"] != "state"]
+    assert [sg["kind"] for sg in body] == ["text"] and body[0]["text"] == etext, body
+    assert not any(sg["kind"] == "drive" for sg in rows[-1]["segments"]), \
+        "M9: the turn start minted a hidden drive from the whole envelope"
+
+
+check("ping+unresolved · REAL turn start: a ping carrier with an unresolved token keeps "
+      "its envelope as a text segment, never a hidden drive (kills M9)",
+      _ping_unresolved_never_mints_turn_start)
 
 
 # ══════════════════════════════════════════════════════════════════════════ §6
