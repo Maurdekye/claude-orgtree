@@ -363,7 +363,9 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
         {snapshot.freshness.busy ? 'Fetching · ' : ''}{snapshot.freshness.state.replaceAll('_', ' ')}
         {snapshot.freshness.age_seconds !== null && ` · observed ${Math.floor(snapshot.freshness.age_seconds / 60)}m ago`}</span>}
     </nav>}
-    {newHistory && <div className="git-context-note">Repository history changed. <button onClick={() => void refresh()}>Refresh graph</button></div>}
+    {(newHistory || snapshot?.checkouts_changed) && <div className="git-context-note">
+      {newHistory && 'Repository history changed. '}{snapshot?.checkouts_changed && 'Checkout inventory changed. '}
+      <button onClick={() => void refresh()}>Refresh graph</button></div>}
     {busy && <div className="git-loading" role="status">Reading repository…</div>}
     {snapshot && nodes.length > 0 && (!snapshot.config.trunk || snapshot.config.trunk_missing) && <div className="git-context-note">
       {snapshot.config.trunk_missing ? 'Saved trunk is missing.' : 'Select the repository trunk.'} <button onClick={() => setSettingsOpen(true)}>Choose trunk</button></div>}

@@ -18,7 +18,8 @@ def run(args):
     nodes = [{'oid': f'{i+1:040x}', 'parents': [f'{i+2:040x}'] if i < 239 else [],
               'rank': i, 'at': 100, 'subject': f'Captured commit {i}',
               'lane': {'offset': 0, 'owner': BRANCH}} for i in range(240)]
-    snap.update(captured_at=1700000000, newer_available=False, total_commits=240)
+    snap.update(captured_at=1700000000, newer_available=args.notice == 'history',
+                checkouts_changed=args.notice == 'checkout', total_commits=240)
     snap['branches'][0]['oid'] = nodes[0]['oid']
     snap['inventory'][0]['oid'] = nodes[0]['oid']
     snap['history'] = {'nodes': nodes[:120], 'next_cursor': 'captured-page-120', 'frontier': [], 'offset': 0}
@@ -66,9 +67,20 @@ def run(args):
                 r.fulfill(json=value)
             page.route('**/*', route); page.on('pageerror', lambda e: errors.append(str(e)))
             page.goto('http://git-capture.test'); page.locator('.git-node').first.wait_for()
+            page.wait_for_function('document.querySelector(".git-viewport").scrollLeft>0')
+            page.clock.run_for(200)
             page.evaluate("fetch('/api/write-positive-control',{method:'PATCH'}).catch(()=>null)")
             assert any('write-positive-control' in x for x in blocked), 'INERT: write guard'
             assert page.locator('.git-footer').inner_text().startswith('Graph captured')
+            if args.notice == 'history':
+                assert page.locator('.git-context-note').filter(has_text='Repository history changed.').count() == 1, 'Initial snapshot history notice missing'
+                assert page.locator('.git-context-note').filter(has_text='Checkout inventory changed.').count() == 0
+            elif args.notice == 'checkout':
+                assert page.locator('.git-context-note').filter(has_text='Checkout inventory changed.').count() == 1, 'Initial snapshot checkout notice missing'
+                assert page.locator('.git-context-note').filter(has_text='Repository history changed.').count() == 0
+            else:
+                assert page.get_by_role('button', name='Refresh graph', exact=True).count() == 0
+            page.screenshot(path=str(args.out/f'initial-{args.notice}-{width}.png'))
             assert not any('/changes' in c[1] for c in calls)
             name = page.locator('.git-branch-name').first
             name.evaluate('e=>e.focus({preventScroll:true})'); page.get_by_text('Changes: Not read', exact=True).wait_for()
@@ -102,16 +114,17 @@ def run(args):
             page.locator(f'[data-oid="{nodes[120]["oid"]}"]').wait_for()
             assert any(c[1].endswith('/history') for c in calls)
             assert snapshots == 2 and not errors, (snapshots, errors)
-            results.append({'viewport': [width,height], 'snapshot_requests': snapshots,
+            results.append({'viewport': [width,height], 'initial_notice': args.notice, 'snapshot_requests': snapshots,
                             'observed_newer_without_restart': True, 'held_and_failed_refresh_retained_dom_pan': before,
                             'original_cursor_paged_after_failure': True, 'on_demand_dirty_path': 'after-capture.txt',
                             'hover_bounds': box, 'blocked': blocked, 'errors': errors})
             page.close()
         browser.close()
-    (args.out/'captured-continuity.json').write_text(json.dumps(results, indent=2))
+    (args.out/('captured-continuity.json' if args.notice == 'none' else f'captured-initial-{args.notice}.json')).write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('--out', type=Path, required=True); parser.add_argument('--executable', required=True)
+    parser.add_argument('--notice', choices=['none', 'history', 'checkout'], default='none')
     run(parser.parse_args())

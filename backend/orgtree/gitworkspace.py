@@ -590,7 +590,7 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
         snap = {"token": token, "slug": slug, "repository_id": rid, "created": time.time(),
                 "tips": tips, "shallow": shallow, "branches": branches, "worktrees": wts[:60], "config": cfg,
                 "ref_identity": ref_identity(first), "captured_at": captured_at,
-                "newer_available": False, "unborn_branch": None,
+                "newer_available": False, "checkouts_changed": False, "unborn_branch": None,
                 "ordered": ordered, "ranks": {oid: i for i, oid in enumerate(ordered)}, "lanes": lanes,
                 "membership": membership, "total_commits": len(ordered)}
         if not tips:
@@ -605,8 +605,8 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
         # Detail loading overlaps the final metadata check. Both use captured
         # OIDs; advancing refs cannot invalidate the already captured history.
         first_page = _history_page(repo, snap, 0)
-        snap["newer_available"] = (ref_identity(first) != ref_identity(final_read.result())
-                                  or captured_worktrees != digest(final_worktrees.result()))
+        snap["newer_available"] = ref_identity(first) != ref_identity(final_read.result())
+        snap["checkouts_changed"] = captured_worktrees != digest(final_worktrees.result())
         with _guard:
             _snapshots[token] = snap
             while len(_snapshots) > 32:

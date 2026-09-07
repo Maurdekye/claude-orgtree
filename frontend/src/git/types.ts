@@ -37,7 +37,7 @@ export interface GitSnapshot {
   omitted_active: number; omitted_worktrees: number; freshness: GitFreshness
   ref_identity: string; unborn_branch: string | null
   total_commits: number
-  captured_at?: number; newer_available?: boolean
+  captured_at?: number; newer_available?: boolean; checkouts_changed?: boolean
 }
 export interface GitRegistry {
   repositories: { id: string; name: string; path: string; links: { branch: string; item: string; agent: string | null }[] }[]; selected: string | null

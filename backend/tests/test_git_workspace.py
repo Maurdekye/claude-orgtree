@@ -719,7 +719,8 @@ class GitWorkspaceTests(unittest.TestCase):
         with patch.object(gw, "worktrees", side_effect=move_checkout):
             snap = f.snapshot()
         self.assertTrue(switched, "Checkout movement control must execute")
-        self.assertTrue(snap["newer_available"])
+        self.assertTrue(snap["checkouts_changed"])
+        self.assertFalse(snap["newer_available"], "An inventory-only move must not report changed history")
         self.assertNotEqual(snap["worktrees"][0]["oid"], tip)
         self.assertEqual(f.snapshot()["worktrees"][0]["oid"], tip)
 
@@ -730,18 +731,24 @@ class GitWorkspaceTests(unittest.TestCase):
         git(f.clone, "update-ref", "refs/heads/main", captured)
         actual = gw.refs
         moved = False
+        first_identity = None
         def advancing(repo, *args, **kwargs):
-            nonlocal moved
+            nonlocal moved, first_identity
             rows = actual(repo, *args, **kwargs)
             if not moved:
+                first_identity = gw.ref_identity(rows)
                 moved = True
                 git(f.clone, "update-ref", "refs/heads/main", newer)
             return rows
         with patch.object(gw, "refs", side_effect=advancing), patch.object(gw, "changes", side_effect=AssertionError("Initial read scanned checkout files")):
+            before_capture = time.time()
             snap = f.snapshot(selected=["refs/heads/main"])
         self.assertTrue(moved, "Advancing ref control must execute")
         self.assertTrue(snap["newer_available"])
         self.assertEqual(f.branch(snap)["oid"], captured)
+        self.assertEqual(snap["ref_identity"], first_identity)
+        self.assertNotEqual(snap["ref_identity"], gw.ref_identity(actual(f.repo)))
+        self.assertGreaterEqual(snap["captured_at"], before_capture)
         self.assertLessEqual(snap["captured_at"], snap["created"])
         self.assertTrue(all(w["changes"]["count"] is None for w in snap["worktrees"]))
         # Each page sees another real ref write. Captured ranks/OIDs survive;
@@ -795,6 +802,31 @@ class GitWorkspaceTests(unittest.TestCase):
         self.assertEqual(changed.status_code, 409, changed.text)
         self.assertIn("Checkout changed", changed.text)
         self.assertEqual(client.get(url).json()["branch"], "refs/heads/other")
+
+    def test_on_demand_details_detect_same_branch_head_advance(self):
+        from orgtree import gitapi
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        f = Fixture(); app = FastAPI(); app.include_router(gitapi.router); client = TestClient(app)
+        wt = f.snapshot()["worktrees"][0]
+        url = f"/api/orgs/{f.slug}/git/{f.rid}/worktrees/{wt['id']}/changes"
+        actual = gw.changes
+        moved = []
+        def advance(repo, checkout):
+            result = actual(repo, checkout)
+            moved.append(f.commit(f.clone, "during-read.txt", "committed while reading\n"))
+            return result
+        with patch.object(gw, "changes", side_effect=advance):
+            changed = client.get(url)
+        self.assertEqual(len(moved), 1, "INERT: HEAD advancement never ran")
+        self.assertNotEqual(moved[0], wt["oid"])
+        self.assertEqual(git(f.clone, "symbolic-ref", "HEAD"), wt["branch"])
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertIn("Checkout changed", changed.text)
+        current = client.get(url)
+        self.assertEqual(current.status_code, 200, current.text)
+        self.assertEqual(current.json()["head_oid"], moved[0])
+        self.assertEqual(current.json()["branch"], wt["branch"])
 
 
 if __name__ == "__main__":
