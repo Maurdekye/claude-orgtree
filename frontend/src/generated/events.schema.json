@@ -5086,28 +5086,35 @@
           "type": "string"
         },
         "reason": {
-          "enum": [
-            "user_mail",
-            "agent_mail",
-            "notice",
-            "participation",
-            "docket_reply",
-            "ask_answer",
-            "batch",
-            "credit_decision",
-            "audience",
-            "rehire_waited",
-            "reconcile_waited",
-            "freeze_lifted",
-            "remote_released",
-            "unfrozen_by_switch",
-            "external_inbox",
-            "watchdog",
-            "watchdog_quiet",
-            "storage",
-            "failure",
-            "checkup",
-            "reminder"
+          "anyOf": [
+            {
+              "enum": [
+                "user_mail",
+                "agent_mail",
+                "notice",
+                "participation",
+                "docket_reply",
+                "ask_answer",
+                "batch",
+                "credit_decision",
+                "audience",
+                "rehire_waited",
+                "reconcile_waited",
+                "freeze_lifted",
+                "remote_released",
+                "unfrozen_by_switch",
+                "external_inbox",
+                "watchdog",
+                "watchdog_quiet",
+                "storage",
+                "failure",
+                "checkup",
+                "reminder"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },

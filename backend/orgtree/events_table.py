@@ -423,12 +423,16 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
     "context.org_charter": leaf("context_change", "OrgRef", text=F("str", M, False),
                                 readable=F("bool", M, False)),
     "context.command": leaf("context_change", "NodeRef", text=F("str", B, True)),
+    # Minted at COMPOSITION for every `ping` carrier (supervisor._ping_drive): `text` is
+    # the nudge exactly as the agent reads it; `reason` is the SENDING site's stated
+    # reason (send_message ping_reason=…) and null when the site did not state one —
+    # composition never guesses it from the text or the drained batch.
     "context.drive_mail_pointer": leaf(
         "context_change", "NodeRef", text=F("str", M, False),
         reason=F("L[user_mail|agent_mail|notice|participation|docket_reply|ask_answer|batch|"
                  "credit_decision|audience|rehire_waited|reconcile_waited|freeze_lifted|"
                  "remote_released|unfrozen_by_switch|external_inbox|watchdog|watchdog_quiet|"
-                 "storage|failure|checkup|reminder]", M, False)),
+                 "storage|failure|checkup|reminder]?", M, False)),
     "context.drive_restart_interrupted": leaf("context_change", "BuildRef",
                                               text=F("str", M, False)),
     "context.drive_restart_wake": leaf("context_change", "BuildRef", text=F("str", M, False),

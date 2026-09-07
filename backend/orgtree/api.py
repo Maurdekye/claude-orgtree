@@ -2464,7 +2464,7 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
         supervisor.send_message(
             slug, t, "(orgtree) The spend freeze was lifted — you have mail "
                      "above that arrived while frozen; handle it now.",
-            mail_ping=True)
+            mail_ping=True, ping_reason="freeze_lifted")
     if supervisor.storage_check(slug) == "cleared":
         cleared.append("storage")
     _token_cache["at"] = 0.0             # rotation/enable takes effect now
@@ -3453,7 +3453,7 @@ def node_message(slug: str, nid: str, body: Message,
     sent = supervisor.send_message(
         slug, nid,
         "(orgtree) The mail above includes a message from the user, addressed "
-        "to you — act on it now.", mail_ping=True)
+        "to you — act on it now.", mail_ping=True, ping_reason="user_mail")
     # D-236: the same honest sentence the agent-side send now gets. NO
     # `sender` is passed: the late-steer alarm mails an AGENT, and the user's
     # own desk already renders the pending "delivering mid-task…" bubble live
@@ -3782,7 +3782,8 @@ async def credit_request_decide(slug: str, body: CreditDecision) -> dict[str, An
         supervisor.send_message(
             slug, req["node"],
             "(orgtree) The mail above contains the user's decision on your "
-            "credit request — proceed accordingly.", mail_ping=True)
+            "credit request — proceed accordingly.", mail_ping=True,
+            ping_reason="credit_decision")
     await hub.changed(slug)
     return req
 
@@ -4222,7 +4223,8 @@ def work_item_reply(slug: str, wid: str, body: WorkReply,
          "is addressed to you; act on it now."
          if role == "participant" else
          "(orgtree) The mail above is the user's reply on a docket item "
-         "ASSIGNED TO YOU — act on it now."), mail_ping=True)
+         "ASSIGNED TO YOU — act on it now."), mail_ping=True,
+        ping_reason="docket_reply")
     return {"accepted": True, "to": nid, "role": role, "deferred": False,
             "node_state": tgt.get("state"),
             "delivery": supervisor.delivery_note(slug, nid, sent), **receipt}
@@ -4274,7 +4276,7 @@ def work_item_dismiss(slug: str, wid: str, body: WorkDismiss) -> dict[str, Any]:
             slug, str(notify),
             "(orgtree) A notice arrived in your mail above — informational, "
             "no reply expected. Note it and continue your current task.",
-            wake=False, mail_ping=True)
+            wake=False, mail_ping=True, ping_reason="notice")
     return {k: v for k, v in r.items() if k != "notify"}
 
 
@@ -4601,7 +4603,8 @@ async def ask_answer(slug: str, aid: str, body: AskAnswer) -> dict[str, Any]:
             "(orgtree) The mail above answers the question you asked the "
             "user — act on it now." if not body.dismiss else
             "(orgtree) The mail above reports that the user dismissed your "
-            "question — proceed accordingly.", mail_ping=True)
+            "question — proceed accordingly.", mail_ping=True,
+            ping_reason="ask_answer")
     await hub.changed(slug)
     return {"answered": aid, "node": r["node"]}
 
@@ -4641,7 +4644,7 @@ async def batch_resolve(slug: str, nid: str, body: BatchResolve) -> dict[str, An
             slug, r["node"],
             "(orgtree) The mail above resolves your request batch — act on "
             "it now. A skipped tab returned unanswered; re-ask it later if "
-            "it still matters.", mail_ping=True)
+            "it still matters.", mail_ping=True, ping_reason="batch")
     await hub.changed(slug)
     return {"resolved": nid}
 
@@ -5416,7 +5419,7 @@ async def user_audience(slug: str, body: AudienceAction) -> dict[str, Any]:
         store.save_org(org)
     for t in result.pop("drive", []):
         supervisor.send_message(slug, t, "(orgtree) You have new mail above.",
-                                mail_ping=True)
+                                mail_ping=True, ping_reason="audience")
     await hub.changed(slug)
     return result
 
@@ -7641,7 +7644,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.", mail_ping=True,
-            sender=body.node)
+            sender=body.node,
+            # the one target this loop can NAME the reason for: the recipient
+            # of an orgtree_message. Every other tool's drive is unstated (null)
+            ping_reason="agent_mail" if target == mail_to else None)
         # ⭐ D-236: SAY WHICH CARRIER THE MESSAGE IS ON. This loop used to
         # discard `r` entirely, so `orgtree_message` answered
         # {"delivered": …, "deferred": false} whether the recipient read it in
@@ -7664,7 +7670,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             "or rejected credential on your PREVIOUS provider — a model "
             "switch has moved you to a different provider, so that freeze "
             "no longer describes anything and has been cleared. Handle any "
-            "mail above and continue.", mail_ping=True)
+            "mail above and continue.", mail_ping=True,
+            ping_reason="unfrozen_by_switch")
     # A NEW PARTICIPANT IS TOLD, NOT WOKEN (user 2026-09-06): whichever tool
     # added it (orgtree_work create/participants, orgtree_staff create),
     # the ledger posted a notice and named the member in `noticed`.
@@ -7686,7 +7693,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, notice_to,
             "(orgtree) A notice arrived in your mail above — informational, "
             "no reply expected. Note it and continue your current task.",
-            wake=False, mail_ping=True, sender=body.node)
+            wake=False, mail_ping=True, sender=body.node, ping_reason="notice")
         if isinstance(result, dict):
             # D-236: one wording for every send. This branch has always named
             # its carrier; what it could not say was that "steered into the
@@ -7702,7 +7709,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             "(orgtree) A notice arrived in your mail above — you were added "
             "as a participant on a docket item. Informational, no reply "
             "expected. Note it and continue your current task.",
-            wake=False, mail_ping=True, sender=body.node)
+            wake=False, mail_ping=True, sender=body.node,
+            ping_reason="participation")
         if isinstance(result, dict):
             result.setdefault("notice_delivery", {})[_n] = \
                 supervisor.delivery_note(body.org, _n, r)
@@ -9028,7 +9036,7 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
             slug, t,
             "(orgtree) Mail above arrived while you were archived and waited "
             "for you — you are live again; handle it as appropriate.",
-            mail_ping=True)
+            mail_ping=True, ping_reason="rehire_waited")
     # a crossing switch_model cleared a stale provider freeze (see
     # switch_model) — this node was never archived, so it must not get the
     # message above. Wake it with the accurate one instead.
@@ -9041,7 +9049,8 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
             "or rejected credential on your PREVIOUS provider — a model "
             "switch has moved you to a different provider, so that freeze "
             "no longer describes anything and has been cleared. Handle any "
-            "mail above and continue.", mail_ping=True)
+            "mail above and continue.", mail_ping=True,
+            ping_reason="unfrozen_by_switch")
     return result
 
 
