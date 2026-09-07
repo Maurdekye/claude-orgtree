@@ -3025,6 +3025,7 @@ main.solo { width: 100%; }
 .docket-row .l1 { justify-content: flex-start; }
 .docket-row .l1 .mfrom { min-width: 0; }
 .docket-row .l1 .mtime { margin-left: auto; }
+.docket-subcount { flex-shrink: 0; font-size: 10px; white-space: nowrap; }
 
 .docket-modal .tier {
   width: 16px; height: 16px; display: inline-grid; place-items: center;

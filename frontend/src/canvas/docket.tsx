@@ -1223,6 +1223,11 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
             onClick={(e) => { e.stopPropagation(); onFold?.() }}>▾</button>
         )}
         <span className="mfrom docket-rowname">{itemName(item)}</span>
+        {folded && kids > 0 && (
+          <span className="dim docket-subcount" title="Direct sub-items in this view">
+            {kids} sub-item{kids === 1 ? '' : 's'}
+          </span>
+        )}
         {(() => { const age = rowAge(item, ageMode)
           return <span className="mtime" title={age.title} aria-label={age.title}>{age.text}</span> })()}
       </div>
