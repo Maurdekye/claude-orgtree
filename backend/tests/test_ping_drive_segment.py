@@ -34,6 +34,14 @@ to MINT it, at both sites, for every `ping` carrier:
         to the text the carrier already held — so a carrier reconstructed with
         two owned tokens re-reads [new, old] against text [new][old]; pinned at
         the envelope with successive reuse and at the real turn start
+    §7  PERSISTED order for a two-token carrier: the real turn start's sidecar
+        row (read_chat) and commit_steer's by-token snapshot (live frame,
+        steered_log, later node_chat) both read [new, old]; the appended order
+        is shown wrong on the same persisted paths (control). Stated limit: no
+        live steer path builds a two-token STEER carrier today (send_message
+        steers one token per carrier); the shape arises from boundary/turn
+        reconstruction, whose persistence is the sidecar — commit_steer is
+        exercised here with the reconstructed shape as the by-token contract
 
 Hermetic: throwaway ORGTREE_DATA/HOME set before any orgtree import; §4 runs
 fakecli.js in-process exactly as test_stuck_mail_pointer_drop.py does.
@@ -644,6 +652,125 @@ def _both_sites_insert_front():
 
 check("order · both drain sites insert the new token at the front (source pin)",
       _both_sites_insert_front)
+
+
+# ══════════════════════════════════════════════════════════════════════════ §7
+print("\n§7  persisted order for a two-token carrier: sidecar (real turn) and commit_steer")
+
+
+def _two_token_carrier(slug: str, nid: str, old_body: str, new_body: str):
+    """Build the reconstructed shape the drain sites now produce: {toks:[t_new, t_old],
+    text:E2} where E2 = [new batch] + E1 and E1 = [old batch] + nudge."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        org.post_mail(USER, nid, old_body, "message", typed=True)
+        store.save_org(org)
+    e1, t_old, _ = S._envelope(slug, nid, NUDGE, via="steer", ping=True, ping_reason="user_mail")
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        org.post_mail(USER, nid, new_body, "message", typed=True)
+        store.save_org(org)
+    e2, t_new, _ = S._envelope(slug, nid, e1, via="turn", owned_toks=[t_old])
+    assert t_old and t_new and e2.index(new_body) < e2.index(old_body)
+    expected = (journal_row(slug, nid, t_new)["segments"]
+                + journal_row(slug, nid, t_old)["segments"])
+    assert [sg["kind"] for sg in expected] == ["mail", "mail", "drive"]
+    return {"toks": [t_new, t_old], "text": e2, "view": "human view"}, t_old, t_new, expected
+
+
+def _mail_bodies(segs):
+    return [r["body"] for sg in segs if sg["kind"] == "mail" for r in sg["rows"]]
+
+
+def _sidecar_two_tokens_real_turn():
+    marker = "P7-" + os.urandom(4).hex()
+    carrier, t_old, t_new, expected = _two_token_carrier(SLUG, NID, "old " + marker,
+                                                          "new " + marker)
+    run_turn(S._mark_ping({k: v for k, v in carrier.items() if k != "view"}, "user_mail"))
+    ev_texts = [t for t in transcript_user_texts() if marker in t]
+    assert ev_texts and ev_texts[-1].count(NUDGE) == 1
+    rows = [m for m in chat_user_rows() if isinstance(m.get("segments"), list)
+            and marker in json.dumps(m["segments"])]
+    assert rows, "no persisted chat row"
+    body = [sg for sg in rows[-1]["segments"] if sg["kind"] != "state"]
+    assert body == expected, "sidecar composition == journal rows in token (= text) order"
+    assert _mail_bodies(body) == ["new " + marker, "old " + marker]
+    # CONTROL on the same persisted path: the appended (wrong) order reads old-first
+    marker2 = "P7c-" + os.urandom(4).hex()
+    carrier2, t_old2, t_new2, _ = _two_token_carrier(SLUG, NID, "old " + marker2,
+                                                      "new " + marker2)
+    carrier2["toks"] = [t_old2, t_new2]
+    run_turn(S._mark_ping({k: v for k, v in carrier2.items() if k != "view"}, "user_mail"))
+    rows2 = [m for m in chat_user_rows() if isinstance(m.get("segments"), list)
+             and marker2 in json.dumps(m["segments"])]
+    assert rows2 and _mail_bodies(rows2[-1]["segments"]) == ["old " + marker2, "new " + marker2], \
+        "control: token order decides the persisted order, so the sites' front-insert matters"
+
+
+check("persist · real turn start, two-token carrier: sidecar row == journal rows [new, old]; "
+      "appended order persists wrong (control)", _sidecar_two_tokens_real_turn)
+
+
+def _commit_steer_two_tokens():
+    from fastapi.testclient import TestClient
+    from orgtree import api
+    from msgvis import Transcript
+    slug = fresh()
+    org = store.load_org(slug)
+    tx = Transcript(os.environ["HOME"], org.node("boss")["session_id"])
+    tx.user("earlier turn")
+    tx.assistant("earlier answer")
+    org.d["kiosk"] = {"enabled": True, "token": "tok_" + "p" * 24}
+    store.save_org(org)
+    api._token_cache["at"] = 0.0
+    carrier, t_old, t_new, expected = _two_token_carrier(slug, "boss", "OLD steer", "NEW steer")
+    frames: list = []
+    saved = S.stream
+    S.stream = lambda s_, n_, payload: frames.append(payload)
+    try:
+        S.commit_steer(slug, "boss", [carrier])
+    finally:
+        S.stream = saved
+    assert frames and frames[0]["kind"] == "steered"
+    raw = frames[0]["segments_raw"]
+    assert raw == expected and _mail_bodies(raw) == ["NEW steer", "OLD steer"], \
+        "live frame: by-token snapshot in carrier (= text) order"
+    org = store.load_org(slug)
+    assert "boss" not in (org.d.get("delivering") or {}), "both batches retired"
+    log = org.d["steered_log"]["boss"][-1]
+    assert log["segments"] == expected and log["text"] == "human view"
+    chat = api.node_chat(slug, "boss")
+    srow = [m for m in chat["messages"] if m.get("steered")][-1]
+    assert srow["segments"] == expected
+    assert [sg["kind"] for sg in srow["segments"]] == ["mail", "mail", "drive"]
+    pub = TestClient(api.PublicGateway(api.app))
+    r = pub.get(f"/k/tok_{'p' * 24}/api/orgs/{slug}/nodes/boss/chat")
+    assert r.status_code == 200
+    prow = [m for m in r.json()["messages"] if m.get("steered")][-1]
+    assert [sg["kind"] for sg in prow["segments"]] == ["mail", "mail", "drive"]
+    assert prow["segments"][2]["event_public"]["variant"] == VARIANT
+    assert _mail_bodies(prow["segments"]) == ["NEW steer", "OLD steer"]
+    # CONTROL: the appended order persists old-first on every one of these surfaces
+    slug2 = fresh()
+    org = store.load_org(slug2)
+    Transcript(os.environ["HOME"], org.node("boss")["session_id"]).user("t")
+    store.save_org(org)
+    c2, _, _, _ = _two_token_carrier(slug2, "boss", "OLD c", "NEW c")
+    c2["toks"] = list(reversed(c2["toks"]))
+    frames.clear()
+    S.stream = lambda s_, n_, payload: frames.append(payload)
+    try:
+        S.commit_steer(slug2, "boss", [c2])
+    finally:
+        S.stream = saved
+    assert _mail_bodies(frames[0]["segments_raw"]) == ["OLD c", "NEW c"]
+    assert _mail_bodies(store.load_org(slug2).d["steered_log"]["boss"][-1]["segments"]) \
+        == ["OLD c", "NEW c"]
+
+
+check("persist · commit_steer, two-token carrier: live frame / steered_log / node_chat "
+      "(operator + visitor) == journal rows [new, old]; appended order wrong (control)",
+      _commit_steer_two_tokens)
 
 print(f"\n{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
