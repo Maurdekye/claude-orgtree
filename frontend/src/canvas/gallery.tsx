@@ -324,6 +324,22 @@ export interface AgentGalleryViewProps {
   onChanged?: () => void
 }
 
+/** Agent-scoped presentation gallery opened from a card action.  The list and
+ * reader remain AgentGalleryView's single implementation; this wrapper only
+ * gives that view the same movable/pinnable shell as inbox and docket. */
+export function AgentGalleryModal({ slug, nid, node, toast, close, onFocusAgent,
+  onReply, refs, onChanged }: AgentGalleryViewProps & { close: () => void }) {
+  return (
+    <PinFrame kind="agent-gallery" title={`presented documents for ${nid}`}
+      panel="settings wide gallery-modal" close={close}
+      onPanelClick={openLightboxIfEligibleImage}>
+      <AgentGalleryView slug={slug} nid={nid} node={node} toast={toast}
+        onFocusAgent={onFocusAgent} onReply={onReply} refs={refs}
+        onChanged={onChanged} />
+    </PinFrame>
+  )
+}
+
 /** The agent-scoped presentations view rendered on the agent desk.
  *  Shares the org presentation layout (.mailer with left-hand list and
  *  right-hand reading pane) and behaviors (inline markdown reading, HTML

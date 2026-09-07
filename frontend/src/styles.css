@@ -714,6 +714,10 @@ button.badge.audience-fold.alert {
   padding: 0; font-size: clamp(12px, calc(12px * var(--invzf, 1)), 18px);
   flex: none;
 }
+.sq-actions > button.presentedbtn {
+  border: 0; background: transparent; color: var(--dim); cursor: pointer;
+}
+.sq-actions > button.presentedbtn:hover { color: var(--ink-strong); background: transparent; }
 .sq-head .tier {
   width: 16px; height: 16px; flex: none; display: grid; place-items: center;
   border-radius: 4px; font-weight: 700; font-size: 9px; font-family: var(--mono);

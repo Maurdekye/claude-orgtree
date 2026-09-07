@@ -33,7 +33,7 @@ import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDp
 import { AskCard } from './canvas/asks'
 import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
-import { DocGalleryModal } from './canvas/gallery'
+import { AgentGalleryModal, DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
 import { closeIfCentred, isModalPinned, PinFrame } from './canvas/modalpin'
 import { mailRefTarget, useRefRoutes } from './canvas/reflinks'
@@ -259,6 +259,9 @@ export default function App() {
   // idiom the user asked for), so nothing about the canvas's reader is
   // lifted up here — that panel owns its selection.
   const [showGallery, setShowGallery] = useState(false)
+  // The card's document shortcut opens the same list/reader layout scoped to
+  // that agent, independently of whether its desk is currently pinned.
+  const [agentGalleryId, setAgentGalleryId] = useState<string | null>(null)
   // the native work docket (docket-final-spec.md) — its own list+pane modal,
   // same pattern as the gallery above.
   const [showDocket, setShowDocket] = useState(false)
@@ -1030,6 +1033,9 @@ export default function App() {
                 onOpenMailHandled={() => setMailJump(null)}
                 openDocAt={docJump}
                 onOpenDocHandled={() => setDocJump(null)}
+                onOpenAgentGallery={(id) => setAgentGalleryId((current) => {
+                  return current === id && isModalPinned('agent-gallery') ? null : id
+                })}
                 onAccounts={BASE ? undefined : () => setShowAccounts(v => isModalPinned('app-settings') ? !v : true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jumpTo(jump) : null)
@@ -1121,6 +1127,17 @@ export default function App() {
           }}
           refs={galleryRefs}
           close={() => setShowGallery(false)} />
+      )}
+      {agentGalleryId && slug && (
+        <AgentGalleryModal slug={slug} nid={agentGalleryId}
+          node={tree ? flatNodes(tree).get(agentGalleryId) : undefined}
+          toast={toast}
+          refs={galleryRefs}
+          onFocusAgent={(id) => {
+            closeIfCentred('agent-gallery', () => setAgentGalleryId(null))
+            setFocusAgent(id)
+          }}
+          close={() => setAgentGalleryId(null)} />
       )}
       {showDocket && slug && tree && (
         <DocketModal slug={slug} toast={toast} tree={tree}

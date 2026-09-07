@@ -1176,6 +1176,8 @@ interface NodeSquareProps {
   onLineage: () => void
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
+  /** open this agent's presentations in the shell's scoped modal */
+  onOpenAgentGallery?: (agentId: string) => void
   onRecenter?: () => void
   onJump?: (id: string) => void
   pub: boolean
@@ -1218,7 +1220,7 @@ interface NodeSquareProps {
 }
 
 export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
-  toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onDocket, onLineage, onOpenDoc,
+  toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onDocket, onLineage, onOpenDoc, onOpenAgentGallery,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onWorkLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
   mapMode, dogs, oneShotDogs, pinned, pinnedFocus, onPin, onShowPin }: NodeSquareProps) {
@@ -1233,7 +1235,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
   // no longer requires zooming to the desk — same confirm + undo-toast flow,
   // same retire/dissolve split as the desk's cc-actions
   const [asking, setAsking] = useState<'dissolve' | 'retire' | null>(null)
-  const [openPresentedRequest, setOpenPresentedRequest] = useState(0)
   const liveKids = node.children.some((c) => c.state === 'live')
   // NEAREST-EDGE chip gating (user ruling 2026-08-04): only the set at the
   // edge the cursor is closest to shows — bottom hires a report, left/right
@@ -1423,15 +1424,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           onClick={e => { e.stopPropagation(); onDocket() }}>
           <DocketIcon fontSize="inherit" />
         </button>}
-        {onOpenDoc && (node.documents?.length ?? 0) > 0 &&
-          <button className="presentedbtn" aria-label={`presented documents for ${node.id}`}
-            title={`open presented documents for ${node.id}`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              setOpenPresentedRequest((n) => n + 1)
-              onRecenter?.()
-            }}><DocIcon fontSize="inherit" /></button>}
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
@@ -1463,6 +1455,13 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
         <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
+        {onOpenAgentGallery && (node.documents?.length ?? 0) > 0 &&
+          <button className="presentedbtn" aria-label={`presented documents for ${node.id}`}
+            title={`open presented documents for ${node.id}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onOpenAgentGallery(node.id) }}>
+            <DocIcon fontSize="inherit" />
+          </button>}
       </div>}
       {!focused && lod !== 'mini' && (
         <div className="sq-badges">
@@ -1540,7 +1539,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
           pub={pub} onMailLink={onMailLink} onWorkLink={onWorkLink}
           onOpenDoc={onOpenDoc}
-          openPresentedRequest={openPresentedRequest || undefined}
           onPin={onPin} />
       )}
       {/* FR-3: the desk is a pinned window — the desk's place holds a

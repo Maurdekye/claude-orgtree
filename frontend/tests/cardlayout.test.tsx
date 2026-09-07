@@ -43,7 +43,8 @@ function node(id: string, tier: string, busy: boolean): CanvasNode {
 }
 
 function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
-  pinned = false, onDocket: (() => void) | undefined = undefined) {
+  pinned = false, onDocket: (() => void) | undefined = undefined,
+  onOpenAgentGallery: ((id: string) => void) | undefined = undefined) {
   return <NodeSquare key={n.id} node={n} pos={{ x: 0, y: 0 }} lod={lod} focused={false}
     dragging={false} isDrop={false} seats={seats} codexHire={hire}
     antigravityHire={hire} claudeHire={hire} map={new Map([[n.id, n]])}
@@ -51,6 +52,7 @@ function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
     compactAt={.8} pub={false} maxTop={100} kioskRemaining={null}
     cascadeAlloc onSpawn={noop} onSpawnSide={noop} onSpawnTop={noop}
     onConfig={noop} onInbox={noop} onLineage={noop} onOpenDoc={noop}
+    onOpenAgentGallery={onOpenAgentGallery}
     onDocket={onDocket}
     onRecenter={noop} onJump={noop} onMailLink={noop}
     onDragStart={noop} onDragMove={noop} onDragEnd={noop}
@@ -128,12 +130,21 @@ test('pinned cards do not offer a duplicate expand action', async () => {
 test('all-action fixture mounts the gear in the constrained action row', async () => {
   const n = node('many-actions', 'haiku', false)
   ;(n as unknown as { documents: unknown[] }).documents = [{ id: 'presented-doc' }]
-  const view = await mountView(card(n, 'mini', noop, false, noop), (el) => el)
+  const opened: string[] = []
+  const view = await mountView(card(n, 'mini', noop, false, noop,
+    (id) => opened.push(id)), (el) => el)
   try {
     const actions = view.el.querySelector<HTMLElement>('.sq-actions')!
     assert.equal(actions.querySelectorAll('button').length, 6,
-      'fixture must exercise docket, presented, mail, expand, retire, and gear')
+      'action row keeps document, docket, mail, expand, retire, and gear controls')
     assert.ok(actions.querySelector('.gearbtn'), 'gear control is missing')
+    const presented = actions.querySelector<HTMLButtonElement>('.presentedbtn')
+    assert.ok(presented, 'agent presentation modal control is missing')
+    assert.equal(presented?.title, 'open presented documents for many-actions')
+    presented?.click()
+    assert.deepEqual(opened, ['many-actions'])
+    assert.equal(view.el.querySelectorAll('.doc-chips .doc-chip').length, 1,
+      'the intended document control remains on the card edge')
   } finally { await view.unmount() }
 })
 

@@ -69,6 +69,8 @@ export interface OrgCanvasProps {
    *  guessed at up front. */
   openDocAt?: string | null
   onOpenDocHandled?: () => void
+  /** open the selected agent's presentations in a shell modal */
+  onOpenAgentGallery?: (agentId: string) => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -127,7 +129,7 @@ const migrateClientNodeState = (slug: string, from: string, to: string): void =>
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   onAccounts, focusAgent, onFocusAgentHandled, openMailAt,
-  onOpenMailHandled, openDocAt, onOpenDocHandled }: OrgCanvasProps) {
+  onOpenMailHandled, openDocAt, onOpenDocHandled, onOpenAgentGallery }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   // A pinned node-config remains mounted as a window; clicking its same
@@ -2488,6 +2490,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
               onInbox={() => toggleNodeSurface('node-inbox', n.id, setInboxId)} onLineage={() => toggleNodeSurface('lineage', n.id, setLineageId)}
               onDocket={() => toggleNodeSurface('agent-docket', n.id, setAgentDocketId)}
               onOpenDoc={setDocView}
+              onOpenAgentGallery={onOpenAgentGallery}
               onMailLink={openMail} onWorkLink={openWork}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               onJump={centerOn}                   /* F-01 nav chips */
