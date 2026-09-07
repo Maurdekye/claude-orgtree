@@ -110,8 +110,7 @@ function GitViewportSize({ viewport, update, ready }: {
     if (!frame) return
     const observer = new frame.ResizeObserver(update)
     observer.observe(element); update()
-    frame.addEventListener('resize', update)
-    return () => { observer.disconnect(); frame.removeEventListener('resize', update) }
+    return () => observer.disconnect()
   }, [owner, viewport, update, ready])
   return null
 }
@@ -232,6 +231,9 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
       vp.scrollLeft = Math.max(0, layout.trunkX - vp.clientWidth / 2)
       vp.scrollTop = 0
       initialPosition.current = false
+      // Publish the programmatic reset now: child layout effects may have
+      // measured the previous scroll before this parent effect runs.
+      setView({ top: vp.scrollTop, left: vp.scrollLeft, width: vp.clientWidth, height: vp.clientHeight })
     }
   }, [layout])
   const updateView = useCallback(() => {
@@ -317,7 +319,6 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   }
   return <PinFrame kind={panelId ?? `git:${slug}`} title={registry?.repositories.find(r => r.id === rid)?.name ?? "Git repositories"} panel="git-workspace" close={close}
     onEsc={() => { if (action || hover) { setAction(null); setHover(null) } else close() }}>
-    <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />
     <header className="git-head"><span className="git-mark">⑂</span>
       <select aria-label="Repository" value={rid} disabled={busy} onChange={e => chooseRepository(e.target.value)}>
         {!rid && <option value="">Select repository</option>}
@@ -431,5 +432,7 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
     {action && <div ref={actionElement} className="git-node-action" style={{ left: action.x, top: action.y }}><button disabled={busy} onClick={() => void perform()}>{action.kind === 'push' ? 'Push local changes' : 'Pull unsynced commits'}</button></div>}
     {snapshot && <footer className="git-footer">Against trunk: local {snapshot.config.trunk ? shortRef(snapshot.config.trunk) : 'not selected'}. Upstream comparisons use configured tracking refs. Newer commits are higher.
       {(snapshot.omitted_active > 0 || snapshot.omitted_worktrees > 0) && <span> {snapshot.omitted_active} active branches and {snapshot.omitted_worktrees} checkouts outside this view.</span>}</footer>}
+    {/* Refs attach during layout: measure after the viewport sibling. */}
+    <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />
   </PinFrame>
 }

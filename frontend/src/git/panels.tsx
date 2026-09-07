@@ -37,7 +37,7 @@ export function useGitPanels(slug: string | null) {
     setPanels(old => old.filter(p => p.id !== id))
   }, [])
   const another = useCallback((source: GitPanel, repository?: string) => {
-    const id = `git:${source.context.slug}:panel:${crypto.randomUUID()}`
+    const id = `git:${source.context.slug}:panel:${(crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)}`
     const w = window.innerWidth, h = window.innerHeight
     const half = Math.max(320, (w - 48) / 2)
     let x = Math.min(w - half - 16, 48), y = 76

@@ -4,6 +4,11 @@ import path from 'node:path'
 const out = path.resolve('node_modules/.orgtree-gitpanels')
 const mutation = process.argv[2]
 const mutations = {
+  'measure-before-ref': ['src/GitWorkspace.tsx', '    <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />', ''],
+  'close-pinned-navigation': ['src/git/panels.tsx', 'closeIfCentred(panel.kind, () => close(panel.id))', 'close(panel.id)'],
+  'leaked-pin': ['src/git/panels.tsx', 'if (panel?.extra) unpinModal(panel.kind)', 'void panel'],
+  'ignored-repository-seed': ['src/GitWorkspace.tsx', "useState(initialRepository ?? '')", "useState('')"],
+  'secure-context-only': ['src/git/panels.tsx', '(crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)', 'crypto.randomUUID()'],
   'duplicate-observers': ['src/git/observers.ts', 'const key = JSON.stringify([slug, rid])', 'const key = JSON.stringify([slug, rid, crypto.randomUUID()])'],
   'leaked-observer': ['src/git/observers.ts', 'watch.listeners.delete(listener)', 'if (!(globalThis as any).leakClosedGitObserver) watch.listeners.delete(listener)'],
   'wrong-resize-owner': ['src/GitWorkspace.tsx', 'const owner = useSurfaceDocument()', 'const owner = document'],
@@ -19,7 +24,13 @@ const plugins = mutation ? [{ name: mutation, setup(build) {
     if (path.resolve(file) !== target) return
     const text = readFileSync(target, 'utf8')
     if (text.split(before).length !== 2) throw new Error(`INERT mutation ${mutation}`)
-    return { contents: text.replace(before, after), loader: target.endsWith('.css') ? 'css' : 'tsx' }
+    let contents = text.replace(before, after)
+    if (mutation === 'measure-before-ref') {
+      const anchor = '    <header className="git-head">'
+      if (contents.split(anchor).length !== 2) throw new Error('INERT ref-order mutation')
+      contents = contents.replace(anchor, before + '\n' + anchor)
+    }
+    return { contents, loader: target.endsWith('.css') ? 'css' : 'tsx' }
   })
 } }] : []
 mkdirSync(out, { recursive: true })
