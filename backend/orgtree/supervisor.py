@@ -6790,23 +6790,59 @@ def _org_ref(org: Org) -> dict[str, Any]:
 
 
 def _segments_for(mail: list[MailEntry] | None, pending: list[NoticeEntry] | None,
-                  text: str | None, *, drive: Mapping[str, Any] | None = None
+                  text: str | None, *, drive: Mapping[str, Any] | None = None,
+                  owned: list[dict[str, Any]] | None = None
                   ) -> list[dict[str, Any]]:
     """The typed composition of an envelope, in the order the agent text carries it
     (design §6): notices, mail, then the drive nudge — as a typed `drive` segment
     when the producer minted one, else as plain text. Every row carries its FULL
-    event (journal copies outlive the mail_log cap)."""
+    event (journal copies outlive the mail_log cap).
+
+    `owned` (folded-carrier completeness, root ruling 2026-09-07 04:29Z): the
+    composition a carrier ALREADY HOLDS — the journal segments of the batches it
+    drained earlier (`_owned_segments`), whose enveloped text is `text` here. It
+    takes the tail's place: those rows are re-read structurally, in carrier
+    order, and the enveloped text is never filed as a text segment. The agent
+    text is untouched either way; this only says what the text is made of."""
     segs: list[dict[str, Any]] = []
     if pending:
         segs.append({"kind": "notices", "rows": [events.journal_row(n) for n in pending]})
     if mail:
         segs.append({"kind": "mail", "rows": [events.journal_row(m) for m in mail
                                               if not m.get("model_only")]})
-    if drive is not None:
+    if owned is not None:
+        segs.extend(owned)
+    elif drive is not None:
         segs.append({"kind": "drive", "event": events.encode_ev(drive), "text": text or ""})
     elif text:
         segs.append({"kind": "text", "text": text})
     return segs
+
+
+def _owned_segments(org: Org, nid: str, toks: Iterable[str] | None
+                    ) -> list[dict[str, Any]] | None:
+    """The typed composition a carrier already OWNS: the `segments` of its
+    unconfirmed journal batches, concatenated in carrier order — the same
+    by-token read `commit_steer` snapshots for the steered log.
+
+    None unless EVERY token resolves to a row that carries `segments`: a
+    partial answer would silently drop a message from the human transcript,
+    and the plain-text fallback (the enveloped text as a text segment, which is
+    what these carriers always produced) is the honest failure. A carrier with
+    no tokens owns nothing and answers None too, so the caller composes its own
+    text exactly as before."""
+    toks = list(toks or [])
+    if not toks:
+        return None
+    by_tok = {str(b.get("tok") or ""): b
+              for b in (org.d.get("delivering") or {}).get(nid, [])}
+    out: list[dict[str, Any]] = []
+    for t in toks:
+        row = by_tok.get(str(t))
+        if row is None or not isinstance(row.get("segments"), list):
+            return None
+        out.extend(row["segments"])
+    return out
 
 
 def delivering_mail(org: Org, nid: str,
@@ -7313,7 +7349,8 @@ def _envelope(slug: str, nid: str, text: str,
               view_out: list[str] | None = None,
               spans_out: list[list[dict[str, Any]]] | None = None,
               segments_out: list[list[dict[str, Any]]] | None = None,
-              ping: bool = False, ping_reason: str | None = None
+              ping: bool = False, ping_reason: str | None = None,
+              owned_toks: Iterable[str] | None = None
               ) -> tuple[str, str | None, list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
 
@@ -7321,6 +7358,13 @@ def _envelope(slug: str, nid: str, text: str,
     as a typed `drive` segment (`context.drive_mail_pointer`, see `_ping_drive`)
     rather than a plain `text` segment; `ping_reason` is the site's stated
     reason for it, if any.
+
+    `owned_toks`: the journal tokens the carrier ALREADY holds (a steer carrier
+    folded into the queue: `text` is its enveloped text). Its composition is
+    re-read from those rows (`_owned_segments`) and follows anything drained
+    here, in the order the agent text carries them; the journal row written
+    for a NEW drain holds only that drain's own composition, never a copy of
+    the owned one (no duplicate composition across rows).
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
     (the caller confirms it once the text actually reaches the agent).
@@ -7344,11 +7388,14 @@ def _envelope(slug: str, nid: str, text: str,
             return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
-        drive = _ping_drive(org, nid, text, ping_reason) if ping else None
-        segments = _segments_for(mail, pending, text, drive=drive)
+        owned = _owned_segments(org, nid, owned_toks)
+        drive = (_ping_drive(org, nid, text, ping_reason)
+                 if ping and owned is None else None)
+        segments = _segments_for(mail, pending, text, drive=drive, owned=owned)
         if pending or mail:
             tok = _journal_drain(org, nid, mail, pending, via, drive=drive,
-                                 segments=segments)
+                                 segments=(_segments_for(mail, pending, None)
+                                           if owned is not None else segments))
             store.save_org(org)
     if segments_out is not None:
         segments_out.append(segments)
@@ -14144,23 +14191,30 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 pending = None if is_cmd \
                     else (org.d.get("notices") or {}).pop(nid, None)
                 mail = [] if is_cmd else org.take_mail(nid)
-                # a ping carrier composes its nudge as a typed `drive` segment
-                # (`_ping_drive`) — unless it already OWNS a batch (`toks`: a
-                # steer carrier folded into the queue at turn exit), whose
-                # text is the full envelope and whose journal row already
-                # carries the typed composition
+                # a carrier that already OWNS batches (`toks`: a steer carrier
+                # folded into the queue at turn exit) has the full envelope as
+                # its text; its composition is re-read from those journal rows
+                # (`_owned_segments`) and follows anything drained here.
+                # Otherwise a ping carrier composes its nudge as a typed
+                # `drive` segment (`_ping_drive`) — never when it owns a batch,
+                # which would wrap the whole [MAIL] block into a hidden segment
+                owned = None if is_cmd else _owned_segments(org, nid, toks)
                 turn_drive = (_ping_drive(org, nid, text, ping_reason)
-                              if is_ping and not is_cmd and not toks else None)
+                              if is_ping and not is_cmd and owned is None
+                              and not toks else None)
                 view_segments = None if is_cmd else _segments_for(
                     mail, pending, text if isinstance(text, str) else None,
-                    drive=turn_drive)
+                    drive=turn_drive, owned=owned)
                 if pending or mail:
                     # journal the batch: if the CLI never launches (bad
                     # binary, Docker down, timeout) the drained mail would
-                    # die with the turn — the journal folds it back
+                    # die with the turn — the journal folds it back. The row
+                    # holds THIS drain's own composition only
                     toks.append(_journal_drain(org, nid, mail, pending, "turn",
                                                drive=turn_drive,
-                                               segments=view_segments))
+                                               segments=(_segments_for(mail, pending, None)
+                                                         if owned is not None
+                                                         else view_segments)))
                     store.save_org(org)
             if cache_forecast_event is not None:
                 stream(slug, nid, {"kind": "cache_forecast",
@@ -15550,9 +15604,10 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 nviews: list[str] = []
                                 nspans_out: list[list[dict[str, Any]]] = []
                                 nseg_out: list[list[dict[str, Any]]] = []
-                                # ⚠ `not ntoks`: a steer carrier folded into
-                                # the queue already HOLDS its enveloped text
-                                # and its journal token — its typed drive was
+                                # a steer carrier folded into the queue
+                                # already HOLDS its enveloped text and its
+                                # journal token(s): `owned_toks` re-reads that
+                                # composition from the journal — its drive was
                                 # minted by the envelope that drained it, and
                                 # minting again here would wrap the whole
                                 # [MAIL] block into a hidden drive segment.
@@ -15561,7 +15616,8 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                     base_view=nview, view_out=nviews,
                                     spans_out=nspans_out, segments_out=nseg_out,
                                     ping=nping and not ntoks,
-                                    ping_reason=nping_reason)
+                                    ping_reason=nping_reason,
+                                    owned_toks=ntoks)
                                 nview = nviews[0] if nviews else nview
                                 nspans = nspans_out[0] if nspans_out else []
                                 nsegs = nseg_out[0] if nseg_out else None
