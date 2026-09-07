@@ -6,7 +6,8 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { DocketModal, DocketToolbarButton } from '../src/canvas/docket'
+import { AgentDocketView, DocketModal, DocketToolbarButton } from '../src/canvas/docket'
+import { ago } from '../src/canvas/shared'
 import { InboxPanel, SenderChip } from '../src/App'
 import { NodeInboxModal, OrgInboxModal } from '../src/canvas/mail'
 import type { AskInfo, CanvasNode, MailEntry, MailPayload, OrgInboxEntry, TreePayload, TreeNode, WorkItem } from '../src/types'
@@ -1836,6 +1837,68 @@ uiTest('§38 three orders, and Updated is still the default', async (mount) => {
     'most recent STATUS CHANGE first')
   assert.match(el.querySelector('.docket-sort-why')?.textContent ?? '',
     /most recent status change first/)
+})
+
+uiTest('§38f the age beside each row reads the clock the list is sorted by', async (mount) => {
+  // user 2026-09-07 06:50: "Newest first" tickets must show time since
+  // CREATION, "Last status change" time since the last STATUS update — and a
+  // progress note must not refresh a status age. Stamps are laid out relative
+  // to the (fake) clock so `ago` yields three DIFFERENT readable ages per row;
+  // an age read from the wrong clock is then visible, never a coincidence.
+  forgetGroupChoice(); forgetSortChoice()
+  const H = 3600_000
+  const stamp = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+  const fx = [
+    mkItem({ slug: 'alpha-item', title: 'alpha-item',
+             at: stamp(30 * H), docket_at: stamp(1 * H), status_at: stamp(10 * H) }),
+    mkItem({ slug: 'bravo-item', title: 'bravo-item',
+             at: stamp(5 * H), docket_at: stamp(2 * H), status_at: stamp(20 * H) }),
+    mkItem({ slug: 'charlie-item', title: 'charlie-item',
+             at: stamp(50 * H), docket_at: stamp(3 * H), status_at: stamp(4 * H) }),
+  ]
+  mockWorkItems(fx)
+  const { el } = await mount(docketModal())
+  await flush()
+  const ageOf = (title: string) => {
+    const r = rows(el)[titles(el).indexOf(title)] as HTMLElement
+    const m = r.querySelector('.l1 .mtime') as HTMLElement
+    return { text: m.textContent, title: m.getAttribute('title') ?? '', aria: m.getAttribute('aria-label') ?? '' }
+  }
+  const byName = (t: string) => fx.find((i) => i.title === t)!
+  const clocks: [string, 'updated' | 'created' | 'status', (i: WorkItem) => string][] = [
+    ['updated', 'updated', (i) => String(i.docket_at)],
+    ['created', 'created', (i) => String(i.at)],
+    ['last status change', 'status', (i) => String(i.status_at)],
+  ]
+  for (const [word, mode, clock] of clocks) {
+    await chooseSort(el, mode)
+    for (const t of titles(el)) {
+      const a = ageOf(t)
+      assert.equal(a.text, ago(clock(byName(t))), `${mode}: age of ${t} reads the ${word} clock`)
+      assert.ok(a.title.startsWith(word + ' '), `${mode}: tooltip names the clock (${a.title})`)
+      assert.equal(a.aria, a.title, 'the accessible label says the same as the tooltip')
+    }
+  }
+  // the three clocks really give three different ages for every row — the
+  // check above cannot pass by coincidence
+  for (const i of fx) {
+    const ages = new Set([ago(String(i.at)), ago(String(i.docket_at)), ago(String(i.status_at))])
+    assert.equal(ages.size, 3, `fixture: three distinct ages for ${i.title}`)
+  }
+})
+
+uiTest('§38g the agent docket (served in updated order, no selector) keeps the updated age', async (mount) => {
+  const H = 3600_000
+  const stamp = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+  const mine = [mkItem({ slug: 'alpha-item', title: 'alpha-item',
+    at: stamp(30 * H), docket_at: stamp(1 * H), status_at: stamp(10 * H) })]
+  const { el } = await mount(<AgentDocketView slug="org" nid="boss" mine={mine} facts={new Map()}
+    toast={() => {}} onFocusAgent={() => {}} onChanged={() => {}}
+    refs={{ world: { nodes: new Map(), items: new Map() } as any, onOpen: () => {} } as any} />)
+  await flush()
+  const m = el.querySelector('.mailrow.docket-row .l1 .mtime') as HTMLElement
+  assert.equal(m.textContent, ago(String(mine[0]!.docket_at)))
+  assert.ok((m.getAttribute('title') ?? '').startsWith('updated '))
 })
 
 uiTest('§38b a progress-only update does not advance status order', async (mount) => {

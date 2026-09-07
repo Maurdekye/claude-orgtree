@@ -39,6 +39,7 @@ import { closeIfCentred, PinFrame } from './modalpin'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
 import { ago, jumpKey, useEsc, usePolled } from './shared'
+import { fmtFull } from '../timefmt'
 import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
@@ -162,6 +163,21 @@ function sortStamp(it: WorkItem, mode: DocketSortMode): string {
   if (mode === 'created') return String(it.at ?? '')
   if (mode === 'status') return String(it.status_at ?? it.at ?? '')
   return String(it.docket_at ?? it.updated_at ?? '')
+}
+
+/** The row's AGE reads the SAME clock the list is sorted by (user 2026-09-07:
+ *  "Newest first tickets show time since creation; Last status change shows
+ *  time since the last status update"). One stamp, one function — `sortStamp`
+ *  — so the order and the number beside each row can never disagree, and a
+ *  progress note or a retitle cannot refresh a status age because the status
+ *  clock is the durable `status_at` and nothing else. The tooltip names the
+ *  clock and the full instant, so the bare "3h" is never ambiguous. */
+const AGE_CLOCK: Record<DocketSortMode, string> = {
+  updated: 'updated', created: 'created', status: 'last status change',
+}
+export function rowAge(it: WorkItem, mode: DocketSortMode): { text: string; title: string } {
+  const stamp = sortStamp(it, mode)
+  return { text: ago(stamp || it.at), title: `${AGE_CLOCK[mode]} ${fmtFull(stamp || it.at)}` }
 }
 
 /** One section's items in the chosen order, newest first.
@@ -909,6 +925,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                         )}
                         {nestRows(s.items, collapsed).map((row) => (
                           <DocketRow key={row.item.slug} item={row.item}
+                            ageMode={sortMode}
                             selected={row.item.slug === selId}
                             depth={row.depth} kids={row.kids}
                             folded={collapsed.has(row.item.slug)}
@@ -1144,9 +1161,14 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
 }
 
 function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
-  close, flash, rowRef, depth = 0, kids = 0, folded = false, onFold }: {
+  close, flash, rowRef, depth = 0, kids = 0, folded = false, onFold,
+  ageMode = 'updated' }: {
   item: WorkItem
   selected: boolean
+  /** which clock the row's age reads — the list's sort mode, so the number
+   *  beside a row agrees with the order it sits in. The agent docket is served
+   *  in updated order and has no selector, so it takes the default. */
+  ageMode?: DocketSortMode
   /** w2d5fab0a elements 1 and 2: how deep this row sits, and whether it has
    *  children of its own to fold away. The connecting lines are drawn from
    *  `depth` in CSS rather than with spacer elements. */
@@ -1201,7 +1223,8 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
             onClick={(e) => { e.stopPropagation(); onFold?.() }}>▾</button>
         )}
         <span className="mfrom docket-rowname">{itemName(item)}</span>
-        <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
+        {(() => { const age = rowAge(item, ageMode)
+          return <span className="mtime" title={age.title} aria-label={age.title}>{age.text}</span> })()}
       </div>
       <div className="l2">
         <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}
