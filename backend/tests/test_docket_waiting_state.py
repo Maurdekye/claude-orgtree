@@ -538,23 +538,80 @@ check("blocked (stored or legacy waiting) is never a reminder row; actionable ne
       blocked_is_never_a_reminder_row_but_its_neighbours_are)
 
 
-def the_working_checkup_reads_the_agents_own_word_not_the_docket() -> None:
-    """AUDIT of the other periodic nudge: the working-status checkup wakes an
-    agent whose REPORTED status is `working` and quiet — it never reads docket
-    items — so a blocked task cannot trigger it, and an agent that reports
-    `blocked` is never checked. Pinned at the source, since the pass itself is
-    driven by test_working_checkup.py."""
-    import inspect
+def the_working_checkup_skips_a_blocked_only_owner() -> None:
+    """THE OTHER PERIODIC NUDGE, exercised at its ACTUAL decision
+    (`_working_checkup_eligible`, the durable half of admission the reserve
+    step consults) rather than pinned by source absence (coordinator
+    2026-09-07). The agent's last report stays `working` throughout — that is
+    the case the idle-docket exclusion alone could not cover.
+      · no docket at all         → eligible (control: the report keeps its check)
+      · only blocked work        → NOT eligible (stored blocked and legacy waiting)
+      · actionable work beside it → eligible again
+      · unblocked                → eligible again"""
     from orgtree import supervisor as S
-    src = inspect.getsource(S._working_checkup_pass)
-    assert "work_items" not in src and "work_idle_reminder_items" not in src, \
-        "the working checkup started reading the docket"
-    assert '"working"' in src or "'working'" in src or "WORKING" in src, \
-        "positive control: the pass keys on the reported word"
+    slug = fixture()
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        org.node("agent")["last_status"] = {"status": "working", "summary": "grinding",
+                                            "at": "2026-09-07T06:00:00Z"}
+        store.save_org(org)
+    def quiet(s: str) -> None:
+        """Drain the assignment mail a create/update leaves for the owner: a
+        waking mail is its own (correct) reason not to run a checkup, and this
+        check is about the DOCKET's reason, not the mailbox's."""
+        with store.DOC_LOCK:
+            o = store.load_org(s)
+            (o.d.get("mail") or {}).pop("agent", None)
+            (o.d.get("notices") or {}).pop("agent", None)
+            store.save_org(o)
+    quiet(slug)
+    org = store.load_org(slug)
+    assert S._reported_working(org.node("agent")) and S._auto_wake_gates_clear(org, "agent"), \
+        "fixture: the agent must be a checkup candidate on its own account"
+    assert org.work_blocked_only("agent") is False
+    assert S._working_checkup_eligible(org, "agent") is True, "no docket: the checkup stands"
+    stuck = item(slug, "Stuck on the vendor", status="blocked", blocked_reason=BLOCK)
+    quiet(slug)
+    org = store.load_org(slug)
+    assert org.work_blocked_only("agent") is True
+    assert S._working_checkup_eligible(org, "agent") is False, \
+        "a blocked-only owner reporting `working` was still due a checkup"
+    legacy = item(slug, "Recorded as waiting", status="in_progress")
+    plant_waiting(slug, legacy)
+    quiet(slug)
+    org = store.load_org(slug)
+    assert org.work_blocked_only("agent") is True, "a legacy waiting row is blocked here too"
+    assert S._working_checkup_eligible(org, "agent") is False
+    moving = item(slug, "Alpha keeps moving", status="in_progress")
+    quiet(slug)
+    org = store.load_org(slug)
+    assert org.work_blocked_only("agent") is False
+    assert S._working_checkup_eligible(org, "agent") is True, \
+        "actionable work beside the blocked ones must keep the checkup"
+    upd(slug, moving, status="dropped", dropped_reason="cancelled: not needed")
+    quiet(slug)
+    org = store.load_org(slug)
+    assert S._working_checkup_eligible(org, "agent") is False, "back to blocked-only"
+    upd(slug, stuck, status="in_progress", done=["the vendor answered"])
+    quiet(slug)
+    org = store.load_org(slug)
+    assert S._working_checkup_eligible(org, "agent") is True, "unblocking restores the check"
+    # somebody ELSE's blocked item does not count against this agent, and an
+    # item this agent merely reviews is owed by it (review → reviewer)
+    peer_slug = fixture(peers=("peer",))
+    with store.DOC_LOCK:
+        o = store.load_org(peer_slug)
+        o.node("agent")["last_status"] = {"status": "working", "summary": "x", "at": "2026-09-07T06:00:00Z"}
+        store.save_org(o)
+    item(peer_slug, "Peer's stuck item", owner="peer", status="blocked", blocked_reason=BLOCK)
+    quiet(peer_slug)
+    o = store.load_org(peer_slug)
+    assert o.work_blocked_only("agent") is False and S._working_checkup_eligible(o, "agent") is True
 
 
-check("AUDIT: the working-status checkup keys on the agent's reported word, never on "
-      "docket items", the_working_checkup_reads_the_agents_own_word_not_the_docket)
+check("the working-status checkup's real decision: a blocked-only owner (stored or legacy "
+      "waiting) reporting `working` is NOT due; no-docket and mixed-actionable owners still "
+      "are; unblocking restores it", the_working_checkup_skips_a_blocked_only_owner)
 
 
 print(f"\nALL {PASS} CHECKS PASS" if not FAIL else f"\n{FAIL} FAILED, {PASS} PASSED")

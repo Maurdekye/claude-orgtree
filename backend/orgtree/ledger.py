@@ -9625,10 +9625,9 @@ class Org:
     # closed state. `blocked` stays reminder-eligible: being stuck is a thing an
     # agent can be nudged about.
     #
-    # It is OUT of the `active` count (`WORK_UNCOUNTED`), and an hour after its
-    # last docket update it archives unless attention holds it
-    # (`WORK_ARCHIVES_ITSELF`) — as `waiting`, never as done. Both user
-    # 2026-09-06.
+    # (`waiting` — out of the active count and archived after an hour, user
+    # 2026-09-06 — was REMOVED as a state on 2026-09-07; see
+    # `WORK_LEGACY_STATUSES` below for how the rows that still hold it read.)
     WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
                             "review", "done", "superseded", "dropped")
     WORK_AGENT_STATUSES: Final = ("backlogged", "open", "in_progress",
@@ -10156,9 +10155,10 @@ class Org:
     WORK_ARCHIVES_AT_ONCE: Final = ("dropped",)
 
     def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
-        """Ages out of the main list: a status that archives itself — done or
-        waiting on an event — whose docket update is STRICTLY older than one
-        hour; or `dropped`, which is eligible the instant it is set."""
+        """Ages out of the main list: `done`, whose docket update is STRICTLY
+        older than one hour; or `dropped`, which is eligible the instant it is
+        set. Nothing else archives itself (a legacy `waiting` row reads as
+        blocked and so never does)."""
         status = self._work_status(it)
         if status not in self.WORK_ARCHIVES_ITSELF:
             return False
@@ -10208,7 +10208,7 @@ class Org:
         The exclusions are decided HERE rather than by leaning on
         `_work_backlogged` / `_work_archived`, because those answer a different
         question — which LIST a row is served in. An attention-holding
-        backlogged row is deliberately shown in the main list, and a waiting row
+        backlogged row is deliberately shown in the main list, and a done row
         stays in the main list for its first hour; being visible is not the same
         as being in flight, and this number means the latter."""
         return self._work_status(it) not in self.WORK_UNCOUNTED
@@ -10528,6 +10528,33 @@ class Org:
                 return rv, "reviewer"
             return owner, "unassigned_review"
         return owner, "owner"
+
+    def work_blocked_only(self, nid: str) -> bool:
+        """Does this agent's docket consist ONLY of blocked work — nothing it
+        could act on right now? THE PREDICATE THE WORKING-STATUS CHECKUP
+        CONSULTS (user 2026-09-07: blocked tasks must not generate periodic
+        status nudges; coordinator 2026-09-07: the idle-docket exclusion alone
+        did not prove that, because an agent whose last report was `working`
+        was still woken by the independent checkup).
+
+        The items considered are the ones this agent OWES the next action on
+        (`_work_next_recipient`) and that count as active — the same set the
+        idle reminder draws from before its own exclusions. Three answers:
+          · no such items at all → False: an agent working with no docket
+            keeps its checkup (the docket is not the only work there is);
+          · every one of them reads as blocked (`_work_status`, so a legacy
+            waiting row counts) → True: nothing the checkup could prompt;
+          · anything actionable beside the blocked ones → False: the
+            actionable work still earns the check.
+        Attention-holding rows are not special-cased: a blocked row waiting
+        on the user is still blocked, and an in_progress row holding a flag is
+        still the agent's actionable work for this question."""
+        owed = [it for it in self._work_active()
+                if it.get("slug") and self._work_counts_active(it)
+                and self._work_next_recipient(it)[0] == nid]
+        if not owed:
+            return False
+        return all(self._work_status(it) == "blocked" for it in owed)
 
     def work_idle_reminder_items(self, nid: str) -> list[dict[str, str]]:
         """Items this node owes the next action on, for the idle-reminder wake.
