@@ -89,6 +89,34 @@ Support Luna handles explicitly bounded support tasks. It states acceptance
 criteria, keeps the change narrow, uses isolated data before storage imports,
 and reports gaps honestly instead of broadening scope.
 
+## Practical role fit (research note, 2026-09-06)
+
+Use this as routing guidance, not as a ranking. The accepted capability review
+combined provisional public benchmark proxies, dated practitioner observations,
+and this organization's own workload observations; no public benchmark
+establishes Redteam aptitude, and this team has not run a controlled local
+bakeoff or proved every served model identity. Do not copy volatile score or
+price tables into staffing decisions.
+
+- Route deep analysis, long deliverables, and careful backend investigation to
+  Fable, with explicit milestones for long-running work.
+- Route architecture, cross-system integration, and debugging to Astra. Keep
+  one Astra implementer under the normal weekly lane unless a new decision
+  changes that arrangement.
+- Route independent coding/computer-use review to Opus. Preserve its
+  independence: strong coding evidence does not turn it into the implementer
+  or coordinator.
+- Route fast multimodal, bounded UI, prototype, and browser-harness work to
+  Flash. Keep harness-sensitive or long-horizon conclusions under focused
+  checks and coordinator inspection.
+- Route cheap bounded clerical, documentation, and mechanical tasks to Luna;
+  choose appropriate effort and do not infer that low cost means broad scope.
+
+These role-fit notes are provisional and must not override the user's chosen
+role arrangement, current permissions, provider availability, or a task's
+actual acceptance criteria. Separate measured results from anecdotes and
+local observations in every later routing decision.
+
 ## Work and review discipline
 
 Keep one durable docket item for each coherent outcome and one owner for each
