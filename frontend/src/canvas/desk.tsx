@@ -1119,6 +1119,8 @@ export interface DeskChatProps {
   onWorkLink?: WorkLinkFn
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
+  /** card action requests the desk's Presented view after it opens */
+  openPresentedRequest?: number
   /** FR-3: pin this desk to screenspace as a window (pins.tsx). Only the
    *  CANVAS desk passes it; absent hides the button — a switchboard panel,
    *  the mobile sheet and a pinned window itself have no pin to offer. */
@@ -1229,7 +1231,8 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin, staleIdentity = false }: DeskChatProps) {
+  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin, openPresentedRequest,
+  staleIdentity = false }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -1295,6 +1298,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // remains authoritative if another desk wins the race.
   const [processToggleBusy, setProcessToggleBusy] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'docket' | 'presented'>('chat')     // chat | history | files | inbox | docket | presented
+  useEffect(() => {
+    if (openPresentedRequest !== undefined) setView('presented')
+  }, [openPresentedRequest])
   // THE AGENT'S OWN DOCKET (user ruling 2026-09-05 21:07). It replaced the
   // derived task-progress model that used to live in this tab — the user
   // called that content irrelevant, and what an agent is answerable for is

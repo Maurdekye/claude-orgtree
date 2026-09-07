@@ -990,8 +990,23 @@ test('Presented desk tab lists the selected agent documents and opens markdown',
   assert.ok(view.el.querySelector('.desk-presented'))
   assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /Agent report/)
   assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /Agent preview/)
+  const html = view.el.querySelector<HTMLElement>('.desk-presented-card.doc-mockup')
+  assert.ok(html, 'HTML preview does not use the existing mockup card path')
+  if (html.tagName === 'A') assert.match((html as HTMLAnchorElement).getAttribute('href') ?? '', /mockup/)
   const markdown = view.el.querySelector<HTMLButtonElement>('.desk-presented-card')
   assert.ok(markdown, 'markdown document is not actionable')
   await act(async () => { markdown!.click() })
   assert.deepEqual(opened, ['doc-agent-md'])
+  await view.render(
+    <DeskChat node={node({ id: 'agent', documents: [] })}
+      map={new Map([['agent', node({ id: 'agent', documents: [] })]])}
+      op={op} slug="prog" toast={noop} pub={false} bare onJump={noop}
+      onOpenDoc={(id) => { opened.push(id) }} />)
+  await flush()
+  await act(async () => {
+    const presented = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')]
+      .find((b) => b.textContent === 'presented')!
+    presented.click()
+  })
+  assert.match(view.el.querySelector('.desk-presented')?.textContent ?? '', /No presented documents/)
 })

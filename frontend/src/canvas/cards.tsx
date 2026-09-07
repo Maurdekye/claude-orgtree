@@ -11,7 +11,7 @@ import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
   CheckIcon, CloseIcon, DocketIcon, FocusIcon, FullscreenIcon, FrozenIcon, LayersIcon,
-  LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon,
+  LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon, DocIcon,
 } from '../icons'
 import {
   ago, anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, stateLabel, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
@@ -1247,6 +1247,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
   // no longer requires zooming to the desk — same confirm + undo-toast flow,
   // same retire/dissolve split as the desk's cc-actions
   const [asking, setAsking] = useState<'dissolve' | 'retire' | null>(null)
+  const [openPresentedRequest, setOpenPresentedRequest] = useState(0)
   const liveKids = node.children.some((c) => c.state === 'live')
   // NEAREST-EDGE chip gating (user ruling 2026-08-04): only the set at the
   // edge the cursor is closest to shows — bottom hires a report, left/right
@@ -1436,6 +1437,15 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           onClick={e => { e.stopPropagation(); onDocket() }}>
           <DocketIcon fontSize="inherit" />
         </button>}
+        {onOpenDoc && (node.documents?.length ?? 0) > 0 &&
+          <button className="presentedbtn" aria-label={`presented documents for ${node.id}`}
+            title={`open presented documents for ${node.id}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              setOpenPresentedRequest((n) => n + 1)
+              onRecenter?.()
+            }}><DocIcon fontSize="inherit" /></button>}
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
@@ -1544,6 +1554,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
           pub={pub} onMailLink={onMailLink} onWorkLink={onWorkLink}
           onOpenDoc={onOpenDoc}
+          openPresentedRequest={openPresentedRequest || undefined}
           onPin={onPin} />
       )}
       {/* FR-3: the desk is a pinned window — the desk's place holds a
