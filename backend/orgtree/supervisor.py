@@ -7390,9 +7390,15 @@ def _envelope(slug: str, nid: str, text: str,
             return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
-        owned = _owned_segments(org, nid, owned_toks)
+        held = list(owned_toks or [])         # materialised ONCE (a generator would be spent)
+        owned = _owned_segments(org, nid, held)
+        # ⚠ the mint guard keys on the PRESENCE of tokens, never on whether they
+        # resolved (Opus F1): a carrier holding tokens has an ENVELOPE as its
+        # text, and minting for it — resolved or not — would wrap the [MAIL]
+        # block into a hidden drive segment. Unresolved tokens fall back to
+        # the text segment, which keeps the meaningful text on screen.
         drive = (_ping_drive(org, nid, text, ping_reason)
-                 if ping and owned is None else None)
+                 if ping and not held else None)
         segments = _segments_for(mail, pending, text, drive=drive, owned=owned)
         if pending or mail:
             tok = _journal_drain(org, nid, mail, pending, via, drive=drive,
