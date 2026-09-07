@@ -44,6 +44,22 @@ function ChangeDetails({ value }: { value: GitChanges }) {
   </div>
 }
 
+function CheckoutDetails({ slug, rid, wid }: { slug: string; rid: string; wid: string }) {
+  const [value, setValue] = useState<GitChanges | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  return <div>
+    {!value && <div>Changes: Not read</div>}
+    {value && <><div>Read {fmtFull(new Date(value.read_at! * 1000).toISOString())} · {value.branch ? shortRef(value.branch) : 'detached'} · {value.head_oid?.slice(0, 10) ?? 'without commits'}</div><ChangeDetails value={value} /></>}
+    {error && <div role="alert">{error}</div>}
+    <button disabled={busy} onClick={async () => {
+      setBusy(true); setError('')
+      try { setValue(await api.getGitChanges(slug, rid, wid)) }
+      catch (e) { setError(message(e)) } finally { setBusy(false) }
+    }}>{busy ? 'Reading checkout changes…' : value ? 'Read changes again' : 'Read checkout changes'}</button>
+  </div>
+}
+
 function RepositorySettings({ slug, rid, changed, removed, close, toast }: {
   slug: string; rid: string; changed: () => void; removed: () => void; close: () => void; toast: ToastFn
 }) {
@@ -162,8 +178,10 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
     }
     resize()
     const frame = element.ownerDocument.defaultView!
+    const observer = new frame.ResizeObserver(resize)
+    observer.observe(element)
     frame.addEventListener('resize', resize)
-    return () => frame.removeEventListener('resize', resize)
+    return () => { observer.disconnect(); frame.removeEventListener('resize', resize) }
   }, [hover])
   useLayoutEffect(() => {
     const element = actionElement.current
@@ -202,16 +220,18 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   const refresh = useCallback(async () => {
     if (!rid) return
     const current = ++sequence.current
-    setBusy(true); setError(''); setAction(null); setHover(null); setNewHistory(false)
+    setBusy(true); setError(''); setAction(null); setHover(null)
     try {
       const value = await api.getGit(slug, rid, selected)
       if (current !== sequence.current) return
       setSnapshot(value); setNodes(value.history.nodes); setCursor(value.history.next_cursor); setLoadedThrough(120)
+      setNewHistory(value.newer_available ?? false)
       setFocused(old => old && value.branches.some(b => b.ref === old) ? old : value.config.trunk)
     } catch (e) { if (current === sequence.current) setError(message(e)) }
     finally { if (current === sequence.current) setBusy(false) }
   }, [slug, rid, selected])
-  useEffect(() => { initialPosition.current = true; setSnapshot(null); setNodes([]); void refresh(); return () => { sequence.current++ } }, [refresh])
+  useEffect(() => { initialPosition.current = true; setSnapshot(null); setNodes([]) }, [slug, rid])
+  useEffect(() => { void refresh(); return () => { sequence.current++ } }, [refresh])
   useEffect(() => {
     if (!snapshot || !rid) return
     return observeGit(slug, rid, {
@@ -219,12 +239,11 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
         if (value.freshness) setSnapshot(old => old ? { ...old, freshness: value.freshness! } : old)
         else if (value.busy) setSnapshot(old => old ? { ...old, freshness: { ...old.freshness, busy: true } } : old)
         if (value.ref_identity && value.ref_identity !== snapshot.ref_identity) {
-          if (!gesture.current && (viewport.current?.scrollTop ?? 0) < 50) void refresh()
-          else setNewHistory(true)
+          setNewHistory(true)
         }
       }, error: e => setError(message(e)),
     })
-  }, [slug, rid, snapshot?.token, busy, refresh])
+  }, [slug, rid, snapshot?.token])
   useLayoutEffect(() => {
     const vp = viewport.current
     if (vp && layout && initialPosition.current) {
@@ -303,10 +322,10 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
   const branchDetails = (branch: GitBranch) => <>
     <b>{shortRef(branch.ref)}</b>
     {branch.tickets.map(t => <div key={t.slug}>{t.title ?? `${t.slug} · unavailable`}</div>)}
-    <p>Local trunk: {comparison(branch.against_trunk)}<br />Upstream: {comparison(branch.sync)}</p>
+    <p>At graph capture:<br />Local trunk: {comparison(branch.against_trunk)}<br />Upstream: {comparison(branch.sync)}</p>
     {snapshot?.worktrees.filter(w => w.branch === branch.ref).map(w => <div key={w.id} className="git-checkout">
-      <code>{w.path}</code><div>Checkout {w.oid?.slice(0, 10) ?? 'without commits'}{w.agents.length ? ` · ${w.agents.join(', ')}` : ''}</div>
-      <ChangeDetails value={w.changes} /></div>)}
+      <code>{w.path}</code><div>Captured checkout {w.oid?.slice(0, 10) ?? 'without commits'}{w.agents.length ? ` · ${w.agents.join(', ')}` : ''}</div>
+      <CheckoutDetails slug={slug} rid={rid} wid={w.id} /></div>)}
   </>
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     const vp = viewport.current
@@ -402,7 +421,7 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
           const kind = selectedAction?.action === 'pull' || owner && !owner.local ? 'ghost' : selectedAction?.action === 'push' ? 'unpushed' : 'shared'
           const body = <><b>{n.subject}</b>{n.message && n.message.trim() !== n.subject && <p style={{ whiteSpace: 'pre-wrap' }}>{n.message}</p>}<code>{n.oid}</code><div>{fmtFull(new Date(n.at * 1000).toISOString())}</div>
             {owner && <div>{shortRef(owner.ref)} · {kind === 'ghost' ? 'observed remote only' : kind === 'unpushed' ? 'unpushed in this branch comparison' : owner.sync.ahead === null ? comparison(owner.sync) : 'shared history'}</div>}
-            {snapshot.worktrees.filter(w => w.oid === n.oid && !w.branch).map(w => <div key={w.id}><code>{w.path}</code><div>Detached checkout</div><ChangeDetails value={w.changes} /></div>)}</>
+            {snapshot.worktrees.filter(w => w.oid === n.oid && !w.branch).map(w => <div key={w.id}><code>{w.path}</code><div>Detached checkout</div><CheckoutDetails slug={slug} rid={rid} wid={w.id} /></div>)}</>
           return <button key={n.oid} data-oid={n.oid} className={`git-node ${kind}`} aria-label={`${n.subject} · ${n.oid.slice(0, 8)}`}
             style={{ left: p.x, top: p.y, '--branch-color': branchColor(owner?.ref ?? p.owner ?? '') } as CSSProperties}
             onPointerEnter={e => showHover(e.currentTarget, body)} onPointerLeave={hideHover}
@@ -430,7 +449,7 @@ export function GitWorkspace({ slug, context, routes, toast, close, panelId, ini
     </div>}
     {hover && <div ref={hoverElement} className="git-hover" role="tooltip" style={{ left: hover.x, top: hover.y }} onPointerEnter={() => clearTimeout(hoverTimer.current)} onPointerLeave={hideHover}>{hover.body}</div>}
     {action && <div ref={actionElement} className="git-node-action" style={{ left: action.x, top: action.y }}><button disabled={busy} onClick={() => void perform()}>{action.kind === 'push' ? 'Push local changes' : 'Pull unsynced commits'}</button></div>}
-    {snapshot && <footer className="git-footer">Against trunk: local {snapshot.config.trunk ? shortRef(snapshot.config.trunk) : 'not selected'}. Upstream comparisons use configured tracking refs. Newer commits are higher.
+    {snapshot && <footer className="git-footer" title="Comparisons reflect captured local and tracking refs; newer commits are higher.">{snapshot.captured_at !== undefined && `Graph captured ${fmtFull(new Date(snapshot.captured_at * 1000).toISOString())}. `}Trunk: {snapshot.config.trunk ? shortRef(snapshot.config.trunk) : 'not selected'}. Checkout changes read on request.
       {(snapshot.omitted_active > 0 || snapshot.omitted_worktrees > 0) && <span> {snapshot.omitted_active} active branches and {snapshot.omitted_worktrees} checkouts outside this view.</span>}</footer>}
     {/* Refs attach during layout: measure after the viewport sibling. */}
     <GitViewportSize viewport={viewport} update={updateView} ready={snapshot !== null} />

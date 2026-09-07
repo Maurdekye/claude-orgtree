@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import time
 from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -170,7 +171,11 @@ def changes(slug: str, rid: str, wid: str) -> dict[str, Any]:
             wt = next((w for w in gw.worktrees(repo) if w["id"] == wid), None)
             if not wt:
                 raise gw.GitError("Worktree no longer exists", status=404)
-            return gw.changes(repo, wt)
+            value = gw.changes(repo, wt)
+            current = next((w for w in gw.worktrees(repo) if w["id"] == wid), None)
+            if not current or any(current.get(k) != wt.get(k) for k in ("oid", "branch")):
+                raise gw.GitError("Checkout changed while reading details; read its changes again", status=409)
+            return {**value, "read_at": time.time(), "head_oid": wt.get("oid"), "branch": wt.get("branch")}
 
 
 @router.post("/{rid}/fetch")

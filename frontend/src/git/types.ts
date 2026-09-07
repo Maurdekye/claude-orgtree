@@ -6,6 +6,7 @@ export interface GitFile {
 export interface GitChanges {
   state: string; files: GitFile[]; count: number | null; complete: boolean
   operations?: string[]; reason?: string; conflicted?: number; fingerprint?: string
+  read_at?: number; head_oid?: string | null; branch?: string | null
 }
 export interface GitWorktree {
   id: string; path: string; oid?: string | null; branch?: string; detached?: boolean
@@ -36,6 +37,7 @@ export interface GitSnapshot {
   omitted_active: number; omitted_worktrees: number; freshness: GitFreshness
   ref_identity: string; unborn_branch: string | null
   total_commits: number
+  captured_at?: number; newer_available?: boolean
 }
 export interface GitRegistry {
   repositories: { id: string; name: string; path: string; links: { branch: string; item: string; agent: string | null }[] }[]; selected: string | null

@@ -1,5 +1,5 @@
 import { req } from '../api'
-import type { GitRegistry, GitDiscovery, GitSnapshot, GitSettings, GitPage, GitOperation, GitFreshness } from './types'
+import type { GitRegistry, GitDiscovery, GitSnapshot, GitSettings, GitPage, GitOperation, GitFreshness, GitChanges } from './types'
 const base = (slug: string) => `/api/orgs/${encodeURIComponent(slug)}/git`
 const repo = (slug: string, id: string) => `${base(slug)}/${encodeURIComponent(id)}`
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -11,6 +11,7 @@ export const selectGit = (slug: string, id: string): Promise<unknown> => req(`${
 export const getGitObservation = (slug: string, id: string): Promise<{ busy: boolean; ref_identity?: string; freshness?: GitFreshness }> => req(`${repo(slug, id)}/observation`)
 export const getGit = (slug: string, id: string, branches?: string[]): Promise<GitSnapshot> => req(`${repo(slug, id)}/snapshot${branches ? `?branches=${encodeURIComponent(JSON.stringify(branches))}` : ''}`, undefined, 120_000)
 export const getGitHistory = (slug: string, id: string, cursor: string): Promise<GitPage> => req(`${repo(slug, id)}/history?cursor=${encodeURIComponent(cursor)}`)
+export const getGitChanges = (slug: string, id: string, wid: string): Promise<GitChanges> => req(`${repo(slug, id)}/worktrees/${encodeURIComponent(wid)}/changes`)
 export const getGitSettings = (slug: string, id: string): Promise<GitSettings> => req(`${repo(slug, id)}/settings`)
 export const saveGitSettings = (slug: string, id: string, revision: number, values: Record<string, unknown>): Promise<unknown> => req(`${repo(slug, id)}/settings`, json('PATCH', { revision, values }))
 export const linkGit = (slug: string, id: string, branch: string, item: string, remove = false): Promise<unknown> => req(`${repo(slug, id)}/links`, json(remove ? 'DELETE' : 'POST', { branch, item }))

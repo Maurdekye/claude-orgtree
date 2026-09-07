@@ -460,6 +460,7 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
     facts = org_facts(slug)
     links = associations(slug, repo, facts)
     with lock(repo), ThreadPoolExecutor(max_workers=3, thread_name_prefix="git-read") as reads:
+        captured_at = time.time()
         first_read = reads.submit(refs, repo, batch=False, metadata_only=batch)
         worktree_read = reads.submit(worktrees, repo)
         shallow_read = reads.submit(text, repo["root"], ["rev-parse", "--is-shallow-repository"])
@@ -473,7 +474,6 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
         captured_worktrees = digest(wts)
         shallow = shallow_read.result() == "true"
         remote_read = reads.submit(remote_config, repo, cfg["remote"])
-        worktree_changes = [reads.submit(changes, repo, wt) for wt in wts[:60]]
         wt_branches = {w.get("branch") for w in wts}
         active = [r for r in rows if not r["symref"] and (r["ref"] == cfg["trunk"] or r["ref"] in wt_branches
                   or any(it.get("status") not in ("done", "dropped", "superseded") for it in links.get(r["ref"], [])))]
@@ -578,20 +578,19 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
             position = lanes.setdefault(oid, {"offset": 165, "owner": None})
             for index, parent in enumerate(parents):
                 lanes.setdefault(parent, {"offset": position["offset"] + 75 * index, "owner": position["owner"]})
-        # Status reads overlap topology work, but every checkout is still read
-        # and validated before publication. Nothing incomplete is called clean.
-        for wt, pending in zip(wts[:60], worktree_changes):
-            wt["changes"] = pending.result()
+        # Inventory is captured with the graph; mutable file details are read
+        # only when requested, never represented as a clean initial checkout.
+        for wt in wts[:60]:
+            wt["changes"] = {"state": "not_read", "files": [], "count": None,
+                             "complete": False, "reason": "Not read"}
             wt["agents"] = [name for name in facts.get("nodes", {}) if "@" not in name
                             and within(wt["path"], os.path.join(store.scratch_root(slug), name))]
         final_read = reads.submit(refs, repo, batch=False, metadata_only=True)
         final_worktrees = reads.submit(worktrees, repo)
-        final = final_read.result()
-        if ref_identity(first) != ref_identity(final) or captured_worktrees != digest(final_worktrees.result()):
-            raise GitError("Repository refs or checkouts changed during scan; refresh to read a consistent snapshot", status=409, code="changed_during_scan")
         snap = {"token": token, "slug": slug, "repository_id": rid, "created": time.time(),
                 "tips": tips, "shallow": shallow, "branches": branches, "worktrees": wts[:60], "config": cfg,
-                "ref_identity": ref_identity(final), "unborn_branch": None,
+                "ref_identity": ref_identity(first), "captured_at": captured_at,
+                "newer_available": False, "unborn_branch": None,
                 "ordered": ordered, "ranks": {oid: i for i, oid in enumerate(ordered)}, "lanes": lanes,
                 "membership": membership, "total_commits": len(ordered)}
         if not tips:
@@ -603,6 +602,11 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
             snap["remote_fingerprint"] = captured_config["fingerprint"]
         except GitError:
             snap["remote_fingerprint"] = None
+        # Detail loading overlaps the final metadata check. Both use captured
+        # OIDs; advancing refs cannot invalidate the already captured history.
+        first_page = _history_page(repo, snap, 0)
+        snap["newer_available"] = (ref_identity(first) != ref_identity(final_read.result())
+                                  or captured_worktrees != digest(final_worktrees.result()))
         with _guard:
             _snapshots[token] = snap
             while len(_snapshots) > 32:
@@ -612,7 +616,7 @@ def snapshot(slug: str, rid: str, selected: list[str] | None = None, *, batch: b
                                 for r in rows if not r["symref"]],
                   "omitted_active": omitted, "omitted_worktrees": max(0, len(wts) - 60),
                   "freshness": freshness(repo, cfg["remote"], captured_config=captured_config)}
-        result["history"] = _history_page(repo, snap, 0)
+        result["history"] = first_page
         return result
 
 

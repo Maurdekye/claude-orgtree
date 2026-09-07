@@ -486,6 +486,63 @@ class GitWorkspaceTests(unittest.TestCase):
         gw.fetch(f.slug, f.rid)
         self.assertEqual(gw.freshness(gw.repository(f.slug, f.rid), "origin")["state"], "not_watched")
 
+    def test_scheduler_caps_two_distinct_running_repositories(self):
+        fixtures = [Fixture() for _ in range(3)]
+        self.assertEqual(len({f.repo["common"] for f in fixtures}), 3)
+        scheduler = gw.FetchScheduler()
+        appsettings.set_git_periodic_fetch_enabled(True)
+        entered = [threading.Event(), threading.Event()]
+        release = threading.Event(); calls = []; actual = gw.fetch
+        def held(slug, rid):
+            calls.append(rid)
+            for index, f in enumerate(fixtures[:2]):
+                if rid == f.rid:
+                    entered[index].set()
+                    if not release.wait(10): raise AssertionError("INERT: release timed out")
+            return actual(slug, rid)
+        try:
+            with patch.object(gw, "fetch", side_effect=held):
+                for index, f in enumerate(fixtures[:2]):
+                    self.assertTrue(scheduler.request(f.slug, f.rid, 100))
+                    self.assertTrue(entered[index].wait(5), "INERT: concurrent fetch never started")
+                third = fixtures[2]
+                self.assertFalse(scheduler.request(third.slug, third.rid, 100), "Two DISTINCT running keys must fill the cap")
+                self.assertEqual(set(calls), {f.rid for f in fixtures[:2]})
+                release.set(); scheduler.stop()
+                self.assertTrue(scheduler.request(third.slug, third.rid, 101), "Freed capacity must accept the third key")
+                scheduler.stop()
+                self.assertEqual(set(calls), {f.rid for f in fixtures})
+                self.assertTrue(all(gw.repository(f.slug, f.rid)["observations"] for f in fixtures))
+        finally:
+            release.set(); scheduler.stop()
+
+    def test_scheduler_disable_after_acceptance_before_fetch_start(self):
+        f = Fixture(); scheduler = gw.FetchScheduler()
+        appsettings.set_git_periodic_fetch_enabled(True)
+        accepted, release = threading.Event(), threading.Event()
+        actual_thread = threading.Thread
+        class GatedThread(actual_thread):
+            def run(self):
+                if self.name == "git-fetch":
+                    accepted.set()
+                    if not release.wait(10): raise AssertionError("INERT: release timed out")
+                super().run()
+        try:
+            with patch.object(gw.threading, "Thread", GatedThread), patch.object(gw, "fetch", wraps=gw.fetch) as fetch:
+                self.assertTrue(scheduler.request(f.slug, f.rid, 100))
+                self.assertTrue(accepted.wait(5), "INERT: accepted job never reached gate")
+                appsettings.set_git_periodic_fetch_enabled(False)
+                release.set(); scheduler.stop()
+                self.assertEqual(fetch.call_count, 0, "A job disabled after acceptance must not fetch")
+                self.assertEqual(gw.repository(f.slug, f.rid)["observations"], {})
+                appsettings.set_git_periodic_fetch_enabled(True)
+                self.assertTrue(scheduler.request(f.slug, f.rid, 131))
+                scheduler.stop()
+                self.assertEqual(fetch.call_count, 1, "Positive enabled control must run a real fixture fetch")
+                self.assertTrue(gw.repository(f.slug, f.rid)["observations"])
+        finally:
+            release.set(); scheduler.stop()
+
     def test_qualified_many_to_many_links_and_historical_owner(self):
         from orgtree.ledger import USER
         f = Fixture()
@@ -553,9 +610,11 @@ class GitWorkspaceTests(unittest.TestCase):
         git(detached, "mv", "first.txt", "renamed & literal$(echo).txt")
         states = f.snapshot()["worktrees"]
         renamed = next(w for w in states if w.get("detached"))
-        self.assertEqual(renamed["changes"]["files"][0]["old_path"], "first.txt")
-        self.assertEqual(renamed["changes"]["files"][0]["path"], "renamed & literal$(echo).txt")
-        self.assertEqual(next(w for w in states if not w.get("detached"))["changes"]["count"], 0)
+        self.assertTrue(all(w["changes"]["state"] == "not_read" and w["changes"]["count"] is None for w in states))
+        details = gw.changes(f.repo, renamed)
+        self.assertEqual(details["files"][0]["old_path"], "first.txt")
+        self.assertEqual(details["files"][0]["path"], "renamed & literal$(echo).txt")
+        self.assertEqual(gw.changes(f.repo, next(w for w in states if not w.get("detached")))["count"], 0)
         git(f.clone, "checkout", "-b", "conflict")
         f.commit(f.clone, "first.txt", "side\n")
         git(f.clone, "checkout", "main")
@@ -644,23 +703,98 @@ class GitWorkspaceTests(unittest.TestCase):
         self.assertEqual(merge["lane"]["offset"], 0)
         self.assertTrue(all(parent in nodes for parent in merge["parents"]))
 
-    def test_snapshot_rejects_checkout_change_even_when_refs_stay_fixed(self):
+    def test_snapshot_retains_captured_checkout_when_checkout_moves(self):
         f = Fixture()
         tip = f.commit(f.clone, "second.txt", "second\n")
         git(f.clone, "checkout", "--detach", "HEAD~1")
-        actual = gw.changes
+        actual = gw.worktrees
         switched = False
-        def move_checkout(repo, wt):
+        def move_checkout(repo):
             nonlocal switched
-            result = actual(repo, wt)
+            result = actual(repo)
             if not switched:
                 switched = True
                 git(f.clone, "checkout", "--detach", tip)
             return result
-        with patch.object(gw, "changes", side_effect=move_checkout):
-            with self.assertRaisesRegex(gw.GitError, "checkouts changed during scan"):
-                f.snapshot()
+        with patch.object(gw, "worktrees", side_effect=move_checkout):
+            snap = f.snapshot()
+        self.assertTrue(switched, "Checkout movement control must execute")
+        self.assertTrue(snap["newer_available"])
+        self.assertNotEqual(snap["worktrees"][0]["oid"], tip)
         self.assertEqual(f.snapshot()["worktrees"][0]["oid"], tip)
+
+    def test_advancing_refs_preserve_capture_paging_and_revalidate_actions(self):
+        f = Fixture(); f.history(3005)
+        newer = git(f.clone, "rev-parse", "long")
+        captured = git(f.clone, "rev-parse", "long~1")
+        git(f.clone, "update-ref", "refs/heads/main", captured)
+        actual = gw.refs
+        moved = False
+        def advancing(repo, *args, **kwargs):
+            nonlocal moved
+            rows = actual(repo, *args, **kwargs)
+            if not moved:
+                moved = True
+                git(f.clone, "update-ref", "refs/heads/main", newer)
+            return rows
+        with patch.object(gw, "refs", side_effect=advancing), patch.object(gw, "changes", side_effect=AssertionError("Initial read scanned checkout files")):
+            snap = f.snapshot(selected=["refs/heads/main"])
+        self.assertTrue(moved, "Advancing ref control must execute")
+        self.assertTrue(snap["newer_available"])
+        self.assertEqual(f.branch(snap)["oid"], captured)
+        self.assertLessEqual(snap["captured_at"], snap["created"])
+        self.assertTrue(all(w["changes"]["count"] is None for w in snap["worktrees"]))
+        # Each page sees another real ref write. Captured ranks/OIDs survive;
+        # new descendants never appear in this token's pages.
+        nodes = snap["history"]["nodes"][:]; cursor = snap["history"]["next_cursor"]
+        pages = 0
+        while cursor:
+            git(f.clone, "update-ref", "refs/heads/main", newer if pages % 2 else captured)
+            page = gw.history(f.slug, f.rid, cursor)
+            nodes.extend(page["nodes"]); cursor = page["next_cursor"]; pages += 1
+        self.assertGreater(pages, 20)
+        self.assertEqual(len(nodes), snap["total_commits"])
+        self.assertEqual(len({n["oid"] for n in nodes}), len(nodes))
+        self.assertIn(captured, {n["oid"] for n in nodes})
+        # A simultaneously inventoried checkout may already contain the newer
+        # OID, but branch comparison membership must remain at the captured tip.
+        self.assertNotIn("refs/heads/main", next((n for n in nodes if n["oid"] == newer), {}).get("comparisons", {}))
+        self.assertEqual(sorted(n["rank"] for n in nodes), list(range(len(nodes))))
+        git(f.clone, "update-ref", "refs/heads/main", newer)
+        with self.assertRaisesRegex(gw.GitError, "Branch changed since"):
+            gw.operate(f.slug, f.rid, "push", snap["token"], "refs/heads/main")
+        current = f.snapshot(selected=["refs/heads/main"])
+        self.assertEqual(f.branch(current)["oid"], newer)
+        self.assertEqual(gw.operate(f.slug, f.rid, "push", current["token"], "refs/heads/main")["after"], newer)
+
+    def test_on_demand_checkout_details_are_current_and_detect_switch(self):
+        from orgtree import gitapi
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        f = Fixture(); app = FastAPI(); app.include_router(gitapi.router); client = TestClient(app)
+        snap = f.snapshot(); wt = snap["worktrees"][0]
+        self.assertEqual(wt["changes"]["state"], "not_read")
+        (f.clone / "after-capture.txt").write_text("untracked\n")
+        url = f"/api/orgs/{f.slug}/git/{f.rid}/worktrees/{wt['id']}/changes"
+        dirty = client.get(url)
+        self.assertEqual(dirty.status_code, 200, dirty.text)
+        self.assertEqual(dirty.json()["state"], "dirty")
+        self.assertEqual(dirty.json()["files"][0]["path"], "after-capture.txt")
+        self.assertGreaterEqual(dirty.json()["read_at"], snap["captured_at"])
+        self.assertEqual(dirty.json()["head_oid"], wt["oid"])
+        with self.assertRaisesRegex(gw.GitError, "after-capture.txt"):
+            gw.operate(f.slug, f.rid, "pull", snap["token"], "refs/heads/main")
+        git(f.clone, "branch", "other")
+        actual = gw.changes
+        def switched(repo, checkout):
+            result = actual(repo, checkout)
+            git(f.clone, "checkout", "other")
+            return result
+        with patch.object(gw, "changes", side_effect=switched):
+            changed = client.get(url)
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertIn("Checkout changed", changed.text)
+        self.assertEqual(client.get(url).json()["branch"], "refs/heads/other")
 
 
 if __name__ == "__main__":
