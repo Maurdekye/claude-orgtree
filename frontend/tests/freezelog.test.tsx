@@ -14,11 +14,14 @@
  * §0 install writes a start entry naming the path, and the entry has the tab
  * §1 frame gaps: below threshold nothing, at/above threshold one entry, ms exact
  * §2 the ring holds the last 200 and drops the oldest first
- * §3 a hidden tab's gap is not a freeze; visibility itself is recorded
+ * §2b churn (visibility/lifecycle) is evicted before any gap or longtask
+ * §2c a refused write keeps the newest few, never nothing
+ * §3 the hidden interval is never measured; returning-to-first-frame is, attributed
+ * §3b a lifecycle event starts an attributed interval too
  * §4 lifecycle events (pagehide/pageshow/freeze/resume) are recorded
  * §5 stop() detaches: no frames and no events are recorded afterwards
  * §6 corrupt storage reads as empty rather than throwing
- * §6b two tabs write their own rings: neither can drop the other's entry
+ * §6b two tabs write their own rings: neither can drop the other's entry; merge is by time; legacy key cleared
  * §6c retention: stale rings and rings beyond the 10 most recent are pruned at install
  * §7 the page: newest first, the empty state, Clear empties storage
  * §8 the path test: /debug/freezes with and without the kiosk prefix
@@ -36,6 +39,11 @@ import FreezeLogPage, { isFreezeLogPath } from '../src/FreezeLogPage'
 
 /** A hand-cranked frame source: `tick(ms)` advances the clock and delivers
  *  the pending frame callback, exactly once, at the new time. */
+// every recorder a test installs is stopped after it, so a failing assertion
+// before its own stop() cannot leak listeners into the next test
+const active: Array<() => void> = []
+test.afterEach(() => { for (const s of active.splice(0)) s() })
+
 function rig(opts: { thresholdMs?: number; cap?: number } = {}) {
   let t = 1000
   let pending: ((t: number) => void) | null = null
@@ -51,6 +59,7 @@ function rig(opts: { thresholdMs?: number; cap?: number } = {}) {
     pending = null
     cb?.(t)
   }
+  active.push(stop)
   return { tick, stop, hasPendingFrame: () => pending !== null }
 }
 
@@ -101,23 +110,87 @@ test('§2 the ring keeps the last 200 and drops the oldest first', () => {
   r.stop()
 })
 
-test('§3 a hidden tab\'s gap is not a freeze, the visibility change itself is, and the next real gap still counts', () => {
+test('§2b over cap, visibility and lifecycle entries are evicted before any gap', () => {
+  const r = rig({ thresholdMs: 100, cap: 50 })
+  r.tick(802)   // the freeze the log exists to keep
+  for (let i = 0; i < 210; i++) document.dispatchEvent(new Event('visibilitychange'))
+  let log = readFreezeLog()
+  assert.equal(log.length, 50)
+  assert.ok(log.some((e) => e.kind === 'gap' && e.ms === 802), 'the freeze survived 210 visibility events')
+  assert.ok(log.some((e) => e.kind === 'start'), 'the start entry survived too')
+  assert.equal(log.filter((e) => e.kind === 'visibility').length, 48)
+  // and when only high-value entries remain, the oldest of them goes
+  for (let i = 0; i < 60; i++) r.tick(100 + i)
+  log = readFreezeLog()
+  assert.equal(log.length, 50)
+  assert.equal(log.filter((e) => e.kind === 'visibility').length, 0)
+  assert.ok(!log.some((e) => e.kind === 'start'), 'start was the oldest high-value entry and went first')
+  assert.ok(!log.some((e) => e.ms === 802), 'then the 802 ms gap, the next oldest')
+  r.stop()
+})
+
+test('§2c when storage refuses the write, the newest few entries are kept rather than none', () => {
+  let refuse = false
+  const inner = localStorage
+  const flaky: Storage = {
+    get length() { return inner.length },
+    key: (i) => inner.key(i),
+    getItem: (k) => inner.getItem(k),
+    removeItem: (k) => inner.removeItem(k),
+    clear: () => inner.clear(),
+    setItem: (k, v) => {
+      if (refuse && v.length > 3000) throw new Error('QuotaExceededError')
+      inner.setItem(k, v)
+    },
+  }
+  let t = 1000
+  let pending: ((t: number) => void) | null = null
+  const stop = installFreezeLog({ thresholdMs: 100, storage: flaky, now: () => t, raf: (cb) => { pending = cb; return 1 }, caf: () => { pending = null } })
+  active.push(stop)
+  const tick = (ms: number) => { t += ms; const cb = pending; pending = null; cb?.(t) }
+  for (let i = 0; i < 40; i++) tick(150)
+  assert.equal(readFreezeLog().length, 41)
+  refuse = true
+  tick(777)
+  const log = readFreezeLog()
+  assert.equal(log.length, 20, 'fell back to the newest 20')
+  assert.equal(log[log.length - 1]!.ms, 777, 'and the entry being recorded is among them')
+  stop()
+})
+
+test('§3 the hidden interval is never a gap; the interval from returning to the first frame is, and says so', () => {
   const r = rig({ thresholdMs: 250 })
   const doc = document as unknown as { visibilityState: string }
   Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
   document.dispatchEvent(new Event('visibilitychange'))
-  r.tick(5000)   // the tab was away for five seconds: no frames were painted
+  r.tick(5000)   // a frame while hidden (browsers paint none): must not measure
   Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   document.dispatchEvent(new Event('visibilitychange'))
-  r.tick(3000)   // first frame after coming back: also not a freeze
-  let kinds = readFreezeLog().map((e) => `${e.kind}:${e.detail}`)
-  assert.deepEqual(kinds.slice(1), ['visibility:hidden', 'visibility:visible'],
-    `no gap may be recorded across a hidden tab, got ${kinds.join(' | ')}`)
+  let log = readFreezeLog()
+  assert.deepEqual(log.slice(1).map((e) => `${e.kind}:${e.detail}`), ['visibility:hidden', 'visibility:visible'],
+    `nothing may be measured across a hidden tab, got ${log.map((e) => e.detail).join(' | ')}`)
+  r.tick(3000)   // first frame after coming back: three seconds late IS a freeze, attributed
+  log = readFreezeLog()
+  const back = log[log.length - 1]!
+  assert.equal(back.kind, 'gap')
+  assert.equal(back.ms, 3000)
+  assert.equal(back.detail, '3000 ms from visibility visible to the first frame')
   r.tick(16)
   r.tick(400)
-  kinds = readFreezeLog().map((e) => e.kind)
-  assert.equal(kinds[kinds.length - 1], 'gap', 'a real gap after the tab is back is still recorded')
+  const next = readFreezeLog().pop()!
+  assert.equal(next.detail, '400 ms between frames', 'an ordinary gap afterwards is unattributed')
   assert.equal(doc.visibilityState, 'visible')
+  r.stop()
+})
+
+test('§3b a lifecycle event also starts an attributed interval', () => {
+  const r = rig({ thresholdMs: 250 })
+  r.tick(16)
+  window.dispatchEvent(new Event('resume'))
+  r.tick(900)
+  const e = readFreezeLog().pop()!
+  assert.equal(e.kind, 'gap')
+  assert.equal(e.detail, '900 ms from resume to the first frame')
   r.stop()
 })
 
@@ -173,9 +246,21 @@ test('§6b two tabs keep separate rings, and reading merges them by time', () =>
   assert.deepEqual(readTabFreezeLog(tabB).map((e) => e.kind), ['start', 'gap'])
   assert.equal(readFreezeLog().length, 4, 'the merged view has both')
   assert.equal(readTabFreezeLog(tabB).find((e) => e.kind === 'gap')!.ms, 500)
+  // merge order is BY TIME, not by key: interleave the two rings and read
+  const mk = (tab: string, at: number, ms: number) => ({ at, kind: 'gap' as const, detail: `${ms}`, vis: 'visible', tab, ms })
+  localStorage.setItem(freezeLogKey(tabA), JSON.stringify([mk(tabA, 10, 1), mk(tabA, 30, 3)]))
+  localStorage.setItem(freezeLogKey(tabB), JSON.stringify([mk(tabB, 20, 2), mk(tabB, 40, 4)]))
+  assert.deepEqual(readFreezeLog().map((e) => e.ms), [1, 2, 3, 4], 'merged by time across tabs')
+  // the retired shared key of the first build is cleared too, and at install
+  localStorage.setItem('orgtree.freezes', '[{"at":1,"kind":"gap","detail":"legacy","vis":"visible","tab":"x"}]')
   clearFreezeLog()
   assert.equal(localStorage.getItem(freezeLogKey(tabA)), null, 'Clear removes every tab ring')
   assert.equal(localStorage.getItem(freezeLogKey(tabB)), null)
+  assert.equal(localStorage.getItem('orgtree.freezes'), null, 'Clear removes the legacy shared ring')
+  localStorage.setItem('orgtree.freezes', '[]')
+  const c = rig()
+  assert.equal(localStorage.getItem('orgtree.freezes'), null, 'install removes the legacy shared ring')
+  c.stop()
 })
 
 test('§6c retention at install: rings older than 7 days go, only the 10 most recent tabs stay, the installing tab is never pruned', () => {
@@ -183,19 +268,22 @@ test('§6c retention at install: rings older than 7 days go, only the 10 most re
   const seed = (tab: string, at: number) =>
     localStorage.setItem(freezeLogKey(tab), JSON.stringify([{ at, kind: 'start', detail: '/', vis: 'visible', tab }]))
   seed('stale', now - FREEZE_LOG_MAX_AGE_MS - 1)
+  seed('me', now - FREEZE_LOG_MAX_AGE_MS - 5000)   // the installing tab's own: stale AND oldest of all
   for (let i = 0; i < 12; i++) seed(`t${i}`, now - (i + 1) * 1000)   // t0 newest ... t11 oldest
   pruneFreezeLog(localStorage, now, 'me')
   const left = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)!)
     .filter((k) => k.startsWith(FREEZE_LOG_PREFIX)).sort()
   assert.ok(!left.includes(freezeLogKey('stale')), 'the stale ring is gone')
-  assert.equal(left.length, FREEZE_LOG_TABS_KEPT - 1, 'nine others stay beside the installing tab')
+  assert.ok(left.includes(freezeLogKey('me')), "the installing tab's own ring is never pruned, however old")
+  assert.equal(left.length, FREEZE_LOG_TABS_KEPT, 'nine others stay beside the installing tab')
   assert.ok(!left.includes(freezeLogKey('t9')) && !left.includes(freezeLogKey('t11')), 'the oldest were dropped')
   assert.ok(left.includes(freezeLogKey('t0')) && left.includes(freezeLogKey('t8')))
-  // and install itself prunes: a fresh install with 12 rings present leaves 9 + its own
+  // and install itself prunes: a fresh tab installing over 10 present rings leaves 9 + its own
   const r = rig()
   const after = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)!)
     .filter((k) => k.startsWith(FREEZE_LOG_PREFIX))
   assert.equal(after.length, FREEZE_LOG_TABS_KEPT)
+  assert.ok(!after.includes(freezeLogKey('me')), "'me' was the oldest ring and this fresh tab is not 'me'")
   r.stop()
 })
 

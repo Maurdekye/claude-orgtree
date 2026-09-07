@@ -161,17 +161,31 @@ const CONCURRENCY = process.env.ORGTREE_TEST_CONCURRENCY ?? '4'
 // the incident's rate rather than at 66 GB. Run limit 5 min: the whole suite is
 // ~36 s wall, so ~8x. Both scale with --reps like the per-test timeout does.
 // ORGTREE_TEST_JOB_MB overrides the ceiling (0 = no ceiling); ORGTREE_TEST_
-// RUN_TIMEOUT_MS overrides the run limit (0 = none). Without the job (non-
-// Windows, or ceiling 0) the run limit still applies through spawnSync's own
-// timeout, which bounds the direct child only.
+// RUN_TIMEOUT_MS overrides the run limit (0 = none). Both reach this file
+// through tools/run_tests.py too: its child_env() strips ORGTREE_* but
+// exempts ORGTREE_TEST_*. Without the job (non-Windows, or ceiling 0) the run
+// limit still applies through spawnSync's own timeout, which bounds the
+// direct child only — and that path SAYS it is uncontained, because an
+// uncontained run that looks like a contained one is the guard that reads
+// right and means nothing. A malformed override is refused, not read as 0.
 //
 // `containment.test.ts` is the positive control: it runs a planted allocator
 // under a 512 MB ceiling and asserts it DIES with the allocation error, runs
 // the same allocator under no ceiling and asserts it FINISHES, and runs a
-// sleeper past a 2 s run limit and asserts exit 124 with no survivor. A guard
-// that has never been seen to fire is not a guard (team rule 2).
-const JOB_MB = Number(process.env.ORGTREE_TEST_JOB_MB ?? '6144')
-const RUN_TIMEOUT_MS = Number(process.env.ORGTREE_TEST_RUN_TIMEOUT_MS ?? String(300_000 * REPS_N))
+// sleeper with a detached child past a 2 s run limit and asserts exit 124
+// with no survivor. A guard that has never been seen to fire is not a guard
+// (team rule 2).
+const envInt = (name, dflt) => {
+  const raw = process.env[name]
+  if (raw === undefined) return dflt
+  if (!/^\d+$/.test(raw.trim())) {
+    console.error(`[run.mjs] ${name}=${JSON.stringify(raw)} is not a whole number of ${name.endsWith('_MS') ? 'milliseconds' : 'MB'}; refusing to guess`)
+    process.exit(2)
+  }
+  return Number(raw.trim())
+}
+const JOB_MB = envInt('ORGTREE_TEST_JOB_MB', 6144)
+const RUN_TIMEOUT_MS = envInt('ORGTREE_TEST_RUN_TIMEOUT_MS', 300_000 * REPS_N)
 
 const files = readdirSync(out).filter((f) => f.endsWith('.mjs'))
 // --test-force-exit: React's scheduler holds a ref'd MessageChannel open for
@@ -202,9 +216,15 @@ if (process.platform === 'win32' && JOB_MB > 0) {
     '-ArgFile', argFile], { stdio: 'inherit', env })
   if (r.error || r.status !== 0) {
     if (r.error) console.error(`[run.mjs] could not start joblimit.ps1: ${r.error.message}`)
+    // a ceiling that fires can leave NO output at all (the child dies before
+    // its reporter writes), so name the bounds as candidate causes here
+    else console.error(`[run.mjs] test job exited ${r.status}. If there is no test output above, the ${JOB_MB} MB job ceiling or the ${RUN_TIMEOUT_MS} ms run limit is the likely cause (ORGTREE_TEST_JOB_MB / ORGTREE_TEST_RUN_TIMEOUT_MS; 0 disables).`)
     process.exit(1)
   }
 } else {
+  console.error(`[run.mjs] containment OFF: ${process.platform !== 'win32'
+    ? `no Job Object launcher on ${process.platform}`
+    : 'ORGTREE_TEST_JOB_MB=0'}; run limit ${RUN_TIMEOUT_MS > 0 ? `${RUN_TIMEOUT_MS} ms on the direct child only` : 'none'}`)
   const r = spawnSync(process.execPath, nodeArgs, {
     stdio: 'inherit', env,
     ...(RUN_TIMEOUT_MS > 0 ? { timeout: RUN_TIMEOUT_MS, killSignal: 'SIGKILL' } : {}),

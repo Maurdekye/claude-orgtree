@@ -102,7 +102,7 @@ if (-not $proc) { throw "[joblimit] failed to start $Exe" }
 if (-not [OrgtreeTestJob]::AssignProcessToJobObject($job, $proc.Handle)) {
     $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     try { $proc.Kill() } catch {}
-    throw "[joblimit] AssignProcessToJobObject failed ($err) - child killed rather than left running unlimited"
+    throw "[joblimit] AssignProcessToJobObject failed ($err) - child killed rather than left running unlimited. If this machine cannot nest a job (a restrictive outer job), run with ORGTREE_TEST_JOB_MB=0 to skip the launcher."
 }
 
 $code = 0

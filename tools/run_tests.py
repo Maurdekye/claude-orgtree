@@ -373,8 +373,15 @@ class Result:
 
 def child_env():
     env = dict(os.environ)
-    # no suite may inherit a pointer at the operator's real deployment
-    for k in [k for k in env if k.startswith("ORGTREE_")]:
+    # no suite may inherit a pointer at the operator's real deployment.
+    # ORGTREE_TEST_* is the one exemption: those are the frontend runner's own
+    # knobs (reps, per-test timeout, concurrency, job memory ceiling, run
+    # limit — see frontend/tests/run.mjs), none of them names a data root,
+    # and stripping them made every override the README documents a no-op
+    # through this runner (redteam-opus, 2026-09-07: ORGTREE_TEST_JOB_MB=0
+    # still logged a 6144 MB ceiling).
+    for k in [k for k in env
+              if k.startswith("ORGTREE_") and not k.startswith("ORGTREE_TEST_")]:
         env.pop(k)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"

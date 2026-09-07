@@ -11,8 +11,9 @@
 //   longtask   a PerformanceObserver 'longtask' entry, where the browser
 //              supports it (Chrome): the main thread held for ≥50 ms, with
 //              the attribution the browser gives
-//   visibility document.visibilityState changed — the frame gap that follows
-//              a hidden tab is NOT a freeze, and is not recorded as one
+//   visibility document.visibilityState changed — the time a hidden tab spent
+//              hidden is NOT a freeze and is never measured; the interval from
+//              the change to the first frame after it IS, and says so
 //   lifecycle  pagehide / pageshow / freeze / resume (Page Lifecycle API):
 //              the events around a tab being discarded or restored
 //   start      the recorder was installed — one per page load, so a reload
@@ -64,6 +65,7 @@ export interface FreezeEntry {
 export const FREEZE_LOG_PREFIX = 'orgtree.freezes.'
 export const freezeLogKey = (tab: string): string => FREEZE_LOG_PREFIX + tab
 const TAB_KEY = 'orgtree.freezes-tab'   // sessionStorage: this tab's id (not under the prefix)
+const LEGACY_KEY = 'orgtree.freezes'    // the one shared ring of the first build; removed at install and by Clear
 export const FREEZE_LOG_CAP = 200
 export const FREEZE_LOG_TABS_KEPT = 10
 export const FREEZE_LOG_MAX_AGE_MS = 7 * 24 * 3600 * 1000
@@ -114,6 +116,7 @@ export function readTabFreezeLog(tab: string, storage: Storage = localStorage): 
 
 export function clearFreezeLog(storage: Storage = localStorage): void {
   for (const k of tabKeys(storage)) storage.removeItem(k)
+  storage.removeItem(LEGACY_KEY)
 }
 
 /** Retention: drop tab rings whose newest entry is older than maxAge, then
@@ -148,10 +151,24 @@ function tabId(win: Window): string {
   }
 }
 
-function heapMb(): number | undefined {
-  const mem = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory
+function heapMb(win: Window): number | undefined {
+  const mem = (win.performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory
   const used = mem?.usedJSHeapSize
   return typeof used === 'number' ? Math.round(used / 1048576) : undefined
+}
+
+/** Eviction order when a ring is over cap: the churn kinds first. A day of
+ *  tab switching is hundreds of visibility entries, and the freeze they
+ *  would otherwise push out is the one the log exists to keep (redteam-opus
+ *  FL1, 2026-09-07: a real 802 ms gap was gone after 210 visibility events).
+ *  `visibility` and `lifecycle` go first, oldest first; only when none is
+ *  left does the oldest gap/longtask/start go. */
+const CHURN: ReadonlySet<FreezeKind> = new Set<FreezeKind>(['visibility', 'lifecycle'])
+export function trimRing(ring: FreezeEntry[], cap: number): void {
+  while (ring.length > cap) {
+    const i = ring.findIndex((e) => CHURN.has(e.kind))
+    ring.splice(i >= 0 ? i : 0, 1)
+  }
 }
 
 /** Start recording. Returns a function that stops it (and detaches every
@@ -164,63 +181,81 @@ export function installFreezeLog(opts: FreezeLogOptions = {}): () => void {
   const storage = opts.storage ?? localStorage
   const raf = opts.raf ?? ((cb) => win.requestAnimationFrame(cb))
   const caf = opts.caf ?? ((id) => win.cancelAnimationFrame(id))
-  const now = opts.now ?? (() => performance.now())
+  const now = opts.now ?? (() => win.performance.now())
   const tab = tabId(win)
   const key = freezeLogKey(tab)
 
   const record = (kind: FreezeKind, detail: string, ms?: number): void => {
     const entry: FreezeEntry = { at: Date.now(), kind, detail, vis: doc.visibilityState, tab }
     if (ms !== undefined) entry.ms = Math.round(ms)
-    const heap = heapMb()
+    const heap = heapMb(win)
     if (heap !== undefined) entry.heap_mb = heap
     try {
       // this tab's ring only: no other tab writes this key, so the
       // read-modify-write cannot lose anyone else's entry
       const ring = safeParse(storage.getItem(key))
       ring.push(entry)
-      if (ring.length > cap) ring.splice(0, ring.length - cap)
-      storage.setItem(key, JSON.stringify(ring))
+      trimRing(ring, cap)
+      try {
+        storage.setItem(key, JSON.stringify(ring))
+      } catch {
+        // quota: keep the newest few rather than silently keeping nothing
+        storage.setItem(key, JSON.stringify(ring.slice(-20)))
+      }
     } catch {
-      // storage full or unavailable: an instrument must never throw into the page
+      // storage unavailable: an instrument must never throw into the page
     }
   }
 
-  try { pruneFreezeLog(storage, Date.now(), tab) } catch { /* same rule */ }
-  record('start', location.pathname)
+  try {
+    storage.removeItem(LEGACY_KEY)   // the pre-per-tab shared ring, orphaned in any profile that ran it
+    pruneFreezeLog(storage, Date.now(), tab)
+  } catch { /* same rule */ }
+  record('start', win.location.pathname)
 
   // ---- frame gaps
+  // `last` is the start of the interval being measured. A visibility or
+  // lifecycle event RESETS it, so the time the tab spent hidden (no frames
+  // are painted while hidden) is never measured as a gap — and the first
+  // interval after the tab returns IS measured, from the event to the first
+  // frame, and recorded with the event named: "I switched back and it hung
+  // for three seconds" is one of the shapes this exists to catch (redteam-
+  // opus FL2, 2026-09-07; the first cut threw that interval away). A frame
+  // that somehow arrives while the document is hidden only resets the start.
   let last = now()
-  let skipNext = doc.visibilityState !== 'visible'   // no frames while hidden
+  let sinceEvent: string | null = null   // the event the current interval started at
   let stopped = false
   let handle = 0
   const frame = (): void => {
     if (stopped) return
     const t = now()
-    if (skipNext) {
-      skipNext = false
-    } else {
+    if (doc.visibilityState !== 'hidden') {   // 'visible' — or jsdom's 'prerender' under test
       const gap = t - last
-      if (gap >= threshold) record('gap', `${Math.round(gap)} ms between frames`, gap)
+      if (gap >= threshold) {
+        record('gap', `${Math.round(gap)} ms ${sinceEvent ? `from ${sinceEvent} to the first frame` : 'between frames'}`, gap)
+      }
     }
+    sinceEvent = null
     last = t
     handle = raf(frame)
   }
   handle = raf(frame)
 
   // ---- visibility and lifecycle
+  const mark = (name: string): void => {
+    sinceEvent = name
+    last = now()
+  }
   const onVisibility = (): void => {
     record('visibility', doc.visibilityState)
-    // whichever way it went, the next frame's gap is about the tab, not a freeze
-    skipNext = true
-    last = now()
+    mark(`visibility ${doc.visibilityState}`)
   }
   doc.addEventListener('visibilitychange', onVisibility)
   const lifecycle = ['pagehide', 'pageshow', 'freeze', 'resume'] as const
   const onLifecycle = (e: Event): void => {
     const persisted = (e as { persisted?: boolean }).persisted
     record('lifecycle', e.type + (persisted === undefined ? '' : ` persisted=${persisted}`))
-    skipNext = true
-    last = now()
+    mark(e.type)
   }
   for (const ev of lifecycle) win.addEventListener(ev, onLifecycle)
 

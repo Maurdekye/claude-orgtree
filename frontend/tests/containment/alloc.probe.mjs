@@ -6,14 +6,32 @@
 //   node alloc.probe.mjs <mb>          commit <mb> of ArrayBuffer in 32 MB
 //                                      chunks, touch every page so the commit
 //                                      is real, print "held <mb> MB", exit 0
-//   node alloc.probe.mjs sleep <ms>    sit for <ms> then exit 0 (run-limit probe)
+//   node alloc.probe.mjs sleep <ms>    spawn ONE DETACHED CHILD of itself
+//                                      (`sleep-child <ms>`) carrying the same
+//                                      trailing --marker= argument, then sit
+//                                      for <ms>; print "slept", exit 0
+//   node alloc.probe.mjs sleep-child <ms>   the child: sit for <ms>, exit 0
+//
+// The detached child is the point of the sleep mode: `node --test` has
+// children, and killing only the launched parent leaves them running. A
+// detached grandchild that survives is what the run-limit test looks for by
+// its marker (redteam-opus C2, 2026-09-07: without it, TerminateJobObject and
+// KILL_ON_JOB_CLOSE could each be deleted and no test noticed).
 //
 // ArrayBuffer on purpose: it is EXTERNAL to V8's heap, the memory class
 // --max-old-space-size cannot bound and the one the 2026-08-29 incident was
 // made of (D-177).
-const [mode, arg] = process.argv.slice(2)
-if (mode === 'sleep') {
-  setTimeout(() => { console.log('slept'); process.exit(0) }, Number(arg))
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const [mode, arg, ...rest] = process.argv.slice(2)
+if (mode === 'sleep' || mode === 'sleep-child') {
+  if (mode === 'sleep') {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'sleep-child', arg, ...rest],
+      { detached: true, stdio: 'ignore' })
+    child.unref()
+  }
+  setTimeout(() => { console.log(mode === 'sleep' ? 'slept' : 'child slept'); process.exit(0) }, Number(arg))
 } else {
   const mb = Number(mode)
   const held = []

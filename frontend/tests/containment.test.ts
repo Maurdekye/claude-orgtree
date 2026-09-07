@@ -74,16 +74,28 @@ test('§2 the same 640 MB under no ceiling finishes and reports what it held', {
   assert.match(r.out, /\[joblimit\] memory ceiling = none/, r.out)
 })
 
-test('§3 a sleeper past a 2 s run limit exits 124 promptly and leaves no survivor', { skip }, () => {
+/** node.exe processes whose command line contains `needle` — `@()` so one
+ *  match counts as 1, not as an empty string. */
+function nodeCount(needle: string): string {
+  const q = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
+    `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${needle}*' }).Count`],
+  { encoding: 'utf8', timeout: 30_000 })
+  return `${(q.stdout ?? '').trim()}${q.stderr ? ` [stderr: ${q.stderr.trim()}]` : ''}`
+}
+
+test('§3 a sleeper with a detached child past a 2 s run limit exits 124 promptly and leaves no survivor', { skip }, () => {
+  // positive control for the survivor query: THIS process is a node.exe whose
+  // command line names its bundle, so the query must be able to count ≥ 1
+  const self = nodeCount(path.basename(process.argv[1] ?? 'orgtree-tests'))
+  assert.ok(Number(self) >= 1, `the survivor query cannot see a running node.exe: ${self}`)
+
   const r = launch(512, 2, ['sleep', '30000'])
   assert.equal(r.status, 124, `expected the limiter's 124, got ${r.status}\n${r.out}`)
   assert.match(r.out, /\[joblimit\] RUN LIMIT/, r.out)
   assert.doesNotMatch(r.out, /slept/, `the sleeper finished, so nothing was terminated:\n${r.out}`)
   assert.ok(r.elapsedMs < 15_000, `terminated far too late: ${r.elapsedMs} ms`)
-  // survivors: any node.exe still carrying this launch's marker on its command line
-  const q = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
-    `(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${r.marker}*' }).Count`],
-  { encoding: 'utf8', timeout: 30_000 })
-  assert.equal((q.stdout ?? '').trim(), '0',
-    `a process from the terminated job survived: ${q.stdout} ${q.stderr}`)
+  // survivors: the launched parent AND its detached child both carry the
+  // marker; the child is what a parent-only kill would leave behind
+  const left = nodeCount(r.marker)
+  assert.equal(left, '0', `a process from the terminated job survived (count=${left})`)
 })

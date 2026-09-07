@@ -650,10 +650,16 @@ both scaled by `--reps`. An allocation past the ceiling is refused by the
 kernel and the offending child dies with `Array buffer allocation failed`
 instead of swapping the machine; the time limit terminates every process in
 the job, not just the parent. `ORGTREE_TEST_JOB_MB` overrides the ceiling
-(`0` = no ceiling), `ORGTREE_TEST_RUN_TIMEOUT_MS` the run limit (`0` = none).
-`frontend/tests/containment.test.ts` is the positive control: it proves the
-ceiling kills a planted allocator, that no ceiling lets it finish, and that
-the run limit leaves no survivor.
+(`0` = no ceiling), `ORGTREE_TEST_RUN_TIMEOUT_MS` the run limit (`0` = none);
+both work through `tools/run_tests.py` as well as a direct `node
+tests/run.mjs` (its child environment strips `ORGTREE_*` but exempts
+`ORGTREE_TEST_*`). A value that is not a whole number is refused rather than
+read as `0`, and a run without the job says so (`[run.mjs] containment OFF`)
+so an uncontained run never looks like a contained one. If the launcher
+cannot create the job on a machine, `ORGTREE_TEST_JOB_MB=0` is the way past
+it. `frontend/tests/containment.test.ts` is the positive control: it proves
+the ceiling kills a planted allocator, that no ceiling lets it finish, and
+that the run limit terminates a sleeper AND its detached child.
 
 **The two tiers.** The fast tier runs every suite in the cheapest mode that
 suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
