@@ -490,6 +490,69 @@ def _():
         # colour the button red beside text saying capacity is back.
         assert fz["until_ts"] is None, fz
 
+        # Open-pool freezes retain a future probe deadline when an unmarked
+        # fallback is merely eligible, rather than proven recovered.
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"] = {
+                "at": "2026-01-01T00:00:00Z",
+                "until": "unknown - probing again in ~5 min",
+                "until_ts": soon, "limit": True,
+                "pool": "open", "reset_src": "probe",
+                "schedule_kind": "probe"}
+            store.save_org(_o)
+        before_until = soon
+        fz = frozen_now()
+        assert fz["until_ts"] == soon, fz
+        assert fz["until"].startswith("capacity recheck "), fz
+        with store.DOC_LOCK:
+            assert store.load_org(K).nodes[NID]["frozen"]["until_ts"] == before_until
+
+        # Unknown provenance is still only a recheck, never a reset claim.
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"]["reset_src"] = "mystery"
+            _o.nodes[NID]["frozen"]["schedule_kind"] = "observed-deadline"
+            store.save_org(_o)
+        fz = frozen_now()
+        assert fz["until"].startswith("capacity recheck "), fz
+
+        # Expired and missing deadlines cannot invent a future retry time.
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"]["until_ts"] = _time.time() - 1
+            store.save_org(_o)
+        fz = frozen_now()
+        assert fz["until"] == "capacity available — ▶ to resume", fz
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"]["until_ts"] = None
+            store.save_org(_o)
+        fz = frozen_now()
+        assert fz["until"] == "capacity available — ▶ to resume", fz
+
+        # A dry pool still clears its old deadline after a lane appears.
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"]["until"] = "capacity recheck tomorrow"
+            _o.nodes[NID]["frozen"]["until_ts"] = soon
+            _o.nodes[NID]["frozen"]["pool"] = "dry"
+            store.save_org(_o)
+        fz = frozen_now()
+        assert fz["until"] == "capacity available — ▶ to resume", fz
+        assert fz["until_ts"] is None, fz
+
+        # A malformed deadline is ignored rather than raising or inventing a
+        # future retry time.
+        with store.DOC_LOCK:
+            _o = store.load_org(K)
+            _o.nodes[NID]["frozen"]["pool"] = "open"
+            _o.nodes[NID]["frozen"]["until_ts"] = "not-a-timestamp"
+            store.save_org(_o)
+        fz = frozen_now()
+        assert fz["until"] == "capacity available — ▶ to resume", fz
+        assert fz["until_ts"] is None, fz
+
         # ③ no lane exists AT ALL (nobody signed in, no key rows) → there is
         # no real T. It must say so rather than compute a plausible one.
         accounts.live_identity = lambda: {"uuid": "", "email": ""}

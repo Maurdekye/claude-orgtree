@@ -9293,6 +9293,13 @@ class Org:
                                          # carrying both flags waits on the
                                          # auto_resume toggle
                                          "connection", "limit",
+                                         # D-241: the API projection needs the
+                                         # freeze-time pool and deadline source
+                                         # to avoid erasing a valid retry when
+                                         # an unmarked fallback is merely
+                                         # eligible. These are non-secret
+                                         # scheduling facts.
+                                         "pool", "schedule_kind", "reset_src",
                                          # D-156: WHY, when the answer is not
                                          # "capacity ran out". "auth" = the
                                          # credential was rejected, so the

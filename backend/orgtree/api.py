@@ -1466,6 +1466,25 @@ def _rederive_freeze_reset(node: dict[str, Any],
         cache[tier] = accounts.resolve(tier)
     got = cache[tier]
     if got.get("available"):
+        # An open pool can still contain an unmarked fallback whose capacity
+        # is not observable until a turn is attempted. Do not erase a valid
+        # retry deadline merely because routing still sees that lane as
+        # eligible. A probe is a bounded recheck, not a reset promise.
+        if fz.get("pool") == "open":
+            try:
+                ts = float(fz.get("until_ts") or 0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            now = time.time()
+            if now < ts <= now + limits.MAX_HORIZON:
+                src = str(fz.get("reset_src") or "")
+                kind = str(fz.get("schedule_kind") or "")
+                if (kind == "probe" or src not in ("provider", "text")
+                        and not src.startswith("usage:")):
+                    fz["until"] = "capacity recheck " + supervisor._reset_label(ts)
+                else:
+                    fz["until"] = "capacity resets " + supervisor._reset_label(ts)
+                return
         fz["until"], fz["until_ts"] = "capacity available — ▶ to resume", None
         return
     ts = got.get("refresh_at")
