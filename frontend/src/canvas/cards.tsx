@@ -953,8 +953,13 @@ interface DraftNodeProps {
 
 type CharterPreset = {
   name: string; content: string; path: string
-  chars?: number; truncated?: boolean
+  chars?: number | null; truncated?: boolean
+  source?: 'repo' | 'user'; key?: string
 }
+
+// distinguishes presets whose `name` collides across the two directories —
+// `preset.key` (source:filename) is always unique, `name` alone isn't
+const presetKey = (p: CharterPreset) => p.key ?? p.name
 
 export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
   tree, zoom, pxc, onConfirm, onCancel }: DraftNodeProps) {
@@ -1081,8 +1086,8 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
           {presetLoad === 'ready' && presets.length > 0 && (
             <select className="df-preset-add" value=""
               onChange={(e) => {
-                const p = presets.find((x) => x.name === e.target.value)
-                if (p && !chosen.some((c) => c.name === p.name)) {
+                const p = presets.find((x) => presetKey(x) === e.target.value)
+                if (p && !chosen.some((c) => presetKey(c) === presetKey(p))) {
                   setChosen((cs) => [...cs, p])
                   // user spec: the FIRST chosen preset names a still-unnamed
                   // agent after itself (typing over it still works)
@@ -1090,8 +1095,12 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
                 }
               }}>
               <option value="">add charter preset…</option>
-              {presets.filter((p) => !chosen.some((c) => c.name === p.name))
-                .map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+              {presets.filter((p) => !chosen.some((c) => presetKey(c) === presetKey(p)))
+                .map((p) => (
+                  <option key={presetKey(p)} value={presetKey(p)}>
+                    {p.name}{p.source === 'user' ? ' (User defined)' : ''}
+                  </option>
+                ))}
             </select>
           )}
           {/* the picked cards live INSIDE the charter box (user spec) — they
@@ -1100,10 +1109,10 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
             {chosen.length > 0 && (
               <div className="preset-cards">
                 {chosen.map((c) => (
-                  <button key={c.name} className="preset-card"
+                  <button key={presetKey(c)} className="preset-card"
                     title={c.path ? `${c.path}\n(click to remove)` : 'click to remove'}
-                    onClick={() => setChosen((cs) => cs.filter((x) => x.name !== c.name))}>
-                    {c.name} <CloseIcon fontSize="inherit" />
+                    onClick={() => setChosen((cs) => cs.filter((x) => presetKey(x) !== presetKey(c)))}>
+                    {c.name}{c.source === 'user' ? ' (User defined)' : ''} <CloseIcon fontSize="inherit" />
                   </button>
                 ))}
               </div>

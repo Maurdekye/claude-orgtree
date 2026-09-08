@@ -89,10 +89,12 @@ looks like there is no work.
 The Claude, Codex, Antigravity and OpenRouter families sit in separate rows:
 H/S/O/F, R/L/T/S plus A when available, F/P, and one monogram chip per
 favorited OpenRouter model (its letter and colour derive from the model id).
-A dashed draft appears: name it,
-drag its credit bar to set the grant, optionally give it a **charter** (a
-standing role card — pick a named preset from `docs/charters/`, or write your
-own), and hire. The Codex and Antigravity rows become active after their local
+A dashed draft appears: name it, drag its credit bar to set the grant, optionally give it a **charter** (a
+standing role card — pick a named preset from `docs/charters/` or your own user-space charter directory
+(`ORGTREE_USER_CHARTERS`, default `<data root>/user/charters` — see `docs/configuration.md`; a user preset
+with the same filename replaces the repo preset and user-defined presets are labelled "(User defined)"), or
+write your own), and hire. The Codex and
+Antigravity rows become active after their local
 CLI is installed and signed in, the OpenRouter row once a key is set and models
 are picked; otherwise the disabled chips explain what is missing. Your hires
 cascade credits automatically down the chain; agents hire their own reports

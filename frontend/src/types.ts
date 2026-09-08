@@ -1120,7 +1120,9 @@ export interface FsPayload {
 // GET /api/charters
 // `chars` is the body's TRUE length before `content` was capped at
 // `preset_max`; `truncated` says the cap actually bit. Both exist so the hire
-// form can SAY a preset was cut — it used to be cut silently.
+// form can SAY a preset was cut — it used to be cut silently. `chars` is
+// `null` (not 0) for a file so large the backend wouldn't read it in full
+// just to measure it (READ_CAP, api.py) — the true length is then unknowable.
 // `charter_long` is NOT a limit: charters are uncapped (user ruling
 // 2026-09-04). It is the length above which the form mentions that a charter
 // rides in the agent's system prompt on every turn, so it costs tokens for
@@ -1128,7 +1130,11 @@ export interface FsPayload {
 export interface ChartersPayload {
   charters: {
     name: string; content: string; path: string
-    chars?: number; truncated?: boolean
+    chars?: number | null; truncated?: boolean
+    // "repo" (docs/charters) or "user" (a user-space directory outside the
+    // repo clone, docs/configuration.md); `key` is unique across both even
+    // when `name` collides between them
+    source?: 'repo' | 'user'; key?: string
   }[]
   preset_max?: number
   charter_long?: number
