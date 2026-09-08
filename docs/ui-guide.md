@@ -62,19 +62,19 @@ snowflake, lock, layers, fullscreen, hearing.
   kiosk, the credit cap's remaining headroom; with the org-settings
   hire-bubbling toggle off, a deeper draft caps at the parent's own free
   credits).
-- A dashed **uninitialized** draft box appears; type a name (1–2 words,
-  Enter or ✓ hires, Esc discards), optionally a short **charter** (standing
-  role notes, injected into the agent's prompt every turn; Shift+Enter for
-  newlines), and set its grant by dragging the draft's credit bar. The
-  **"add charter preset…" dropdown** lists every `.md` in `docs/charters/`
-  (the Coordinator charter ships with the repo); each pick becomes a **card
-  rendered inside the charter box** — several stack, click a card to remove
-  it, hover shows its file path. Cards are compiled into charter text at
-  hire, prepended to anything you typed below them; the first pick also
-  names a still-unnamed agent. A small ⚙ beside the name field opens the
-  **pre-hire scope panel** — the same surface as the per-agent ⚙ (folders
-  RW/RO, tools, MCP, visibility, thinking effort), prefilled with what the
-  hire would inherit anyway, staged locally and applied WITH the hire.
+- A dashed **uninitialized** draft box appears; type a name (1–2 words, Enter or ✓ hires, Esc discards),
+  optionally a short **charter** (standing role notes, injected into the agent's prompt every turn; Shift+Enter
+  for newlines), and set its grant by dragging the draft's credit bar. The **"add charter preset…" dropdown**
+  lists every `.md` in `docs/charters/` (the Coordinator charter ships with the repo) plus every `.md` in your
+  own user-space charters directory (`ORGTREE_USER_CHARTERS`, default `<data root>/user/charters` — see
+  `docs/configuration.md`), so you can add presets of your own without touching the repo clone. A user preset
+  with the same filename as a repo preset replaces it. Every preset from your user directory is labelled
+  **"(User defined)"** next to its name so its source is unambiguous. Each pick
+  becomes a **card rendered inside the charter box** — several stack, click a card to remove it, hover shows its
+  file path. Cards are compiled into charter text at hire, prepended to anything you typed below them; the first
+  pick also names a still-unnamed agent. A small ⚙ beside the name field opens the **pre-hire scope panel** — the
+  same surface as the per-agent ⚙ (folders RW/RO, tools, MCP, visibility, thinking effort), prefilled with what
+  the hire would inherit anyway, staged locally and applied WITH the hire.
 - **Confirming the hire walks you straight to the new agent's desk.** The
   camera waits for the new card to appear and settle where it belongs, then
   glides in to desk zoom on it — on a phone, the desk sheet opens instead.

@@ -37,6 +37,7 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 |---|---|---|
 | `ORGTREE_DEPLOYMENT_PROFILE` | `standard` | install-wide security policy: blank/unset/`standard` preserves ordinary behavior; `frozen` selects the [frozen deployment profile](frozen-deployment.md); surrounding whitespace and case are ignored; any other value raises `DeploymentConfigError` (`deployment.py:current_policy`) |
 | `ORGTREE_DATA` | `~/orgtree` | the data root: org docs, workspaces, scratch, sandboxes (`store.py:26`) |
+| `ORGTREE_USER_CHARTERS` | `<data root>/user/charters` | a user-space directory of charter preset `.md` files, served by `GET /api/charters` alongside the repo's own `docs/charters/` (`api.py:_user_charters_dir`) — lets you add hire-form presets without editing the repo clone; a same-filename user preset replaces the repo preset |
 | `ORGTREE_STORE` | `sqlite` | storage backend: `sqlite` (canonical default) or `json` (deprecated historical format; retained as migration on-ramp and rollback route) (`store.py:111`) |
 | `ORGTREE_MIGRATE` | unset | set to `1` to authorise offline migration of JSON orgs in `ORGTREE_DATA` to SQLite (`store.py:120`) |
 | `ORGTREE_PORT` | `7360` | admin API + UI, bound to loopback unless exposed below (`api.py:368`) |
@@ -197,7 +198,11 @@ Also on the org doc but not in that panel: `max_depth` and `max_children`, both 
 | what | where | effect |
 |---|---|---|
 | **org.md** | `PUT /api/orgs/{slug}/orgmd` | the ORG CHARTER. Stored as the workspace `CLAUDE.md`; delivered in the managed system prompt of **every** agent, on **every** provider, by `supervisor._org_charter_block`. A save restarts the whole org |
-| **charter presets** | `docs/charters/*.md` | each file is a selectable preset at hire time (`api.py:1141`) |
+| **charter presets** | `docs/charters/*.md` and `ORGTREE_USER_CHARTERS` (default `<data root>/user/charters`, see ①) | each file in either directory is a selectable preset at hire time, `GET /api/charters` (`api.py:charters_list`); a user preset with the same filename replaces the repo preset and is labelled "(User defined)" |
+
+Filename shadowing is case-sensitive on every platform, including Windows. On a filesystem where names are
+case-insensitive, `Coordinator.md` in the user directory does NOT override `coordinator.md` in `docs/charters/` —
+the filenames must match exactly, so both are served as distinct presets.
 
 ---
 

@@ -78,14 +78,24 @@ def t(label):
     return deco
 
 
-def payload(dirpath):
-    """GET /api/charters against `dirpath` — the whole payload."""
-    old = api.CHARTERS_DIR
+def payload(dirpath, user_dirpath=None):
+    """GET /api/charters against `dirpath` (repo) and, if given, `user_dirpath`
+    (user-space) — the whole payload. Repo-only callers leave
+    `_user_charters_dir` unpatched: it resolves against store.DATA_ROOT, which
+    is the isolated tmpdir this file set at import (module docstring), so it
+    is a no-op — never a real developer's own presets.
+
+    `_user_charters_dir` is resolved PER CALL (not a module constant — see its
+    own docstring for why), so it is monkeypatched as a function here, not
+    assigned as a plain attribute."""
+    old_repo, old_user_fn = api.CHARTERS_DIR, api._user_charters_dir
     api.CHARTERS_DIR = dirpath
+    if user_dirpath is not None:
+        api._user_charters_dir = lambda: user_dirpath
     try:
         out = api.charters_list()
     finally:
-        api.CHARTERS_DIR = old
+        api.CHARTERS_DIR, api._user_charters_dir = old_repo, old_user_fn
     assert isinstance(out, dict) and "charters" in out, out
     return out
 
@@ -325,6 +335,230 @@ def _lengths():
         print(f"\n        note: {over} exceed the {_lg.CHARTER_LONG}-char "
               "advisory threshold. Nothing refuses or truncates them; they "
               "simply cost tokens on every turn of that agent's life.")
+
+
+# ============================================================================ §3
+print("\n§3 the user-space directory (_user_charters_dir()) and its merge")
+
+REPO3 = tempfile.mkdtemp(prefix="orgtree-charters-repo3-")
+USER3 = tempfile.mkdtemp(prefix="orgtree-charters-user3-")
+
+
+def w3(dirpath, name, text):
+    with open(os.path.join(dirpath, name), "wb") as f:
+        f.write(text.encode("utf-8"))
+
+
+w3(REPO3, "alpha.md", "repo alpha body\n")
+w3(REPO3, "beta.md", "repo beta body (should be overridden on collision)\n")
+w3(USER3, "beta.md", "user beta body (collides with the repo's beta.md)\n")
+w3(USER3, "gamma.md", "user gamma body, unique to the user directory\n")
+w3(USER3, "notes.txt", "not a preset - must be ignored\n")
+
+
+@t("a missing user directory is a silent no-op — repo presets still serve")
+def _user_dir_missing():
+    p = payload(REPO3, os.path.join(USER3, "does-not-exist"))
+    names = {c["name"] for c in p["charters"]}
+    assert names == {"alpha", "beta"}, names
+    assert all(c["source"] == "repo" for c in p["charters"]), p["charters"]
+
+
+@t("an empty user directory is a silent no-op — repo presets still serve")
+def _user_dir_empty():
+    empty = tempfile.mkdtemp(prefix="orgtree-charters-empty-")
+    p = payload(REPO3, empty)
+    names = {c["name"] for c in p["charters"]}
+    assert names == {"alpha", "beta"}, names
+
+
+@t("a non-.md file in the user directory is ignored")
+def _user_dir_ignores_non_md():
+    p = payload(REPO3, USER3)
+    names = {c["name"] for c in p["charters"]}
+    assert "notes" not in names, names
+
+
+@t("a user-only preset is served, tagged source=user")
+def _user_only_preset():
+    p = payload(REPO3, USER3)
+    gammas = [c for c in p["charters"] if c["name"] == "gamma"]
+    assert len(gammas) == 1, gammas
+    assert gammas[0]["source"] == "user", gammas[0]
+    assert "unique to the user directory" in gammas[0]["content"]
+
+
+@t("a filename collision serves only the user preset and logs the override")
+def _collision_user_wins():
+    p = payload(REPO3, USER3)
+    betas = [c for c in p["charters"] if c["name"] == "beta"]
+    assert len(betas) == 1, f"expected only user beta.md, got {betas}"
+    assert betas[0]["source"] == "user", betas
+    assert "user beta body" in betas[0]["content"]
+
+
+@t("shadowing compares filenames, not display names")
+def _collision_is_filename_based():
+    repo = tempfile.mkdtemp(prefix="orgtree-charters-filenames-repo-")
+    user = tempfile.mkdtemp(prefix="orgtree-charters-filenames-user-")
+    w3(repo, "team-lead.md", "repo team lead\n")
+    w3(user, "team lead.md", "user team lead\n")
+    presets = [c for c in payload(repo, user)["charters"] if c["name"] == "team lead"]
+    assert len(presets) == 2, presets
+    assert {c["source"] for c in presets} == {"repo", "user"}, presets
+
+
+@t("a filename override logs both the repo and user paths")
+def _collision_logs_override():
+    import contextlib
+    import io
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        payload(REPO3, USER3)
+    log = stream.getvalue()
+    assert "[orgtree] charters: repo preset" in log, log
+    assert os.path.join(REPO3, "beta.md") in log, log
+    assert os.path.join(USER3, "beta.md") in log, log
+
+
+@t("every repo preset is tagged source=repo")
+def _repo_tagged():
+    p = payload(REPO3, USER3)
+    alphas = [c for c in p["charters"] if c["name"] == "alpha"]
+    assert len(alphas) == 1 and alphas[0]["source"] == "repo", alphas
+
+
+@t("REGRESSION: _user_charters_dir() is resolved PER CALL, not frozen at "
+   "import — it follows store.DATA_ROOT set AFTER api was imported")
+def _user_charters_dir_follows_data_root():
+    # the exact idiom test_prime_restart.py and test_watchdog_visibility.py
+    # already use for the same class of bug: reassign store.DATA_ROOT, call,
+    # restore. A module-level constant computed at import time would still
+    # point at the OLD value here and this check would fail.
+    from orgtree import store as _store
+    real = _store.DATA_ROOT
+    moved = tempfile.mkdtemp(prefix="orgtree-charters-dataroot-")
+    try:
+        _store.DATA_ROOT = moved
+        got = api._user_charters_dir()
+    finally:
+        _store.DATA_ROOT = real
+    assert got == os.path.normpath(os.path.join(moved, "user", "charters")), got
+
+
+@t("ORGTREE_USER_CHARTERS, when set, overrides the DATA_ROOT-derived default")
+def _user_charters_dir_env_override():
+    old = os.environ.get("ORGTREE_USER_CHARTERS")
+    override_dir = tempfile.mkdtemp(prefix="orgtree-charters-envoverride-")
+    os.environ["ORGTREE_USER_CHARTERS"] = override_dir
+    try:
+        got = api._user_charters_dir()
+    finally:
+        if old is None:
+            os.environ.pop("ORGTREE_USER_CHARTERS", None)
+        else:
+            os.environ["ORGTREE_USER_CHARTERS"] = old
+    assert got == os.path.normpath(override_dir), got
+
+
+# far larger than PRESET_MAX (the SERVED bound) and larger than the earlier
+# `big.md` fixture (PRESET_MAX+500) — this exercises READ_CAP (the READ
+# bound), which `big.md` sits nowhere near. A stray multi-MB non-preset file
+# dropped into a user's charters directory must not be read in full.
+HUGE_CHARS = api.READ_CAP + 5000
+write("huge.md", ("x\n\n---\n\n" + "z" * HUGE_CHARS + "\n"))
+
+
+@t("a file far larger than READ_CAP is served bounded, `chars` reported "
+   "unknown (None) rather than a wrong number")
+def _read_cap_bounds_huge_file():
+    p = payload(REPO3, FIX)  # FIX (§1) now also holds huge.md
+    huge = [c for c in p["charters"] if c["name"] == "huge"]
+    assert len(huge) == 1, huge
+    r = huge[0]
+    assert len(r["content"]) == api.PRESET_MAX, (
+        f"expected the served bound {api.PRESET_MAX}, got {len(r['content'])}")
+    assert r["truncated"] is True, r
+    assert r.get("chars") is None, (
+        "a file this large was fully read to compute an exact `chars` — "
+        f"defeats the point of READ_CAP: {r.get('chars')!r}")
+
+
+@t("a file just over PRESET_MAX but well under READ_CAP still reports an "
+   "exact `chars` (the existing big.md fixture, unaffected by the new cap)")
+def _read_cap_does_not_bite_moderate_files():
+    # positive control for the test above: proves READ_CAP has real headroom
+    # over PRESET_MAX rather than being the same bound under a new name
+    p = payload(REPO3, FIX)
+    big = [c for c in p["charters"] if c["name"] == "big"]
+    assert len(big) == 1, big
+    assert big[0].get("chars") == BIG_CHARS, big[0]
+
+
+@t("POSITIVE CONTROL: a header just under HEADER_SCAN_CAP still splits "
+   "normally, body served in full")
+def _header_under_scan_cap_ok():
+    header = "H" * (api.HEADER_SCAN_CAP - 100)
+    write("headerok.md", header + "\n---\n\n" + BODY + "\n")
+    p = payload(REPO3, FIX)
+    recs = {c["name"]: c for c in p["charters"]}
+    assert "headerok" in recs, sorted(recs)
+    assert BODY in recs["headerok"]["content"], recs["headerok"]["content"][:200]
+    assert "H" * 10 not in recs["headerok"]["content"], (
+        "the header leaked into the served body")
+
+
+@t("REGRESSION: a header that exceeds HEADER_SCAN_CAP (but not READ_CAP) is "
+   "refused, never served as the charter body")
+def _header_over_scan_cap_refused():
+    # the bounded read (READ_CAP) defeats the header/body split if the text
+    # BEFORE the separator is itself larger than what we bothered to scan for
+    # a separator in. This header comfortably fits inside READ_CAP, so it
+    # isolates HEADER_SCAN_CAP specifically (the next test covers READ_CAP).
+    header = "H" * (api.HEADER_SCAN_CAP + 1000)
+    write("oversizedheader.md", header + "\n---\n\n" + BODY + "\n")
+    p = payload(REPO3, FIX)
+    names = {c["name"] for c in p["charters"]}
+    assert "oversizedheader" not in names, (
+        f"a header past HEADER_SCAN_CAP was served as a preset body: {sorted(names)}")
+
+
+@t("REGRESSION: a header that exceeds READ_CAP entirely is refused, never "
+   "served as the charter body (redteam's exact repro — a 1.26M-char header "
+   "that was previously served verbatim as the charter)")
+def _header_over_read_cap_refused():
+    header = "H" * (api.READ_CAP + 1000)
+    write("hugeheader.md", header + "\n---\n\n" + BODY + "\n")
+    p = payload(REPO3, FIX)
+    names = {c["name"] for c in p["charters"]}
+    assert "hugeheader" not in names, (
+        f"a header past READ_CAP was served as a preset body: {sorted(names)}")
+
+
+if hasattr(os, "symlink"):
+    @t("a broken symlink in the user directory is skipped, not a crash")
+    def _broken_symlink_skipped():
+        broken_dir = tempfile.mkdtemp(prefix="orgtree-charters-symlink-")
+        target = os.path.join(broken_dir, "does-not-exist-target")
+        link = os.path.join(broken_dir, "dangling.md")
+        os.symlink(target, link)
+        p = payload(REPO3, broken_dir)
+        names = {c["name"] for c in p["charters"]}
+        assert "dangling" not in names, names
+
+    @t("a symlink to a real .md file is followed like an ordinary file")
+    def _live_symlink_followed():
+        outside_dir = tempfile.mkdtemp(prefix="orgtree-charters-symlink-out-")
+        real_file = os.path.join(outside_dir, "real.md")
+        w3(outside_dir, "real.md", "reached through a symlink\n")
+        link_dir = tempfile.mkdtemp(prefix="orgtree-charters-symlink-in-")
+        os.symlink(real_file, os.path.join(link_dir, "linked.md"))
+        p = payload(REPO3, link_dir)
+        linked = [c for c in p["charters"] if c["name"] == "linked"]
+        assert len(linked) == 1, linked
+        assert "reached through a symlink" in linked[0]["content"]
+else:
+    print("  ! §3 symlink checks skipped: os.symlink unavailable on this platform")
 
 
 if not CRLF_ON_DISK:

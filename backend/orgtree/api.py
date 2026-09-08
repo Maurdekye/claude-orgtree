@@ -2649,6 +2649,26 @@ def fs_list(path: str = "") -> dict[str, Any]:
 CHARTERS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "docs", "charters"))
 
+def _user_charters_dir() -> str:
+    """A second preset source, entirely under the user's control (not the
+    repo clone): every .md here is served the same way, tagged
+    `source: "user"` so the frontend can label it. Overridable like every
+    other ORGTREE_* path (docs/configuration.md); the default sits under
+    DATA_ROOT rather than a literal ~/orgtree so ORGTREE_DATA (which tests
+    set to an isolated tmpdir) isolates this too — a real developer's own
+    presets never leak into a test run.
+
+    Resolved per call, never captured at import: a module-level constant
+    would freeze whatever `store.DATA_ROOT` was at import time (see
+    accounts.registry_path for the same convention) — which is how a test
+    that sets the data root after import ends up asserting against the
+    developer's real ~/orgtree instead of its own fixture.
+    """
+    override = os.environ.get("ORGTREE_USER_CHARTERS")
+    if override:
+        return os.path.normpath(os.path.expanduser(override))
+    return os.path.normpath(os.path.join(store.DATA_ROOT, "user", "charters"))
+
 
 #: A SANITY BOUND on a served preset body, not a charter limit — charters
 #: themselves are uncapped (ledger.CHARTER_LONG, user ruling 2026-09-04).
@@ -2667,37 +2687,150 @@ CHARTERS_DIR = os.path.normpath(os.path.join(
 #: ever actually reached, the payload says so rather than going quiet.
 PRESET_MAX = 100_000
 
+#: The READ bound, distinct from PRESET_MAX (the SERVED bound). docs/charters/
+#: is curated, but the directory `_user_charters_dir()` returns is
+#: untrusted-by-design — a stray non-preset .md file (a log, a dump) dropped
+#: in there must not make the endpoint read it whole into memory on every
+#: GET /api/charters. Sized generously above PRESET_MAX (10x) so any real
+#: charter — even one several times over the served bound — still gets an
+#: exact `chars`; only a file far larger than any real preset trips the
+#: bounded-read path, where `chars` is reported unknown (None) rather than a
+#: wrong number. The frontend already has to handle a missing `chars` (an
+#: older/foreign preset source might not send it either), so this reuses
+#: that path rather than inventing a new one.
+READ_CAP = PRESET_MAX * 10
+
+#: How far into a file we'll look for the header/body `\n---\n` separator.
+#: A real header is a short human-facing paragraph (see module docstring on
+#: `charters_list`) — nowhere close to this. It exists to catch the ONE
+#: dangerous shape a bounded read creates: if the text before the first
+#: separator is itself longer than READ_CAP, `raw.find` never reaches the
+#: separator and the truncated header would otherwise be served AS the
+#: charter body — exactly what this endpoint's header/body split exists to
+#: prevent (see test_charter_presets.py's module docstring). Anything that
+#: doesn't split within this bound is treated as unsplittable and refused
+#: (see the loop below), never guessed at.
+HEADER_SCAN_CAP = 5_000
+
+
+def _charters_in(dirpath: str, source: str) -> list[dict[str, Any]]:
+    """Every .md preset directly inside `dirpath`, tagged with `source`
+    ("repo" or "user") so a client can tell where it came from.
+
+    A missing/unreadable directory is a silent no-op — the caller doesn't
+    have to check `os.path.isdir` itself, which matters for the directory
+    `_user_charters_dir()` returns: most installs will never create it.
+    `key` is unique per (source, filename), even though `charters_list()`
+    removes a repo preset when a user preset has the same filename. This
+    remains useful for stable client identity and for sources that do not
+    collide.
+
+    The per-file size is bounded (READ_CAP, HEADER_SCAN_CAP); the NUMBER of
+    files in `dirpath` deliberately is not. A directory with thousands of
+    presets makes for one large, slow response, but silently omitting one of
+    a user's own charters from their own hire-form dropdown is a worse
+    failure than that — and thousands of hand-authored preset files is not a
+    realistic state for this directory to be in.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        entries = sorted(os.listdir(dirpath))
+    except OSError:
+        return out
+    for f in entries:
+        if not f.endswith(".md"):
+            continue
+        fpath = os.path.join(dirpath, f)
+        if not os.path.isfile(fpath):  # skips dirs and broken symlinks alike
+            continue
+        try:
+            with open(fpath, encoding="utf-8", errors="replace") as fh:
+                raw = fh.read(READ_CAP + 1)
+        except OSError as e:
+            # a skipped preset is not a silent failure (user's standing
+            # rule: never silently swallow errors) — the file just never
+            # gets a response field to carry the reason into, so it goes
+            # here instead, with enough to find and fix it
+            print(f"[orgtree] charters: skipped {fpath!r} — unreadable ({e})")
+            continue
+        # the file has more content than we read — the true length is
+        # unknowable without reading it all, which is exactly what READ_CAP
+        # exists to avoid, so `chars` is reported unknown rather than guessed
+        capped = len(raw) > READ_CAP
+        if capped:
+            raw = raw[:READ_CAP]
+        idx = raw.find("\n---\n")
+        if idx == -1:
+            if capped:
+                # we read READ_CAP chars, found no separator anywhere in
+                # them, and the file keeps going past what we read. We
+                # cannot tell "no header, this is one huge body" (fine, the
+                # old behavior) apart from "the header alone exceeds
+                # READ_CAP" (serving `raw` here would be the header) without
+                # reading the rest of an already-oversized file — so this
+                # preset is skipped rather than guessed at.
+                print(f"[orgtree] charters: skipped {fpath!r} — no "
+                      f"'---' separator found in the first {READ_CAP} chars "
+                      "read and the file continues past that; refusing to "
+                      "guess whether this is one huge body or an oversized "
+                      "header")
+                continue
+            body = raw  # genuinely no separator anywhere in this (fully read) file
+        elif idx >= HEADER_SCAN_CAP:
+            # a separator DOES exist, but only after an abnormally large
+            # lead-in — treat that lead-in as an oversized header and refuse
+            # to serve it as the body
+            print(f"[orgtree] charters: skipped {fpath!r} — '---' separator "
+                  f"found at char {idx}, past HEADER_SCAN_CAP ({HEADER_SCAN_CAP}); "
+                  "refusing to serve the oversized lead-in as the charter body")
+            continue
+        else:
+            body = raw[idx + len("\n---\n"):]
+        body = body.strip()
+        out.append({"name": f[:-3].replace("-", " "),
+                    "content": body[:PRESET_MAX],
+                    # the length BEFORE the cut — what makes the cut
+                    # visible instead of silent. None (not 0) when READ_CAP
+                    # already cut us off before we could know it.
+                    "chars": None if capped else len(body),
+                    "truncated": capped or len(body) > PRESET_MAX,
+                    # shown on hover of a picked preset card (user spec)
+                    "path": os.path.abspath(fpath),
+                    "source": source,
+                    "key": f"{source}:{f}"})
+    return out
+
 
 @app.get("/api/charters")
 def charters_list() -> dict[str, Any]:
     """Named charter presets for the manual hire form (user ruling): every
-    .md in docs/charters/ is a preset. A file may open with an explanatory
-    header ending at a '---' line — only what follows is the charter body.
+    .md in docs/charters/ is a preset, plus every .md in `_user_charters_dir()`
+    — a user-space directory outside the repo clone (docs/configuration.md) —
+    so a user can add their own presets without editing files inside the
+    repo. A file may open with an explanatory header ending at a '---' line —
+    only what follows is the charter body.
 
-    Each record carries `chars` (the body's TRUE length, before any cut) and
+    A user preset with the same `.md` filename as a repo preset replaces it;
+    distinct filenames remain distinct even if their display names match.
+    Each record carries `source` ("repo" or "user") and a `key` unique across
+    both directories, `chars` (the body's TRUE length, before any cut, or
+    `None` if the file was too large to even measure — see READ_CAP) and
     `truncated`, so a cut is never silent. The payload carries `charter_long`
     (ledger.CHARTER_LONG) — NOT a limit, just the length above which the hire
     form mentions that a charter is re-sent on every turn of that agent's life.
     """
-    out: list[dict[str, Any]] = []
-    if os.path.isdir(CHARTERS_DIR):
-        for f in sorted(os.listdir(CHARTERS_DIR)):
-            if not f.endswith(".md"):
-                continue
-            try:
-                text = open(os.path.join(CHARTERS_DIR, f),
-                            encoding="utf-8", errors="replace").read()
-            except OSError:
-                continue
-            body = text.split("\n---\n", 1)[-1].strip()
-            out.append({"name": f[:-3].replace("-", " "),
-                        "content": body[:PRESET_MAX],
-                        # the length BEFORE the cut — what makes the cut
-                        # visible instead of silent
-                        "chars": len(body),
-                        "truncated": len(body) > PRESET_MAX,
-                        # shown on hover of a picked preset card (user spec)
-                        "path": os.path.abspath(os.path.join(CHARTERS_DIR, f))})
+    repo = _charters_in(CHARTERS_DIR, "repo")
+    user = _charters_in(_user_charters_dir(), "user")
+    user_by_filename = {os.path.basename(preset["path"]): preset for preset in user}
+    visible_repo = []
+    for preset in repo:
+        filename = os.path.basename(preset["path"])
+        if user_preset := user_by_filename.get(filename):
+            print(f"[orgtree] charters: repo preset {preset['path']!r} overridden by "
+                  f"user preset {user_preset['path']!r}")
+            continue
+        visible_repo.append(preset)
+    out = visible_repo + user
     return {"charters": out, "preset_max": PRESET_MAX,
             "charter_long": ledger_mod.CHARTER_LONG}
 
