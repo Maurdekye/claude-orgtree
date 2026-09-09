@@ -164,6 +164,12 @@ export const killAll = (slug: string): Promise<{
   req(`/api/orgs/${slug}/killswitch`, { method: 'POST' })
 export const dissolveAll = (slug: string): Promise<{ freed: number; nodes: number }> =>
   req(`/api/orgs/${slug}/dissolve-all`, { method: 'POST' })
+export const cheapCompactAll = (slug: string): Promise<{
+  compacted: number
+  skipped: Array<{ node: string; reason: string }>
+  warnings: string[]
+}> =>
+  req(`/api/orgs/${slug}/cheap-compact-all`, { method: 'POST' })
 export const interruptNode = (
   slug: string, nid: string,
 ): Promise<{ interrupted: boolean; reason?: string }> =>

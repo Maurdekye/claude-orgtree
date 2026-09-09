@@ -11,7 +11,7 @@ import type {
   ChatInit, DirGrant, ProviderInfo, ToastFn, ToolGrant, TreePayload, Watchdog,
 } from '../types'
 import {
-  dissolveAll, getChat, getMcpServers, remoteControl, saveHireDefaults,
+  cheapCompactAll, dissolveAll, getChat, getMcpServers, remoteControl, saveHireDefaults,
   saveScope, saveSettings, watchdogAction,
 } from '../api'
 import { pickFolder } from '../picker'
@@ -24,6 +24,35 @@ import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
 import { ModalOverPins, PinFrame } from './modalpin'
 import { fmtStamp } from '../timefmt'
+
+// F2/F3: the two bulk cheap-compact doors (org-wide's own route and the
+// per-node `op({ op: 'cheap_compact_subtree' })`) report the same three
+// things but not in the same wire shape — the route's `compacted` is a
+// count, the op's is the list of ids it compacted, and that split is the
+// ratified plan, not something to unify here. This is the one place that
+// narrows either shape (the op side arrives as loosely-typed `OpResult`,
+// hence the narrowing lives here instead of an inline cast at each call
+// site) into the same toast lines, so a transcript-export warning from
+// `_export_compacted` can never again reach the toast on one path and not
+// the other.
+function bulkCompactToast(r: {
+  compacted?: unknown
+  skipped?: unknown
+  warnings?: unknown
+}): string[] {
+  const compactedCount = Array.isArray(r.compacted) ? r.compacted.length : (r.compacted as number ?? 0)
+  const skipped = (r.skipped as Array<{ node: string }> | undefined) ?? []
+  const warnings = (r.warnings as string[] | undefined) ?? []
+  return [
+    `cheap-compacted ${compactedCount} node(s)`,
+    ...(skipped.length
+      ? [`skipped ${skipped.length}: ${skipped.map((s) => s.node).join(', ')}`]
+      : []),
+    ...(warnings.length
+      ? [`${warnings.length} transcript export warning(s): ${warnings.join('; ')}`]
+      : []),
+  ]
+}
 
 export interface ConfirmModalProps {
   title: ReactNode
@@ -243,7 +272,8 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   // ceiling-clamped server-side; the org folder holdings stay admin-only
   // (host paths — the public payload only carries basenames anyway)
   const pub = !!tree.public
-  const [asking, setAsking] = useState(false)   // dissolve-all confirmation
+  // which org-wide confirmation modal is open, if any
+  const [asking, setAsking] = useState<false | 'dissolve' | 'cheap_compact_all'>(false)
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
   // P3: derived from `tree`, with a buffer holding only what has been edited
@@ -284,8 +314,10 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
       close={close}>
         <h3><SettingsIcon fontSize="inherit" /> you <span className="dim">· configuration</span></h3>
         <div className="row">
-          <button className="danger" onClick={() => setAsking(true)}>
+          <button className="danger" onClick={() => setAsking('dissolve')}>
             dissolve all agents</button>
+          <button className="danger" onClick={() => setAsking('cheap_compact_all')}>
+            cheap-compact all agents</button>
         </div>
         {/* folder access FIRST — same order as the per-agent config (user ruling) */}
         {!pub && <><div className="field-label">folder access</div>
@@ -400,12 +432,23 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
         </div>
       {/* portaled out: a confirmation nested in a pinned panel is trapped in
           that panel's stacking context — see ModalOverPins */}
-      {asking && (
+      {asking === 'dissolve' && (
         <ModalOverPins><ConfirmModal title="dissolve ALL agents?"
           body="Every agent in the entire org is retired at once. Context is kept; rehire brings any of them back."
           confirmLabel="dissolve all"
           onConfirm={() => dissolveAll(slug)
             .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${fmtCredits(r.freed)} credits`]); close() })
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
+          close={() => setAsking(false)} /></ModalOverPins>
+      )}
+      {asking === 'cheap_compact_all' && (
+        <ModalOverPins><ConfirmModal title="cheap-compact ALL agents?"
+          body={"Every live agent's session across the org is reset to empty, top-down. Each agent's "
+            + "prior session is archived as a recoverable knowledge bearer — nothing is deleted — but "
+            + "until an agent re-reads its own history it has no memory of anything before this."}
+          confirmLabel="cheap-compact all"
+          onConfirm={() => cheapCompactAll(slug)
+            .then((r) => { toast(bulkCompactToast(r)); close() })
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAsking(false)} /></ModalOverPins>
       )}
@@ -716,7 +759,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // Escape belongs to PinFrame now: a CENTRED surface still closes on it, a
   // PINNED window ignores it the way an agent window does.
   const [asking, setAsking] =
-    useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
+    useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider'
+      | 'cheap_compact_subtree' | null>(null)
   // every card that opens a config panel carries a scope (real nodes and
   // bearer stubs both) — only the eye root and drafts lack one
   const scope = node.scope!
@@ -993,6 +1037,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           {node.state === 'live' && node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() => setAsking('dissolve')}>
               dissolve subtree · {fmtCredits(node.seat! + node.grant!)}</button>}
+          {node.state === 'live' &&
+            <button className="danger" onClick={() => setAsking('cheap_compact_subtree')}>
+              cheap-compact subtree</button>}
           {node.state === 'archived' &&
             <button className="primary" onClick={() =>
               op({ op: 'rehire', node: node.id }).then(close).catch(() => {})}>
@@ -1341,6 +1388,16 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           body="Its entire suborganization is retired with it. Context is kept; rehire brings nodes back."
           confirmLabel="dissolve"
           onConfirm={() => op({ op: 'dissolve', node: node.id }).then(close).catch(() => {})}
+          close={() => setAsking(null)} />
+      )}
+      {asking === 'cheap_compact_subtree' && (
+        <ConfirmModal title={`cheap-compact ${node.id}'s subtree?`}
+          body={"This node and every live descendant below it gets its session reset to empty, "
+            + "top-down. Prior sessions archive as recoverable knowledge bearers; nothing is deleted."}
+          confirmLabel="cheap-compact subtree"
+          onConfirm={() => op({ op: 'cheap_compact_subtree', node: node.id })
+            .then((r) => { toast(bulkCompactToast(r)); close() })
+            .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAsking(null)} />
       )}
       {asking === 'rescind' && (

@@ -31,8 +31,10 @@ What each section establishes:
   §6 the REAL DOOR: a real cross-provider `switch_model` +
      `export_predecessor_transcript` publishes `handoff-g<gen>/`, and that
      record verifies against the live sidecar rows, node doc and mailbox.
-  §7 all seven boundary call sites go through that one function (source
-     scan, with the count asserted so a new door cannot be added silently).
+  §7 all eight call sites — covering nine boundary doors, since the
+     org-wide and subtree bulk sweeps share one via `_export_compacted` —
+     go through that one function (source scan, with the count asserted so
+     a new door cannot be added silently).
   §8 FLAG-OFF COMPATIBILITY, measured against THIS BUILD with the handoff
      block neutralised: with `handoff.flag` absent the identity prompt is
      BYTE-IDENTICAL to the one the same code builds when `_handoff_block`
@@ -1257,8 +1259,11 @@ check("the boundary reason is the door's own; an unstated one is a truthful gene
 
 def t6_doors_state_their_reason():
     """Every call site passes one — a door added without a reason would
-    publish `session_replaced`, which is honest, but the seven that exist are
-    named."""
+    publish `session_replaced`, which is honest, but the eight that exist are
+    named. Eight, not nine: the org-wide and subtree bulk sweeps are two
+    distinct doors that share one call site, inside `_export_compacted`
+    (F2's refactor) — its own first argument is `org` and it states
+    `reason="cheap_compact"`, so this filter counts it same as any other."""
     named = 0
     for rel in ("orgtree/api.py", "orgtree/supervisor.py"):
         src = open(os.path.join(REPO, "backend", rel), encoding="utf-8").read()
@@ -1266,12 +1271,12 @@ def t6_doors_state_their_reason():
             head = chunk[:260]
             if head.lstrip().startswith("org") or head.lstrip().startswith("o2"):
                 named += 1 if "reason=" in head else 0
-    assert named == 7, f"{named} of 7 call sites name their boundary reason"
+    assert named == 8, f"{named} of 8 call sites name their boundary reason"
 
 
-check("all 7 doors name their own boundary reason", t6_doors_state_their_reason)
+check("all 8 export call sites name their own boundary reason", t6_doors_state_their_reason)
 
-# ── §7 the seven doors ─────────────────────────────────────────────────────
+# ── §7 eight call sites, nine doors ─────────────────────────────────────────
 print("\n§7 every boundary door goes through the one publishing function")
 
 
@@ -1283,7 +1288,7 @@ def t7():
             if "export_predecessor_transcript(" in line and not line.strip().startswith("#"):
                 doors.append((rel, i, line.strip()[:60]))
     calls = [d for d in doors if not d[2].startswith("def ")]
-    assert len(calls) == 7, f"expected 7 call sites, found {len(calls)}: {calls}"
+    assert len(calls) == 8, f"expected 8 call sites, found {len(calls)}: {calls}"
     src = open(os.path.join(REPO, "backend", "orgtree", "supervisor.py"),
                encoding="utf-8").read()
     body = src.split("def export_predecessor_transcript(", 1)[1].split("\ndef ", 1)[0]
@@ -1292,7 +1297,7 @@ def t7():
     OBS["doors"] = calls
 
 
-check("all 7 export call sites exist and publication lives inside that one function", t7)
+check("all 8 export call sites exist and publication lives inside that one function", t7)
 
 # ── §8 flag-off compatibility, measured against this same build ───────────
 print("\n§8 flag OFF: prompt byte-identical to this build with the block "

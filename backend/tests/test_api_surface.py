@@ -937,7 +937,8 @@ def _cross(m, p, b=None):
 for _p in CROSS_GET:
     check(f"visitor cannot GET another org's {_p}", _cross("GET", _p))
 for _p in [f"/api/orgs/{K2}/ops", f"/api/orgs/{K2}/killswitch",
-           f"/api/orgs/{K2}/dissolve-all", f"/api/orgs/{K2}/nodes/x/message",
+           f"/api/orgs/{K2}/dissolve-all", f"/api/orgs/{K2}/cheap-compact-all",
+           f"/api/orgs/{K2}/nodes/x/message",
            f"/api/orgs/{K2}/nodes/x/upload", f"/api/orgs/{K2}/inbox/clear",
            f"/api/orgs/{ADMIN_SLUG}/ops", f"/api/orgs/{SBX}/ops"]:
     check(f"visitor cannot POST another org's {_p}", _cross("POST", _p, {}))

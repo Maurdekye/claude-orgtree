@@ -1212,7 +1212,7 @@ class Org:
             cur = self.nodes[cur].get("predecessor")
         return out
 
-    def descendants(self, nid: str, live_only: bool = True) -> list[str]:
+    def descendants(self, nid: str | None, live_only: bool = True) -> list[str]:
         out: list[str] = []
         for c in self.children(nid, live_only):
             out.append(c)
@@ -3647,6 +3647,32 @@ class Org:
                   [])
         return {"node": nid, "bearer": pred_id, "old_session": old_sid,
                 "warnings": []}
+
+    def cheap_compact_many(self, actor: str, nids: list[str]) -> dict[str, Any]:
+        """Bulk `cheap_compact`, skip-and-continue: one node ineligible (not
+        `live`, or `bg_open`) must not block the rest of a sweep. `nids` must
+        already be in the order the caller wants them compacted in (top-down
+        for the org-wide and subtree callers) — this makes no ordering
+        decisions of its own.
+
+        ⚠ The `except LedgerError` below is not selective — `cheap_compact`
+        raises the SAME exception type for "not live"/"bg_open" as it does
+        for an authority denial (`_require_authority`), so this loop cannot
+        tell the two apart and would otherwise report a permission violation
+        as a routine skip. Every caller that accepts an actor other than
+        USER/SYSTEM MUST pre-check authority on the root before calling this
+        — authority is transitive downward (§7.1), so one check on the root
+        covers the whole `nids` list and this loop never sees an authority
+        failure in practice. The org-wide caller is exempt: it always passes
+        USER, which `_require_authority` never refuses."""
+        compacted: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for nid in nids:
+            try:
+                compacted.append(self.cheap_compact(actor, nid))
+            except LedgerError as e:
+                skipped.append({"node": nid, "reason": str(e)})
+        return {"compacted": compacted, "skipped": skipped}
 
     # ---------------------------------------------------------------- rehire
     def rehire(self, actor: str, nid: str, grant: float | None = None,
