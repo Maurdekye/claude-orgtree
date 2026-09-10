@@ -1,3 +1,12 @@
+# Deprecated: install Orgtree V2 instead
+
+> [!WARNING]
+> **This is the deprecated Orgtree V1 repository. Please use [Orgtree V2](https://github.com/Maurdekye/orgtree) for new installations.**
+>
+> **[Download and install the latest Orgtree V2 release](https://github.com/Maurdekye/orgtree/releases/latest).**
+
+---
+
 ![claude-orgtree](social-preview.png)
 
 # claude-orgtree
