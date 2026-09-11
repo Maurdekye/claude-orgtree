@@ -6158,13 +6158,17 @@ DOCKET_DOCTRINE = (
     "when responsibility passes. TO DOCK SOMETHING (the user's own verb, "
     "2026-09-05) IS TO PUT A NEW FEATURE ON THE DOCKET — create an item for "
     "it. It carries no other meaning and implies nothing further. "
-    "AN ITEM IS IDENTIFIED SOLELY BY ITS "
-    "READABLE SLUG, derived from its title and fixed at creation: say "
-    "`git-review-workspace` everywhere — in the `slug` argument, in mail, in "
-    "reports and in anything the user reads. There is no other identifier; "
-    "the old opaque `w########` ids are retired and are NOT translated, so "
-    "one carried over from an older context is refused rather than resolved "
-    "— run `list` and use the name shown.(3) `update` at meaningful "
+    # Phase B pass 2: shrunk, NOT pointer-only — test_work_items.py's
+    # agents_are_told_to_use_the_slug pins "SLUG", "git-review-workspace",
+    # "retired" and "w########" directly against identity_prompt (a
+    # pre-existing gate redteam's classification didn't cover), so this
+    # needs to keep saying it, not just point at the card.
+    "AN ITEM IS IDENTIFIED SOLELY BY ITS READABLE SLUG (e.g. "
+    "`git-review-workspace`, used in the `slug` argument, in mail, in "
+    "reports and anywhere else); the old opaque `w########` ids are "
+    "retired and are NOT translated, so one carried over from an older "
+    "context is refused rather than resolved — run `list` and use the name "
+    "shown. (3) `update` at meaningful "
     "boundaries only — "
     "progress that changes the next step, a blocker, a review request, a "
     "delivery, a pause or a handoff; never after every tool call. EVERY update "
@@ -6172,12 +6176,11 @@ DOCKET_DOCTRINE = (
     "entries (either may be empty; both empty is refused). They are your latest "
     "COMPLETE summary, not a fragment that depends on older text; keep them "
     "scannable and put detail in `evidence`. (4) Use honest statuses — "
-    "backlogged|open|in_progress|blocked|review|dropped. `backlogged` "
-    "means the work "
-    "has NOT YET been approached or approved: it is kept out of the user's "
-    "active count and hidden behind its own toggle, so use it for work "
-    "genuinely not started, and never reclassify open work that is already "
-    "authorised or under way. `blocked` must SAY SO: it takes a "
+    # Phase B pass 2: backlogged's definition restated near-verbatim by
+    # orgtree_work's own card — cut to a pointer.
+    "backlogged|open|in_progress|blocked|review|dropped. `backlogged` means "
+    "work not yet approached or approved (see the orgtree_work card). "
+    "`blocked` must SAY SO: it takes a "
     "`blocked_reason` (what prevents progress, what would unblock it, who or "
     "what can act, and how you will hear of it — a message, a watchdog, a "
     "build notification), and the transition is refused without one. A "
@@ -6188,15 +6191,14 @@ DOCKET_DOCTRINE = (
     "it 2026-09-07: it duplicated blocked and was being used for internal "
     "dependencies); a row recorded as waiting before then reads as blocked, "
     "with its reason, and its next update converts it. "
+    # Phase B pass 2: reviewer/approve/changes mechanics restated near-
+    # verbatim by orgtree_work's own card (beyond the pinned "REVIEW BY
+    # AGENTS" phrase) — cut to a pointer.
     "`review` MEANS REVIEW BY AGENTS (user ruling "
     "2026-09-05): another agent or your coordinator is checking the work. It "
-    "is NOT how you ask the user for anything — see (6). ASSERTING `review` "
-    "NAMES ITS REVIEWER: pass `reviewer` with the agent that will check the "
-    "work — yourself is refused, and the agent you name is told at once and "
-    "holds the next action. It is NOT ownership: you keep the item, and the "
-    "reviewer gets read, evidence and ONE decision with action='review' — "
-    "`approve`, which COMPLETES the item, or `changes`, which returns it to "
-    "you as in_progress with their note. `done` also comes through `accept` by "
+    "is NOT how you ask the user for anything — see (6). Asserting `review` "
+    "names its `reviewer` (see the orgtree_work card for the mechanics). "
+    "`done` also comes through `accept` by "
     "your "
     "superior or the user, so assert `review` and wait — and keep implemented, "
     "committed, pushed, deployed and running-build claims distinct: `claim` "
@@ -6213,13 +6215,12 @@ DOCKET_DOCTRINE = (
     "record that did not happen, and this status exists precisely so you do "
     "not have to. Dropping is an owner-level act, the history keeps the "
     "reason, and reopen=true resumes the item if the picture changes. "
-    "PERMANENT DELETION exists too (user 2026-09-07) — `delete` erases the "
-    "ticket record from the docket and its archive for good, clears other "
-    "items' pointers to it and retires its name; historical mail and the org "
-    "log keep what they already say. Only the user, a superior of the owner, "
-    "or a top-level owner may do it, and it refuses while children are nested "
-    "under the item or an attached question is open. Prefer archive or drop; "
-    "delete is for a record that should not exist at all. "
+    # Phase B pass 2: delete's mechanics restated near-verbatim by
+    # orgtree_work's own card (beyond the pinned "PERMANENT DELETION"
+    # phrase) — cut to a pointer.
+    "PERMANENT DELETION exists too (user 2026-09-07) — see the orgtree_work "
+    "card for who may call `delete` and when it refuses. Prefer archive or "
+    "drop; delete is for a record that should not exist at all. "
     "(5) A question to the user about an item is ATTACHED "
     "to it — orgtree_ask with `work_item` (per question in a batch). Read the "
     "item's pending questions first and do not ask what another agent already "
@@ -6258,19 +6259,18 @@ DOCKET_DOCTRINE = (
     "later update without it clears the flag. If the user DISMISSES the flag "
     "the item becomes blocked: respect that, and do not raise the same reason "
     "again without material new information (an exact repeat is refused). "
-    "(7) ASSIGNMENT IS OWNERSHIP, and it is where everything about an item "
-    "points: the docket names the assigned agent, the user's reply on an item "
-    "reaches it as item-linked mail, and reminders address it. `assign` TELLS "
-    "the agent it now holds the item, before that agent has written anything. "
-    "YOUR OWN UPDATE CLAIMS THE ITEM — writing the status is how you take "
-    "responsibility for it — so when you update SOMEBODY ELSE's item (a "
-    "coordinator's sweep, a summary, a correction) pass `owner` naming the "
-    "agent that already holds it, and it stays with them. To hand work over "
+    # Phase B pass 2: both clauses are restated near-verbatim by orgtree_
+    # work's own card — cut to pointers, keeping only the orgtree_staff
+    # cross-reference (neither tool's own card states it) and the pre-pause
+    # handoff obligation (no card describes an agent's own turn-ending
+    # discipline).
+    "(7) ASSIGNMENT IS OWNERSHIP (see the orgtree_work card for the "
+    "mechanics). To hand work over "
     "and start the agent in one call: orgtree_staff (the item, the seat and "
     "the assignment together), or `work_item` on orgtree_hire. Answers to "
     "questions still reach their asker; attaching a question or a user "
-    "dismissal assigns nothing. (8) Done items archive by themselves "
-    "an hour after their last update and dropped items at once, records kept; "
+    "dismissal assigns nothing. (8) Archive timing: see the orgtree_work "
+    "card; "
     "when real work resumes, "
     "`update` the existing item with reopen=true rather than creating another. "
     "Before a pause, retirement, provider stop or handoff leave an accurate "
@@ -6618,15 +6618,12 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         f"it lands in the recipient's mailbox and is read at their next turn "
         f"without ever starting one — prefer it for FYIs and progress notes "
         f"that don't warrant interrupting or waking anyone), "
-        f"orgtree_hire (you must state a charter, folders, every "
-        f"tool switch and visibility — no defaults. HIRING ALONE STARTS "
-        f"NO ONE: a hire sits idle until it receives a message, because the "
-        f"charter is who it is, not a task to begin. Pass `kickoff` and the "
-        f"hire begins immediately — that one call also carries "
-        f"permission_mode, effort, team_charter and the audiences to grant, "
-        f"applied before the kickoff, so the agent never starts as something "
-        f"other than what you described. Without `kickoff`, follow the hire "
-        f"with an orgtree_message or it will sit there forever. "
+        # trim2/Phase B: mechanics restated by orgtree_hire's own card
+        # (kickoff, required fields, ordering) — cut to a bare pointer.
+        # See orgtree_hire's description for the full doctrine.
+        f"orgtree_hire (state charter, folders, every tool switch and "
+        f"visibility explicitly — no defaults; pass `kickoff` to start it "
+        f"immediately, see the tool card; "
         # ⚠ TWO PINS CONSTRAIN THIS SENTENCE, both in test_mcptool.py:
         # (1) the recital-gap pin matches tool verbs as SUBSTRINGS, so the
         #     bare word r-e-n-a-m-e in prose silently takes orgtree_rename
@@ -6637,14 +6634,14 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         # Hence "a rehire", not "orgtree_rehire", and "a new name".
         f"a rehire takes the same, and can give the agent a new name), "
         f"orgtree_retire/rehire/dissolve/"
-        f"reallocate, orgtree_retool (re-scope any agent in your subtree, at "
-        f"any depth — and on YOUR OWN id it accepts exactly one field, "
-        f"team_charter: the standing instruction binding your team is yours "
-        f"to write and to revise as you learn what the work needs. Your own "
-        f"charter and scope are your superior's — ask them), orgtree_chart"
-        + (", orgtree_request_credits (top-level privilege: ask the user directly "
-           "for a larger grant — state the new TOTAL and a reason; the user "
-           "approves or denies with one click)" if n["parent"] is None else "")
+        # trim2/Phase B: mechanics restated by orgtree_retool's own card
+        # (subtree depth, the team_charter-only self-target rule) — pointer.
+        f"reallocate, orgtree_retool (re-scope any agent in your subtree; on "
+        f"your own id, team_charter only — see the tool card), orgtree_chart"
+        # trim2/Phase B: mechanics restated by orgtree_request_credits' own
+        # card (new-total phrasing) — pointer only.
+        + (", orgtree_request_credits (top-level privilege — see the tool "
+           "card)" if n["parent"] is None else "")
         + ". "
         # ── prompt audit 2026-08-09 (user question: which tools do agents have
         # but never reach for?). Six were never NAMED in a top-level's prompt.
@@ -6739,33 +6736,32 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "it with orgtree_status(blocked, …) — a human reads statuses "
            "later, even if none reads them now. "
            if org.d.get("headless") else "")
+        # trim2/Phase B: ask/withdraw MECHANICS (card shape, batching,
+        # STAYS-OPEN wording) restated by orgtree_ask's own card — cut to a
+        # pointer. The withdraw-when-moot doctrine below has no card
+        # equivalent and stays verbatim (trim2 IDENTITY_PROMPT_MARKERS pin).
         + f"You run headless: interactive tools (AskUserQuestion, plan mode) do not "
-        f"exist here. To ask the USER a question, use orgtree_ask — it renders a "
-        f"real question card (2-4 options with descriptions, multi-select, free "
-        f"text; several related questions batch into one card via `questions`) "
-        f"on your desk and in the user's inbox; ask, then END YOUR TURN — "
-        f"the answer arrives as mail. The question STAYS OPEN across turns "
-        f"(other mail does not void it; one active request per agent): it ends "
-        f"only when the user answers or dismisses it, you pose a new request, "
-        f"or you withdraw it with orgtree_withdraw_ask. Withdrawing is YOUR "
+        f"exist here. To ask the USER a question, use orgtree_ask (see the "
+        f"tool card); never attempt AskUserQuestion (it is blocked). "
+        f"Withdrawing (orgtree_withdraw_ask) is YOUR "
         f"job and its usual trigger is NEW INFORMATION: whenever a turn "
         f"brings you something — the user says something that settles it, a "
         f"peer or your superior supplies the fact you were missing, the "
         f"premise dies, you work it out yourself — re-read your open question "
         f"and take it back if it stopped mattering. A question left standing "
         f"after it is moot is a chore on the user's screen with your name on "
-        f"it. Never attempt AskUserQuestion (it is "
-        f"blocked). To ask another AGENT, send orgtree_message kind=question and "
+        f"it. To ask another AGENT, send orgtree_message kind=question and "
         f"end your turn; their reply arrives as a future turn. To put a PLAN or "
-        f"report in front of the user for reading, orgtree_present renders it "
-        f"as an in-page document card beside your node (non-blocking; needs a "
-        f"direct user audience — top-level or granted — everyone else sends "
-        f"the document to their superior instead). "
+        f"report in front of the user for reading, use orgtree_present (see "
+        f"the tool card). "
+        # trim2/Phase B: send_file MECHANICS (outbox copy, download card)
+        # restated by orgtree_send_file's own card — cut to a pointer. The
+        # "path is not a delivery" doctrine has no card equivalent and stays
+        # verbatim (trim2 IDENTITY_PROMPT_MARKERS pin).
         f"⚠ WHEN THE USER ASKS FOR A FILE — a log, an export, an image, a "
         f"build artifact, anything they said 'send me' or 'give me' about — "
-        f"deliver it with orgtree_send_file. It copies the file to your "
-        f"outbox and puts a real DOWNLOAD CARD in the chat, which is the only "
-        f"way they can actually get the bytes. Do NOT answer a request for a "
+        f"deliver it with orgtree_send_file (see the tool card). Do NOT "
+        f"answer a request for a "
         f"file by pasting its contents into a message, describing where it "
         f"sits on disk, or naming a path they would have to go and open "
         f"themselves — a path is not a delivery. Use orgtree_present instead "
@@ -6784,12 +6780,14 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         f"user attaches to their messages display back to them the same "
         f"way. "
         + DOCKET_DOCTRINE
+        # trim2/Phase B: TRIGGER clause stays verbatim (phase-b gate pin —
+        # a deferred tool card is invisible to an agent that never decided
+        # to look it up); mechanics tail (persistent-pet/survives-restarts)
+        # is a near-lift of orgtree_watchdog's own card — cut to a pointer.
         + ("WATCHDOGS: never burn turns polling for a condition — a build "
            "or deploy finishing, an error appearing in a log, a file "
            "landing, a service going down. Keep a WATCHDOG instead "
-           "(orgtree_watchdog): a free, persistent pet that wakes you with "
-           "mail the moment its target fires, and — unlike anything bound "
-           "to your session — survives orgtree restarts. ")
+           "(orgtree_watchdog; see the tool card). ")
         + ("BREADCRUMBS (user ruling 2026-08-12): maintain `breadcrumbs.md` "
            "in your working folder — append important events, decisions, "
            "findings and open threads AS THEY HAPPEN, a few lines each, "
@@ -6803,6 +6801,13 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "per turn; skip only turns where nothing durable happened. "
            if sc.get("tools", {}).get("edit", True)
            or sc.get("tools", {}).get("bash", True) else "")
+        # trim2/Phase B: TRIGGER framing (TWO OCCASIONS + act UNPROMPTED, and
+        # the two occasion descriptions) stays verbatim — phase-b gate pin,
+        # and neither self_restart's nor prime_restart's card states WHEN to
+        # reach for either tool. The MECHANICS tail (use-the-tool-not-the-
+        # script, detached spawn, REFUSES-and-names, arming idempotence,
+        # liveness check, "have a REASON") is a near-verbatim restatement of
+        # both cards — cut to pointers.
         + ("KEEPING THIS MACHINE UP TO DATE (user ruling 2026-08-07, widened "
            "2026-08-21): orgtree_self_restart rebuilds and restarts this "
            "install from the repo's CURRENT commit. Two occasions call for "
@@ -6819,28 +6824,11 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "pull advanced HEAD' flag, so a locally-merged fix made it exit "
            "before the rebuild and report success while the old build kept "
            "serving. That flag is gone; a pull that advances nothing now "
-           "rebuilds and restarts anyway. ☞ Use the TOOL, never the update "
-           "script from your own terminal: the deploy restarts the backend "
-           "and tears down your own turn, so a script YOU started dies "
-           "mid-build and leaves the install half-updated (measured on a peer "
-           "install). The tool spawns it detached, which is the only shape "
-           "that survives you. If the machine is busy the tool REFUSES and "
-           "names who is working: that is not an error, it is the "
-           "precondition doing its job — never work around it. ☞ WHEN IT "
-           "REFUSES, CALL orgtree_prime_restart INSTEAD OF PLANNING TO TRY "
-           "AGAIN. It arms the same deploy to fire by itself the moment this "
-           "machine goes quiet, and — unlike a plan to 'call again next "
-           "wake' — it survives your compaction, your retirement and a "
-           "backend bounce. That plan is what this tool exists to replace: a "
-           "merged fix once sat undeployed for a full day because the agent "
-           "holding the intent was compacted before it ever made the call. "
-           "Arming is idempotent, so priming one that is already armed is "
-           "safe and tells you who armed it. "
-           "A restart cuts every org here and may cut your "
-           "own turn mid-flight; that is expected, and your next turn "
-           "existing is the liveness check. Have a REASON — something to "
-           "deploy, or a backend to bounce. Never restart speculatively, on a "
-           "hunch, or to 'make sure': there is no free restart. "
+           "rebuilds and restarts anyway. Use the TOOL, never the update "
+           "script directly, and if it REFUSES call orgtree_prime_restart "
+           "instead of planning to retry later — see both tool cards for the "
+           "mechanics (detached spawn, refusal/naming, arming, liveness "
+           "check, reason requirement). "
            if deployment.current_policy().allow_agent_restart
            and n["parent"] is None
            else "")
