@@ -406,7 +406,8 @@ def _():
     # +orgtree_restart_wake (2026-09-04)
     # +orgtree_work (the docket, 2026-09-05)
     # +orgtree_staff (item + seat + assignment in one call, 2026-09-05)
-    assert len(tools) == 34, [x["name"] for x in tools]
+    # +orgtree_unstick (supervised agent unstick, 82fc1ce)
+    assert len(tools) == 35, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -592,7 +593,8 @@ def _():
     # +orgtree_restart_wake (2026-09-04)
     # +orgtree_work (2026-09-05); +orgtree_staff (2026-09-05, the item, the
     # seat and the assignment in one call)
-    assert len(CARDS) == 34, len(CARDS)
+    # +orgtree_unstick (supervised agent unstick, 82fc1ce)
+    assert len(CARDS) == 35, len(CARDS)
 
 
 @t("☠ the op-lookup door answers, is never advertised, and does NOTHING")
@@ -778,10 +780,11 @@ def _():
     # paragraph says "swaps only the session", which is not this node's
     # prompt, so `orgtree_swap` really is absent rather than accidentally
     # satisfied.)
+    # orgtree_unstick (82fc1ce) added to the pin so it matches reality.
     assert absent == ["orgtree_list_orgs", "orgtree_list_tiers", "orgtree_move", "orgtree_rename",
                       "orgtree_restart_wake",
                       "orgtree_self_subjugate", "orgtree_swap",
-                      "orgtree_switch_model"], \
+                      "orgtree_switch_model", "orgtree_unstick"], \
         f"the recital gap changed — update or retire this pin: {absent}"
     # D-181 audit amendment: capability guidance is identity, while today's
     # child count is live state. The leaf must already know the read/retire
