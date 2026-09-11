@@ -835,6 +835,107 @@ def lane_applies(lim: Mapping[str, Any], tier: str) -> bool:
     return True
 
 
+#: the meter reading that counts as SPENT — named so a measured correction
+#: (the upstream capping at 99, say) is one literal and one test, not a
+#: redesign (issue #4 open question: no captured specimen of a walled
+#: readout exists to confirm this against).
+EXHAUSTED_PERCENT = 100.0
+
+
+def lane_exhausted(lim: Mapping[str, Any]) -> bool:
+    """Is this lane SPENT — not merely the one in force? The one
+    provider-neutral shape (`_normalize`; `codex_limits`, `antigravity_limits`
+    and `openrouter_limits` all emit the same `percent`/`is_active` pair)
+    asked as one question.
+
+    ⚠ `percent` ONLY, and `is_active` deliberately NOT a qualifier. A lane can
+    be `is_active` at 80% (a session lane simply in force) and answering a
+    per-minute 429 from THAT parked a node for four hours, billing a fallback
+    org's key for four hours, against a wall that lifts in a minute (redteam
+    2026-08-18). `is_active` is also not REQUIRED: `_normalize`'s legacy
+    `five_hour`/`seven_day` branch hardcodes it `False` (an older upstream
+    shape), and a rule that needed it true would be silently dead on a host
+    serving that shape. A meter reading 100 is the evidence; the flag is a
+    hint, never the gate.
+
+    A missing or unparseable `percent` is NOT exhaustion — the upstream
+    churns codename fields (`_normalize`'s docstring), and treating absence
+    as "spent" would answer every `is_active` lane from here, reopening the
+    same four-hour parking bug this predicate exists to keep shut."""
+    try:
+        pct = float(cast(Any, lim.get("percent")))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(pct) and pct >= EXHAUSTED_PERCENT
+
+
+def exhausted_reset(tier: str, now: float | None = None,
+                    allow_fetch: bool = False) -> tuple[float | None, str]:
+    """When does an ALREADY-SPENT lane of `tier`'s quota lift? →
+    `(epoch, "usage:exhausted:<lane>")`, or `(None, "")`.
+
+    User report (issue #4): at the 5-hour wall the CLI's own words are often
+    a bare 429 with no reset anywhere in them ("API Error: 429
+    rate_limit_error …"), so `_limit_reset_ts` declines via `is_rate_limit`
+    and the node re-probes every five minutes for up to five hours — one
+    wasted generation each time, though the account's own usage readout is
+    at that moment sitting on a session lane at 100%. This is the "fall back
+    check on usage" the report asks for, and the CLAUDE-lane twin of what the
+    codex lane has had since 2026-09-07 (`codex_route.pool_capacity` →
+    `SRC_BOARD`: the cached board answers an exhausted window only when the
+    turn's own notification said nothing).
+
+    ⚠ THIS IS NOT `reset_for` AND MUST NOT BECOME IT. `reset_for` answers
+    "what lane is THIS ERROR about" and stays refused for a 429 on purpose
+    (`is_rate_limit`, `supervisor._limit_reset_ts`). This asks a different
+    question a 429 cannot lie about — is a lane of this model's quota
+    MEASURED SPENT right now? The blob is never consulted here; it names
+    nothing, and an untrusted one has nothing to steer.
+
+    Three bounds, each one a scar:
+      · CLAUDE TIERS ONLY, `tier` required — stricter than `lane_applies`,
+        whose empty-tier pass-through is documented as kept for the
+        pure-function tests only, not trusted. An unknown or non-Claude
+        model is not evidence that the HOST subscription is the lane that
+        walled it (the wrong-account parking bug, 2026-08-18 / 2026-09-07
+        15:36Z coordinator decision).
+      · THE SOONEST exhausted lane, never the latest, and never one further
+        out than the SESSION lane's own horizon (on top of `_candidate`'s own
+        per-lane band). This number prices the `api_fallback` key window: a
+        `weekly_all` lane at 100% resetting six days out would otherwise
+        bill the org's key for six days off a per-minute 429 — the
+        2026-08-18 finding, exactly. Guessing short costs one re-freeze;
+        guessing long costs money (user ruling 2026-08-18).
+      · `MAX_EVIDENCE_AGE`, like every other reader here: a readout this old
+        is a memory, and a broken upstream would otherwise serve one forever.
+
+    Cache-only unless `allow_fetch` — the freeze path holds `store.DOC_LOCK`
+    and the endpoint routinely takes over a second (see `cached`);
+    `_spawn_reset_refresh` is the fetching pass."""
+    now = time.time() if now is None else now
+    if str(tier or "").lower() not in CLAUDE_TIERS:
+        return None, ""
+    data = fetch(max_age=REREAD_MAX_AGE) if allow_fetch else cached()
+    if not data or not data.get("available") or cache_age() > MAX_EVIDENCE_AGE:
+        return None, ""
+    ceiling = now + lane_horizon("session")
+    picked: list[tuple[float, str]] = []
+    for x_any in cast("list[Any]", data.get("limits") or []):
+        if not isinstance(x_any, dict):
+            continue
+        lim = cast("dict[str, Any]", x_any)
+        if not lane_applies(lim, tier) or not lane_exhausted(lim):
+            continue
+        ts = _candidate(lim, now)          # future, inside its OWN lane
+        if ts is None or ts > ceiling:     # …and inside the SHORTEST lane
+            continue
+        picked.append((ts, str(lim.get("kind") or "?")))
+    if not picked:
+        return None, ""
+    ts, lane = min(picked)
+    return ts, f"usage:exhausted:{lane}"
+
+
 def reset_for(blob: str, now: float | None = None,
               allow_fetch: bool = False,
               trust_lane: bool = True,

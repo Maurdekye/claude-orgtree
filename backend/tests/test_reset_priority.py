@@ -384,6 +384,35 @@ def sec_matching() -> None:
                             tier="sonnet")[1], "usage:session", "sonnet")
     check("the Claude readout never answers a non-Claude tier", _claude_only)
 
+    def _exhausted_still_loses_to_a_stated_time() -> None:
+        # issue #4: a 429 that ALSO carries a stated time is not the shape
+        # `exhausted_reset` exists for — the ruling order holds regardless
+        readout(("session", 3 * 3600, True, None))
+        limits._cache["data"]["limits"][0]["percent"] = 100  # measured spent
+        ts, src = supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: rate limit exceeded, try "
+            "again in 2 minutes", tier="haiku")
+        eq(src, "text", "the message's own time still outranks the board, "
+                        "exhausted or not")
+        near(ts, now + 120, "two minutes, as stated")
+    check("issue #4 · a 429 that carries its own stated time is not answered "
+          "from the exhausted-lane fallback — text still wins",
+          _exhausted_still_loses_to_a_stated_time)
+
+    def _exhausted_answers_a_bare_429() -> None:
+        # …and the control: strip the stated time, and the same exhausted
+        # board is what timed this fix in the first place
+        readout(("session", 3 * 3600, True, None))
+        limits._cache["data"]["limits"][0]["percent"] = 100
+        ts, src = supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: per-minute rate limit",
+            tier="haiku")
+        eq(src, "usage:exhausted:session", "the exhausted lane answers a "
+                                           "bare 429")
+        near(ts, now + 3 * 3600, "the lane's own reset")
+    check("control · …and with no stated time in the SAME 429, the "
+          "exhausted lane is what answers", _exhausted_answers_a_bare_429)
+
 
 # ══════════════════════════════════════════════════════════════════════ §3
 
@@ -559,6 +588,30 @@ def sec_correction_pass() -> None:
         eq(fz["reset_src"], "usage:session", "provenance")
     check("control · the same pass moves a probe-floor freeze to the matched "
           "cached lane (the pass is live)", _control_moves)
+
+    def _exhausted_lane_moves_a_rate_limit_probe() -> None:
+        # issue #4: a probe-floor freeze stamped from a BARE 429 (no lane
+        # word at all — `reset_for` would refuse it) moves once the readout
+        # reports the session lane MEASURED SPENT
+        readout(("session", 3 * 3600, True, None))
+        limits._cache["data"]["limits"][0]["percent"] = 100
+        floor = now + supervisor.PROBE_FLOOR
+        slug, nid = _seed("probe", "probe", floor)
+        rate_blob = ("API Error: 429 rate_limit_error: per-minute rate "
+                    "limit")
+        moved = supervisor._refresh_freeze_reset(
+            slug, nid, rate_blob, floor, None, subscription=True,
+            trusted=True, tier="haiku", stamped_kind="probe")
+        eq(moved, True, "the pass did nothing on a probe-floor 429 freeze")
+        fz = rig.node(slug, nid)["frozen"]
+        near(fz["until_ts"], now + 3 * 3600, "the exhausted session lane",
+             tol=30.0)
+        eq(fz["reset_src"], "usage:exhausted:session", "provenance")
+        eq(fz["schedule_kind"], "probe", "still an inference, not an "
+                                         "observed deadline")
+    check("issue #4 · the correction pass moves a rate-limit probe to an "
+          "exhausted lane the same way it moves an ordinary one",
+          _exhausted_lane_moves_a_rate_limit_probe)
 
     def _relative_kept() -> None:
         # the correction pass on a freeze stamped from "try again in 19

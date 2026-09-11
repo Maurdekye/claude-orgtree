@@ -629,6 +629,90 @@ def sec_attack_the_fix() -> None:
     check("rate-limit · a freeze with no parseable reset time is not a dead "
           "end", _rate_limit_shape)
 
+    # ── issue #4, end to end: the SAME bare 429, but the host's own readout
+    # is sitting on an exhausted session lane at freeze time ────────────────
+    slug_e, nid_e = probe_org()
+
+    def _exhausted_lane_answers_end_to_end():
+        limits._cache.update(at=time.time(), data={
+            "available": True, "plan": "max",
+            "limits": [{"kind": "session", "group": "session", "percent": 100,
+                        "severity": "critical",
+                        "resets_at": _iso(3 * 3600), "is_active": True,
+                        "model": None}]})
+        try:
+            set_mode("iserror", limit_text=RATE)   # the CLI's own is_error —
+            run_turn(slug_e, nid_e)                # trusted, exactly the
+            fz = node(slug_e, nid_e).get("frozen")  # reporter's shape
+            assert fz, "the covered bare-429 shape stopped freezing"
+            assert str(fz.get("reset_src") or "").startswith(
+                "usage:exhausted:"), (
+                "issue #4 — a 429 with an exhausted host lane must be timed "
+                f"from it, not the blind probe floor — {fz}")
+            assert fz.get("schedule_kind") == "probe", (
+                f"an inferred exhausted-lane answer must schedule as a "
+                f"bounded probe, never an observed deadline — {fz}")
+            assert abs(float(fz.get("until_ts") or 0)
+                       - (time.time() + 3 * 3600)) < 120, (
+                f"stamped from the wrong instant — {fz}")
+            assert str(fz.get("until") or "").startswith("capacity recheck "), (
+                f"the badge must say this is an inference, not a stated "
+                f"deadline — {fz}")
+        finally:
+            limits.invalidate()
+    check("rate-limit · issue #4 end to end — the same bare 429 that used to "
+          "probe every five minutes for five hours is timed off the host's "
+          "own exhausted session lane instead", _exhausted_lane_answers_end_to_end)
+
+    # ── issue #4 commit 2: a wall nothing can time backs off across
+    # consecutive episodes, and a completed turn resets it ──────────────────
+    slug_b, nid_b = probe_org()
+
+    def _backoff_across_consecutive_walls():
+        # `_unfreeze` (§7's helper, defined below) is THE ONLY WAY a second
+        # wall can happen in this rig — a frozen node refuses further turns
+        # outright, and `resume_frozen` itself replays/drives asynchronously,
+        # which would make the count racy. Popping `frozen` and nothing else
+        # is exactly what an auto-resume wake leaves behind, and it
+        # deliberately does NOT touch `limit_run` — the field carrying the
+        # backoff across the loop.
+        limits.invalidate()            # no readout at all — the safety net
+        try:
+            set_mode("iserror", limit_text=RATE)
+            expected = [supervisor.PROBE_FLOOR, 2 * supervisor.PROBE_FLOOR,
+                        4 * supervisor.PROBE_FLOOR]
+            for i, want in enumerate(expected):
+                run_turn(slug_b, nid_b)
+                fz = node(slug_b, nid_b).get("frozen")
+                assert fz, f"expected a blind-probe freeze — {fz}"
+                delay = float(fz["until_ts"]) - time.time()
+                assert abs(delay - want) < 30, (
+                    f"wall #{i + 1}: probe delay {delay:.0f}s, wanted "
+                    f"~{want:.0f}s — {fz}")
+                assert f"~{int(want // 60)} min" in str(fz.get("until") or ""), (
+                    f"the label must track the actual delay — {fz}")
+                _unfreeze(slug_b, nid_b)   # what a wake leaves behind — not
+                                          # a manual until_ts, which the CLI
+                                          # never actually reaches
+            # a COMPLETED turn clears `limit_run` — the next wall is back to
+            # the plain floor, exactly like the connection lane's own counter
+            set_mode("plain")
+            run_turn(slug_b, nid_b, "clears the episode")
+            assert not node(slug_b, nid_b).get("limit_run"), (
+                "a completed turn must clear the wall-run counter")
+            set_mode("iserror", limit_text=RATE)
+            run_turn(slug_b, nid_b)
+            fz = node(slug_b, nid_b).get("frozen")
+            delay = float(fz["until_ts"]) - time.time()
+            assert abs(delay - supervisor.PROBE_FLOOR) < 30, (
+                f"a fresh episode must start at the plain floor again, not "
+                f"carry the prior backoff forward — {fz}")
+        finally:
+            limits.invalidate()
+    check("rate-limit · issue #4 commit 2 — a wall nothing can time backs "
+          "off 5→10→20 min across consecutive episodes, and a completed turn "
+          "resets it to the plain floor", _backoff_across_consecutive_walls)
+
     # ── the way out: ▶ resume on a freeze of the NEW kind ───────────────────
     slug_x, nid_x = probe_org()
 
@@ -1929,6 +2013,20 @@ def _sec_reset_timing_body() -> None:
             (supervisor.UNTRUSTED_LIMIT_RUNS, supervisor.PROBE_FLOOR,
              limits.MAX_HORIZON, limits.CACHE_TTL)))))
 
+    # …and the issue #4 backoff: the ceiling, and the first wall is the plain
+    # floor unchanged — every existing caller and every check above that
+    # means "the floor" still means exactly that.
+    check("constants · the probe backoff ceiling is 30 minutes, and the "
+          "first wall of an episode is the plain floor", lambda: (
+        None if supervisor.PROBE_CEILING == 1800.0
+        and supervisor._probe_delay(0) == supervisor.PROBE_FLOOR
+        and supervisor._probe_delay(1) == 2 * supervisor.PROBE_FLOOR
+        and supervisor._probe_delay(2) == 4 * supervisor.PROBE_FLOOR
+        and supervisor._probe_delay(99) == supervisor.PROBE_CEILING
+        else (_ for _ in ()).throw(AssertionError(
+            (supervisor.PROBE_CEILING, supervisor._probe_delay(0),
+             supervisor._probe_delay(1), supervisor._probe_delay(2))))))
+
     # ⑦ /api/usage must not force a fetch — the modal polls, and one cache
     # for two consumers is the invariant this feature is built on.
     # ⚠ was a regex over the route's source, which `lambda: fetch(True)` and
@@ -2636,6 +2734,129 @@ def _sec_reset_timing_body() -> None:
             "Claude AI usage limit reached")[1] == "usage:session"
         else (_ for _ in ()).throw(AssertionError("over-tightened"))))
     limits.invalidate()
+
+    # B-2 · issue #4 — an EXHAUSTED lane answers the same 429 that B-1
+    # refused, because `percent >= 100` is a different, stronger claim than
+    # `is_active`: the account's own meter says the lane is SPENT, not merely
+    # in force.
+    _readout(("session", "session", 100, "critical", 3 * 3600, True, None))
+    check("rate-limit · issue #4 — a 429 with a MEASURED-SPENT session lane "
+          "is answered from it, so the node waits for the real reset instead "
+          "of probing every five minutes for the whole five-hour wall",
+          lambda: (
+        None if abs(supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: Number of request tokens has "
+            "exceeded your per-minute rate limit",
+            tier="haiku")[0] - (now + 3 * 3600)) < 60
+        and supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: per-minute rate limit",
+            tier="haiku")[1] == "usage:exhausted:session"
+        else (_ for _ in ()).throw(AssertionError(
+            supervisor._limit_reset_ts(
+                "API Error: 429 rate_limit_error: per-minute rate limit",
+                tier="haiku")))))
+    limits.invalidate()
+
+    # B-3 · …and B-1's 80%-but-active lane still does not, tier passed
+    # explicitly so nobody can make this pass by omitting it
+    _readout(("session", "session", 80, "normal", 4 * 3600, True, None))
+    check("rate-limit · …but an ACTIVE, not-yet-spent lane still refuses — "
+          "the 2026-08-18 bug's exact shape, with a tier passed this time",
+          lambda: (
+        None if supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error: per-minute rate limit",
+            tier="haiku") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("answered an active lane"))))
+    limits.invalidate()
+
+    # B-4 · `lane_exhausted` — is_active is neither necessary nor sufficient
+    check("lane_exhausted · percent alone decides; is_active is a hint, "
+          "never the gate", lambda: (
+        None if limits.lane_exhausted(
+            {"percent": 80, "is_active": True}) is False
+        and limits.lane_exhausted(
+            {"percent": 100, "is_active": False}) is True  # the legacy shape
+        and limits.lane_exhausted(
+            {"percent": None, "is_active": True}) is False
+        and limits.lane_exhausted(
+            {"percent": 100, "is_active": True}) is True
+        and limits.lane_exhausted(
+            {"percent": "junk", "is_active": True}) is False
+        else (_ for _ in ()).throw(AssertionError("lane_exhausted mis-gated"))))
+
+    # B-5 · the money bound — never further out than the session horizon
+    _readout(("weekly_all", "weekly", 100, "critical", 6 * 86400, True, None))
+    check("lane · a weekly lane at 100% resetting six days out does NOT "
+          "answer a 429 — the 2026-08-18 six-day key-billing window, exactly, "
+          "if this bound were missing", lambda: (
+        None if limits.exhausted_reset("haiku") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(
+            limits.exhausted_reset("haiku")))))
+    limits.invalidate()
+
+    # B-6 · soonest exhausted lane wins, not the latest
+    _readout(("session", "session", 100, "critical", 4 * 3600, True, None),
+             ("weekly_all", "weekly", 100, "critical", 5 * 86400, True, None))
+    check("lane · with two exhausted lanes the SOONEST answers", lambda: (
+        None if limits.exhausted_reset("haiku")[1] == "usage:exhausted:session"
+        else (_ for _ in ()).throw(AssertionError(limits.exhausted_reset("haiku")))))
+    limits.invalidate()
+
+    # B-7 · the tier gate — an unknown or non-Claude model is not evidence
+    # the HOST subscription is the lane that walled it
+    _readout(("session", "session", 100, "critical", 3 * 3600, True, None))
+    check("lane · exhausted_reset refuses an empty, OpenRouter or codex "
+          "tier — the Claude readout describes CLAUDE tiers only", lambda: (
+        None if limits.exhausted_reset("") == (None, "")
+        and limits.exhausted_reset("or-anthropic/claude-3.5") == (None, "")
+        and limits.exhausted_reset("terra") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("answered a foreign tier"))))
+    # …and fable is never answered from the POOLED weekly lane
+    _readout(("weekly_all", "weekly", 100, "critical", 3 * 3600, True, None))
+    check("lane · fable is never answered from the pooled weekly_all lane",
+          lambda: (
+        None if limits.exhausted_reset("fable") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(limits.exhausted_reset("fable")))))
+    limits.invalidate()
+
+    # B-8 · staleness — a readout this old is a memory, not a measurement
+    _readout(("session", "session", 100, "critical", 3 * 3600, True, None))
+    limits._cache["at"] = time.time() - limits.MAX_EVIDENCE_AGE - 1
+    check("lane · a stale exhausted readout is declined, same as any other "
+          "reader here", lambda: (
+        None if limits.exhausted_reset("haiku") == (None, "")
+        else (_ for _ in ()).throw(AssertionError(limits.exhausted_reset("haiku")))))
+    limits.invalidate()
+
+    # B-9 · a key-billed turn is still refused even when the host readout IS
+    # exhausted — someone else's quota, spent or not, is still someone else's
+    _readout(("session", "session", 100, "critical", 4 * 3600, True, None))
+    check("lane · a turn that billed the ORG'S KEY is refused even when the "
+          "HOST subscription's own lane reads 100% — that lane is still not "
+          "this turn's quota", lambda: (
+        None if supervisor._limit_reset_ts(
+            "API Error: 429 rate_limit_error — Number of request tokens has "
+            "exceeded your per-minute rate limit", subscription=False,
+            tier="haiku") == (None, "")
+        else (_ for _ in ()).throw(AssertionError("read someone else's lane"))))
+    limits.invalidate()
+
+    # B-10 · provenance — an inferred exhausted-lane answer schedules as a
+    # bounded probe (never `observed-deadline`), and structurally cannot
+    # reach the org-wide Fable lock (FABLE-2)
+    check("provenance · `usage:exhausted:<lane>` schedules as `probe`, not "
+          "`observed-deadline` — it is an inference, not a stated deadline",
+          lambda: (
+        None if supervisor._usage_schedule_kind(
+            "API Error: 429 rate_limit_error: per-minute rate limit",
+            "usage:exhausted:session") == "probe"
+        else (_ for _ in ()).throw(AssertionError("promoted an inference"))))
+    check("provenance · FABLE-2 — an exhausted-lane answer can never reach "
+          "the org-wide Fable lock, whatever it names", lambda: (
+        None if supervisor._fable_lock_ts(
+            "You've reached your Fable 5 limit", now + 6 * 3600,
+            "usage:exhausted:weekly_scoped", now=now) is None
+        else (_ for _ in ()).throw(AssertionError("an inference locked Fable"))))
 
     # ---- R7 · the gaps mutation testing found in the checks above ---------
     # Each of these was green under a mutation that broke the thing it names.

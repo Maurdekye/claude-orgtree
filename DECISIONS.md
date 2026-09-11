@@ -1276,7 +1276,9 @@ should freeze the agent — but the readout only describes lanes, so a 429
 reset: a four-hour park, and on a fallback org four hours of key billing,
 against a wall that lifts in a minute. `limits.is_rate_limit` now keeps the
 readout out of it; the error's own prose still answers, and otherwise the
-probe floor does. The same round retired a guard that had been certifying the
+probe floor does (round ten below narrows this again — a MEASURED-SPENT
+lane, not merely an active one, is a different claim the readout can still
+answer). The same round retired a guard that had been certifying the
 drift it was named for — it tested `"time.time() + 300" in <source>`, which is
 a prefix of `+ 3000`; the probe floor is `PROBE_FLOOR` now and the check is a
 literal.
@@ -1302,6 +1304,27 @@ misclassifying its own provenance. All three now go through the seam the
 freeze site uses, or through a real turn. Separately, `tools/run_tests.py
 --only` silently ran NOTHING and exited 0 for a comma-separated or repeated
 filter, which is how a CI line passes having tested nothing.
+
+Round ten (user report, issue #4, 2026-09-11) found the cost of round nine's guard on the case it was written for: a
+genuine 5-hour subscription wall whose own words are a bare 429 ("API Error: 429 rate_limit_error …") froze the node
+with no reset anywhere in the message, and `is_rate_limit` refused the readout exactly as designed — so the node
+re-probed on `PROBE_FLOOR` every five minutes for the whole five hours, roughly sixty wasted generations on the
+reporter's account. The guard was right to distrust an `is_active` lane (round nine's own bug used one at 80%); it was
+never asked whether the account's own meter said a lane was MEASURED SPENT. That is a different, narrower claim a 429
+cannot fabricate: `limits.exhausted_reset(tier)` answers `is_rate_limit`'s branch only when a lane reads `percent >=
+100` (`limits.lane_exhausted` — `is_active` deliberately neither required nor sufficient, since `_normalize`'s legacy
+shape hardcodes it False), gated to Claude tiers only (stricter than `lane_applies`'s pure-function default), capped at
+the session horizon exactly like every other cache answer here (a weekly lane at 100% resetting six days out is the
+round-nine bug's own shape and stays refused), and scheduled as a bounded `probe` (`usage:exhausted:<lane>`) rather than
+an observed deadline, so the badge says "capacity recheck" and the record still shows an inference, not a stated fact.
+Alongside it: the blind floor itself now backs off — `PROBE_FLOOR` doubling on each consecutive wall of the same episode
+(`supervisor._probe_delay`, keyed on the existing `limit_run` counter, capped at `PROBE_CEILING` = 30 minutes) — for the
+population this predicate cannot help at all: an API-key-only host, a stale board, or an upstream that never actually
+reports 100%. One counter serves every provider's blind floor, so this needed no per-provider copy; a completed turn
+clears `limit_run` in `_after_turn`, so a fresh episode starts at the plain floor again. Nobody here can confirm offline
+whether `/api/oauth/usage` reports `percent >= 100` at the actual 5-hour wall or caps short of it — the predicate
+degrades to today's behaviour, unchanged, if it never fires, which is why the backoff shipped in the same change rather
+than after.
 
 ### D-141 · the warm loop also wakes at the reset itself
 Ruling (session seat, 2026-08-20, user instruction — "schedule a usage limit
