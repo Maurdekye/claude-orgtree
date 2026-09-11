@@ -222,6 +222,45 @@ def main() -> int:
     check("§1 the reset ladder: provider value, banded; then prose; then the "
           "5-minute probe floor", t_band)
 
+    def t_probe_backoff():
+        # issue #4 commit 2: the blind floor backs off on `limit_run`, and
+        # this is the ONE branch every non-claude provider's blind floor
+        # shares — the same counter as the claude lane, so the backoff is
+        # provider-neutral by construction, not reimplemented per provider
+        slug, nid = mkorg("codexbackoff")
+        t0 = time.time()
+        ok1 = supervisor.freeze_provider_limit(
+            slug, nid, "a wall with no reset anywhere in it",
+            provider="openai", account="acct", resource_pool="plan")
+        assert ok1, "first freeze must succeed"
+        fz1 = node_doc(slug, nid).get("frozen") or {}
+        eq(fz1.get("reset_src"), "probe", "no evidence anywhere → the floor")
+        assert abs(float(fz1["until_ts"]) - (t0 + supervisor.PROBE_FLOOR)) < 5, (
+            "wall #1 must be the PLAIN floor (limit_run is 0 before "
+            f"_limit_announce's bump) — {fz1}")
+
+        # `freeze_provider_limit` itself calls `_limit_announce` at the end
+        # (mailing the manager, D-209) — which is what bumps `limit_run`, so
+        # the first freeze above already advanced it to 1
+        eq(node_doc(slug, nid).get("limit_run"), 1,
+           "the first freeze's own announce must have bumped it")
+
+        t1 = time.time()
+        ok2 = supervisor.freeze_provider_limit(
+            slug, nid, "a wall with no reset anywhere in it",
+            provider="openai", account="acct", resource_pool="plan")
+        assert ok2, "second freeze must succeed"
+        fz2 = node_doc(slug, nid).get("frozen") or {}
+        eq(fz2.get("reset_src"), "probe", "still no evidence")
+        assert abs(float(fz2["until_ts"])
+                   - (t1 + 2 * supervisor.PROBE_FLOOR)) < 5, (
+            f"wall #2 must double the floor — {fz2}")
+        assert "~10 min" in str(fz2.get("until") or ""), (
+            f"the label must track the doubled delay — {fz2}")
+    check("§1 issue #4 · a second consecutive codex wall with no evidence "
+          "doubles the blind floor, the same counter the claude lane uses",
+          t_probe_backoff)
+
     # ───────────────────────────────────────────────────────────────────────
     print("§2 the codex wall, end to end (replayed from captured bytes)")
     os.environ["FAKECODEX_SCENARIO"] = "usage_limit"

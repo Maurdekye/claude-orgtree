@@ -4141,6 +4141,25 @@ def _looks_like_fable_tier_limit(blob: str) -> bool:
 # and `+ 300` is a prefix of `+ 3000` (redteam 2026-08-18).
 PROBE_FLOOR = 300.0
 
+# …and how far that floor may stretch when the SAME wall keeps refusing
+# (issue #4): a probe that fails re-freezes at the plain floor again and
+# again, and a run of five-minute failures over a five-hour wall is sixty
+# wasted generations. Mirrors the connection lane's own
+# `min(300, 30 * 2**(run-1))` backoff below, for the same reason — the floor
+# bounds ONE incident, a run of them is a RATE.
+PROBE_CEILING = 1800.0
+
+
+def _probe_delay(prior_walls: int = 0) -> float:
+    """The blind probe's horizon, backed off by how many consecutive walls
+    this node has already hit in this episode (`limit_run`, cleared by a
+    COMPLETED turn in `_after_turn`). `_probe_delay(0) == PROBE_FLOOR`
+    exactly — the first wall, and every existing caller and pinned test that
+    means "the floor" — so this changes nothing until a wall repeats."""
+    return min(PROBE_CEILING,
+               PROBE_FLOOR * (2.0 ** min(max(0, prior_walls), 8)))
+
+
 NET_RETRY_MAX = 4      # then fall to manual with an honest label
 # …and the same shape for a limit NOBODY BUT THE AGENT reported: after this
 # many consecutive self-diagnosed limits with no CLI evidence behind them, the
@@ -4551,6 +4570,30 @@ def _result_names_a_limit(text: str) -> bool:
             and _parse_limit_reset_ts_raw(text)[0] is not None)
 
 
+def _log_exhausted_probe(tier: str, ts: float | None, src: str) -> None:
+    """One server-log line every time a rate-limit blob consults the
+    exhausted-lane fallback (issue #4) — answered or declined. Nobody here
+    can confirm offline whether the upstream readout actually reports
+    `percent >= 100` at the 5-hour wall (`limits.EXHAUSTED_PERCENT`'s
+    docstring); this line is how a live report supplies the real numbers
+    without a code change. Never raises — a diagnostic must not cost the
+    freeze it is describing."""
+    try:
+        data = limits.cached()
+        lanes = ", ".join(
+            f"{x.get('kind')}={x.get('percent')}%/{x.get('severity')}"
+            for x in (data.get("limits") or []) if isinstance(x, dict)
+        ) if data and data.get("available") else "no cached readout"
+        if ts is not None:
+            print(f"[orgtree] exhausted-lane probe ({tier or '?'}): "
+                  f"answered {src} — {lanes}")
+        else:
+            print(f"[orgtree] exhausted-lane probe ({tier or '?'}): "
+                  f"declined — {lanes}")
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
 def _limit_reset_ts(blob: str, allow_fetch: bool = False,
                     subscription: bool = True,
                     trusted: bool = True,
@@ -4594,17 +4637,32 @@ def _limit_reset_ts(blob: str, allow_fetch: bool = False,
     ts = _parse_limit_reset_ts(blob, kind, trusted=trusted)
     if ts:
         return ts, "text"
-    if not subscription or limits.is_rate_limit(blob):
-        # ⚠ a per-minute RATE limit is not a usage LANE. Both match
-        # `_looks_like_usage_limit` (deliberately broad), but the readout
-        # describes 5-hour and weekly pools, so answering a 429 from it parked
-        # a node for four hours — and on a fallback org billed the key for
-        # four hours — against a wall that lifts in a minute (redteam
-        # 2026-08-18). The prose above still answers ("try again in 2
-        # minutes"); otherwise the caller's probe floor does, which is the
-        # honest horizon for a wall nothing here can see.
+    if not subscription:
+        # ⚠ UNCHANGED AND SEPARATE from the rate-limit branch below (issue
+        # #4): the turn billed the ORG'S KEY, so the wall it hit was the
+        # API's, and every lane on the host readout — exhausted or not —
+        # describes someone else's quota. Kept as its own statement so
+        # adding evidence to the rate-limit branch can never widen this one.
         return None, ""
     try:
+        if limits.is_rate_limit(blob):
+            # ⚠ a per-minute RATE limit is still not a usage LANE, and this
+            # still does not read one: `reset_for` stays refused here — that
+            # is the redteam 2026-08-18 fix (answering a 429 from an
+            # `is_active`-but-not-spent lane parked a node for four hours and
+            # billed a fallback org's key for four hours). What it asks
+            # instead is a question a 429 cannot contradict: is a lane of
+            # this model's quota MEASURED SPENT right now
+            # (`limits.exhausted_reset`)? Issue #4: at the 5-hour wall the
+            # API's own words are often a bare 429 with no reset in them, so
+            # the node woke every five minutes for five hours — one wasted
+            # generation each — while its own usage readout was sitting on a
+            # session lane at 100%. Still an inference, so it schedules as a
+            # bounded `probe` (`_usage_schedule_kind`) and the node waits for
+            # the real reset instead of re-asking dozens of times.
+            ex_ts, ex_src = limits.exhausted_reset(tier, allow_fetch=allow_fetch)
+            _log_exhausted_probe(tier, ex_ts, ex_src)
+            return ex_ts, ex_src
         return limits.reset_for(blob, allow_fetch=allow_fetch,
                                 trust_lane=trusted, tier=tier)
     except Exception as e:                                    # noqa: BLE001
@@ -16680,11 +16738,17 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                 # human, so schedule a short probe instead of
                                 # leaving auto_resume nothing to act on
                                 # (redteam gap 2026-08-05). A failed probe
-                                # re-freezes, so the worst case is one try
-                                # per ~5 minutes, honestly labeled.
-                                fz["until_ts"] = time.time() + PROBE_FLOOR
+                                # re-freezes, so the worst case is one try per
+                                # ~5 minutes — BACKED OFF (issue #4) by how
+                                # many consecutive walls this episode has
+                                # already seen, so a wall nothing can time
+                                # does not cost a generation every five
+                                # minutes for its whole duration.
+                                _delay = _probe_delay(
+                                    int(o2.node(nid).get("limit_run") or 0))
+                                fz["until_ts"] = time.time() + _delay
                                 fz["until"] = ("unknown — probing again "
-                                               "in ~5 min")
+                                               f"in ~{int(_delay // 60)} min")
                                 fz["reset_src"] = "probe"
                             _stamped_ts = fz.get("until_ts")
                             _stamped_kind = str(fz.get("schedule_kind") or "")
@@ -21009,6 +21073,14 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
             if nid not in o2.nodes:
                 return False
             tier = str(o2.node(nid).get("model") or "")
+            if src == "probe":
+                # BACKED OFF (issue #4), the same shape and the same reason
+                # as the claude lane's blind stamp: a probe that fails
+                # re-freezes at the plain floor again and again, and this is
+                # the one branch every non-claude provider's blind floor
+                # shares — one counter, `limit_run`, for every provider.
+                ts = time.time() + _probe_delay(
+                    int(o2.node(nid).get("limit_run") or 0))
             fz = _ensure_frozen(o2.node(nid))
             fz["limit"] = True
             # the CLI reported this itself — it is not the agent's own prose
@@ -21021,7 +21093,11 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
             fz.pop("on_fallback", None)  # no key lane serves these providers
             fz["until_ts"] = ts
             fz["until"] = (
-                "unknown — probing again in ~5 min" if src == "probe" else
+                # round, not floor — the label is written a few ms after
+                # `ts` in real time and a hair under a whole minute must not
+                # under-report it (measured: 599.97s read back as "~9 min")
+                "unknown — probing again in "
+                f"~{round((ts - time.time()) / 60)} min" if src == "probe" else
                 "capacity recheck " + _reset_label(ts)
                 if effective_kind == "probe" else _reset_label(ts))
             fz["reset_src"] = src

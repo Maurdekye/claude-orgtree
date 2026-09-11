@@ -239,6 +239,21 @@ ledger, supervisor, the gateways, or the canvas.
   per-minute rate limit. `supervisor.bills_the_key(org, on_fallback_key)` is
   the gate, and the lane is captured AT SPAWN — a fallback window expiring
   mid-turn does not move the turn that is already running.
+- **…but a MEASURED-SPENT lane still answers a rate-limit blob.** At a 5-hour subscription wall the CLI's own words
+  are often a bare 429 with no reset anywhere in them, so the message-time parser declines and the above guard refuses
+  the readout — a genuine wall then probed every five minutes for the whole five hours (user report, issue #4).
+  `limits.exhausted_reset(tier)` asks a narrower question the guard's reasoning does not touch: is a lane of this
+  model's quota MEASURED SPENT (`percent >= 100`) right now, never merely `is_active` (the 2026-08-18 shape).
+  Claude-tier-only, soonest exhausted lane, never further out than the session horizon — the same money bound as every
+  other cache answer here. Scheduled as a bounded `probe` (`usage:exhausted:<lane>`, never an observed deadline), so
+  `until_ts` is still honoured but the badge says "capacity recheck", not a stated fact.
+- **A wall nothing can time still backs off.** Where the readout cannot answer either (an API-key-only host, a stale
+  board, an upstream that never reports 100%), the blind probe floor (`PROBE_FLOOR`, 5 minutes) doubles on each
+  consecutive wall of the same episode — `supervisor._probe_delay`, keyed on `limit_run`, capped at `PROBE_CEILING`
+  (30 minutes) — instead of re-probing at the same five-minute cadence for the wall's whole duration. One counter
+  serves every provider's blind floor (the claude stamp and `freeze_provider_limit` both read it), so the backoff
+  needed no per-provider copy. A completed turn clears `limit_run` in `_after_turn`, so a fresh episode starts at the
+  plain floor again.
 
 - **An agent-triggered update MUST be detached — that path is the only one it
   has.** The update stops and restarts the backend, which tears down the very
