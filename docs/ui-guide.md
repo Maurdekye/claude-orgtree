@@ -88,7 +88,15 @@ snowflake, lock, layers, fullscreen, hearing.
   YOUR configuration panel, mirroring the agents' own — sections in the same
   order as a card's (folder access first). It also carries a **dissolve all
   agents** button: after an in-page confirmation, every agent in the org is
-  retired at once (context kept — rehire revives any of them). It holds:
+  retired at once (context kept — rehire revives any of them). Beside it, a
+  **cheap-compact all agents** button resets every live agent's session to
+  empty, top-down, after its own confirmation: the prior session of each
+  agent is archived in place as a consultable knowledge bearer, and the
+  agent itself continues under the same name with an empty session rather
+  than a fresh transcript-read compaction. Any agent that cannot be
+  compacted right now (not live, or with an open background task) is
+  skipped and reported in the confirmation toast rather than blocking the
+  rest. It holds:
   - **folder access** — the org's folder holdings, in the same UI as a
     card's: the permanent RW workspace, each external folder with an RW/RO
     toggle, ✕ to remove (removal revokes the folder from every agent
@@ -634,6 +642,13 @@ toast repeats that warning. Refused while the agent is mid-turn.
   Agents can switch models anywhere in their own subtree — never their own.
 - **charter**: this agent's standing role card, in its prompt every turn.
   **team charter**: standing instructions cascading into every descendant.
+- **cheap-compact subtree**: after a confirmation, this agent and every live
+  descendant below it get their session reset to empty, top-down — the same
+  per-agent reset available from the zoomed desk (alt-click the context
+  wheel), swept across the whole subtree at once. For a leaf agent this is
+  just itself. Each prior session archives as a knowledge bearer; an
+  ineligible descendant (not live, or with an open background task) is
+  skipped and reported rather than blocking the rest.
 - **🗑 delete permanently** is user-only and irreversible: takes the subtree,
   every lineage stack, records, mail and audiences (session transcripts remain
   on disk). Agents can at most retire.

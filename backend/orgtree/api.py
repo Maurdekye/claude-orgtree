@@ -3750,6 +3750,62 @@ async def org_dissolve_all(slug: str) -> dict[str, Any]:
     return {"freed": freed, "nodes": nodes}
 
 
+def _export_compacted(org: Org, compacted: list[dict[str, Any]]) -> list[str]:
+    """Copy each just-compacted node's predecessor transcript, one node at a
+    time — never letting a single bad copy (disk full, a permission error;
+    real file I/O, unlike the ledger mutation beside it) discard the rest of
+    an otherwise-completed sweep. `export_predecessor_transcript` is already
+    best-effort against the ordinary failure it expects (a missing/unreadable
+    transcript — see its own docstring), but `scratch_dir`'s `os.makedirs`
+    runs OUTSIDE that guard and a real disk error there is exactly the
+    non-LedgerError case this loop exists to survive. The single-node
+    `cheap_compact` op (above) does not have this guard — its own export call
+    is unprotected too — but there the blast radius is one node's ledger
+    mutation; here it is every node still left in the sweep, which is what
+    makes catching this worth doing here specifically."""
+    warnings: list[str] = []
+    for r in compacted:
+        try:
+            supervisor.export_predecessor_transcript(
+                org, r["node"], old_sid=r["old_session"], reason="cheap_compact")
+        except Exception as e:                                   # noqa: BLE001
+            warnings.append(f"{r['node']}: transcript export failed: {e}")
+    return warnings
+
+
+@app.post("/api/orgs/{slug}/cheap-compact-all")
+async def org_cheap_compact_all(slug: str) -> dict[str, Any]:
+    """Cheap-compact EVERY live agent in the org at once, top-down. Ineligible
+    nodes (not live, or with open background tasks) are skipped, not fatal —
+    unlike `dissolve-all` just above, which is all-or-nothing. Dissolving a
+    node the caller cannot legally touch is a bug worth surfacing as one; a
+    node that merely can't be cheap-compacted right now (mid-turn, or a
+    background task still open) is routine churn in a sweep meant to run
+    across a whole live org, and failing the entire sweep over one busy
+    agent would make the operation useless in practice.
+    """
+    # holding DOC_LOCK across mutation → export → save keeps all three
+    # consistent: releasing it between the ledger mutation and the transcript
+    # export would let a save land where the ledger already says a session
+    # was replaced but its transcript has not been copied yet — exactly the
+    # gap `_export_compacted` exists to close. This is a rare, deliberately
+    # destructive, human-initiated op; the latency other orgs see while it
+    # holds the lock is the cheaper cost. Do not restructure the locking.
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            nids = org.descendants(None, live_only=True)
+            result = org.cheap_compact_many(USER, nids)
+            export_warnings = _export_compacted(org, result["compacted"])
+            store.save_org(org)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+    supervisor.remote_reap(slug)
+    await hub.changed(slug)
+    return {"compacted": len(result["compacted"]), "skipped": result["skipped"],
+            "warnings": export_warnings}
+
+
 @app.post("/api/orgs/{slug}/killswitch")
 async def org_killswitch(slug: str) -> dict[str, Any]:
     """⏹ STOP ALL: interrupt every active agent, clear pending queues, and
@@ -9122,13 +9178,19 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
             raise HTTPException(422, str(e))
         _archive_warnings = supervisor.interrupt_before_archive(
             slug, _pre_org, body.node)
+    # `cheap_compact_subtree` runs its ledger mutation AND its per-node
+    # transcript export (_export_compacted) inside this one lock, same
+    # reasoning as org_cheap_compact_all above: releasing it in between
+    # would let a save land with a session already replaced but its
+    # transcript not yet copied. Do not restructure the locking.
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
         if _archive_warnings and isinstance(result, dict):
             result.setdefault("warnings", []).extend(_archive_warnings)
     # FR-01 (redteam): retire/dissolve/delete must not orphan a running
     # remote-control server — reap any whose seat is gone or no longer live
-    if body.op in ("retire", "dissolve", "delete", "rescind", "cheap_compact"):
+    if body.op in ("retire", "dissolve", "delete", "rescind", "cheap_compact",
+                   "cheap_compact_subtree"):
         supervisor.remote_reap(slug)
     if pub and isinstance(result, dict):
         # the bridge is the ADMIN affordance — a visitor has no legal path to
@@ -9226,6 +9288,19 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 org, cast(str, body.node),
                 old_sid=cast(str, result.get("old_session")),
                 reason="cheap_compact")
+        elif body.op == "cheap_compact_subtree":
+            if not body.node:
+                raise LedgerError("cheap_compact_subtree needs node")
+            org.node(body.node)   # 422 on an unknown node, same as every other op
+            # a root-level authority check, same call cheap_compact itself makes
+            # per-node: authority is transitive downward (§7.1), so clearance on
+            # the root covers every descendant and cheap_compact_many's own
+            # except LedgerError never has to tell an authority denial apart
+            # from a routine skip (which it cannot — see its docstring)
+            org._require_authority(body.actor, body.node)
+            nids = [body.node] + org.descendants(body.node, live_only=True)
+            result = org.cheap_compact_many(body.actor, nids)
+            result["warnings"] = _export_compacted(org, result["compacted"])
         elif body.op == "rehire":
             # D-197: rehire-with-a-tier is a door onto the provider axis like
             # any other, and it was the one the gate's own docstring named
